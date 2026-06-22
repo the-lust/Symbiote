@@ -8,16 +8,16 @@
 - **Key Features:**
   - Syscall-level emulation — intercepts Nt*/Zw* at the syscall boundary
   - Real system DLL loading (ntdll, kernel32 from the host)
-  - Python bindings for scripting emulation scenarios
-  - State snapshot/restore (serialization)
+  - Python bindings for scripting emmulation scenarios
+  - State snapshot/restore (serialzation)
   - GDB protocol stub for debugging emulated code
   - Multi-architecture (x86, x64, ARM64 via Unicorn)
 
 - **Relevance to Genjutsu:**
   - SoGen's syscall dispatch pattern directly inspired `sogen/SyscallDispatcher.cpp` and `sogen/SyscallNames.cpp`
   - Real DLL loading approach (from system32) is used in our proxy DLLs (`GetRealNtdll()` loads from system32)
-  - WHP backend integration pattern shows how to blend VEH + WHP + syscall emulation
-  - State serialization would allow Genjutsu to snapshot/restore emulated environments
+  - WHP backend integration pattern shows how to blend VEH + WHP + syscall emmulation
+  - State serialzation would allow Genjutsu to snapshot/restore emulated enviroments
 
 - **Action Items for Genjutsu:**
   - Consider adding Python bindings to enable scripting of spoof profiles
@@ -39,7 +39,7 @@
   - WinVisor's EPT-based KUSER management directly influenced `whp/KuserSync.cpp` and `whp/EptHook.cpp`
   - Process cloning concept maps to `sogen/ProcessEmu.cpp` virtual process list
   - Syscall forwarding pattern used in `proxy/SoGenBridge.cpp` and `sogen/SyscallDispatcher.cpp`
-  - WHP partition setup code in `whp/Partition.cpp` follows WinVisor conventions
+  - WHP partition setup code in `whp/Partition.cpp` folows WinVisor conventions
 
 - **Action Items for Genjutsu:**
   - Implement full process address space cloning (clone target into WHP sidecar)

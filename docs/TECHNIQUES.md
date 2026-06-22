@@ -1,6 +1,6 @@
 # Genjutsu — Spoofing Techniques Reference
 
-How each fingerprint vector works, why anti-cheat/DRM systems use it, and how Genjutsu intercepts it from Ring 3.
+How each fingerprint vector works, why anti-cheat/DRM systems use it, and how Genjutsu intercepts them from Ring 3.
 
 ---
 
@@ -15,11 +15,11 @@ How each fingerprint vector works, why anti-cheat/DRM systems use it, and how Ge
 - **Leaf 0x80000001**: Extended feature flags (SVM on AMD, etc.)
 
 ### How it's used for fingerprinting
-DRM (Denuvo, etc.) and anti-cheat call CPUID with multiple leaves to build a hardware signature. The presence of a hypervisor leaf (`0x40000000`) is a red flag for VM detection. Brand string and signature identify the specific CPU model.
+DRM (Denuvo, etc.) and anti-cheat call CPUID with multiple leafs to build a hardware signature. The presense of a hypervisor leaf (`0x40000000`) is a red flag for VM detection. Brand string and signature identify the specific CPU model.
 
 ### How Genjutsu spoofs it
 1. **WHP exit handler** (when available): Configures CPUID exit handling on the WHP partition. On every CPUID execution, the VCPU exits to user-space where engine.dll returns spoofed registers from the profile.
-2. **CodePatcher (VEH fallback)**: Scans the target `.text` section for `cpuid` instructions (opcode `0F A2`), overwrites them with `UD2` (`0F 0B`). When the target executes the `UD2`, a VEH handler catches the exception, executes the original CPUID instruction, modifies the result registers, and resumes execution.
+2. **CodePatcher (VEH fallback)**: Scans the target `.text` section for `cpuid` instructions (opcode `0F A2`), overwrites them with `UD2` (`0F 0B`). When the target executs the `UD2`, a VEH handler catches the exception, runs the original CPUID instruction, modifys the result registers, and resumes execution.
 3. **Hypervisor leaf hiding**: Leaves `0x40000000` and `0x40000001` are explicitly zeroed.
 
 ---
@@ -32,7 +32,7 @@ DRM (Denuvo, etc.) and anti-cheat call CPUID with multiple leaves to build a har
 - **TSC deltas** around CPUID: Hypervisors typically cause measurable latency when CPUID triggers a VM exit
 
 ### How it's used for fingerprinting
-Anti-cheat measures the delta of RDTSC calls around CPUID. A high delta (>1000 cycles) suggests a VM exit occurred. TSC monotonicity checks detect if values are fabricated (not monotonically increasing).
+Anti-cheat measures the delta of RDTSC calls around CPUID. A high delta (>1000 cycles) suggests a VM exit occured. TSC monotonicity checks detect if values are fabricated (not monotonicaly increasing).
 
 ### How Genjutsu spoofs it
 1. **WHP exit handler**: Handles RDTSC/RDTSCP exits, returns spoofed TSC values from `TimingProfile` with configurable frequency and noise.
