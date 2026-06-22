@@ -222,6 +222,7 @@ Tested with engine active (IAT + VEH mode):
 - KUSER_SHARED_DATA at `0x7FFE0000` cant be rewritten from user mode; works via EPT (WHP) or shared memory (VEH)
 - IAT patching applies to the main EXE only
 - GPU-intensive apps pass through via GpuBridge (always fall through to real GPU)
+- Some parts are vibe coded, missing, or broken due to irl issues and lack of time. I am very very sorry about that. Will fix when things calm down.
 
 ---
 
