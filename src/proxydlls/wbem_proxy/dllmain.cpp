@@ -16,7 +16,7 @@ class CSpoofWbemServices;
 class CSpoofWbemLocator;
 
 // ============================================================================
-// Spoofed Win32_Processor properties (i9-10900K)
+// Spoofed Win32_Processor props (i9-10900K)
 // ============================================================================
 struct SpoofedProcessor {
     static const wchar_t* Name() { return L"Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz"; }

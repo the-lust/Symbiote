@@ -24,7 +24,7 @@ bool ExceptionHandler::HandleGpFault(uint64_t** regs, uint64_t* rip)
 {
     if (!rip) return false;
     m_logger->Trace(LOG_WHP, "VM #GP fault at RIP 0x%llX - skipping instruction", *rip);
-    // Skip the faulting instruction (assumed 2 bytes for common #GP triggers)
+    // Skip the faulting instruction (assumed 2 bytes for common #GP triggers lol)
     *rip += 2;
     return true;
 }
@@ -33,7 +33,7 @@ bool ExceptionHandler::HandleUdFault(uint64_t** regs, uint64_t* rip)
 {
     if (!rip) return false;
     m_logger->Trace(LOG_WHP, "VM #UD fault at RIP 0x%llX - skipping instruction", *rip);
-    // Skip the undefined instruction (assumed 2 bytes)
+    // Skip the undefiend instruction (assumed 2 bytes)
     *rip += 2;
     return true;
 }

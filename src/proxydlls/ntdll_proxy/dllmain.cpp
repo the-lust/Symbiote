@@ -21,7 +21,7 @@ typedef struct _KEY_VALUE_PARTIAL_INFORMATION {
 
 static Logger g_logger;
 
-// load real ntdll for passthrough
+// load real ntdll for passthru
 static HMODULE GetRealNtdll()
 {
     static HMODULE realNtdll = nullptr;

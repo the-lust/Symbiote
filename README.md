@@ -4,7 +4,7 @@
 
 Genjutsu is a research platform for studing how environment fingerprinting techniques work (used by DRM, anti-cheat, and software licensing systems) and how they can be spoofed from user mode **without custom kernel drivers**. It demonstrates that every common hardware fingerprint vector (CPUID, MSR, KUSER_SHARED_DATA, WMI, registry, syscalls, timing) can be intercepted and spoofed using only Microsofts **Windows Hypervisor Platform (WHP)** API, **VEH (Vectored Exception Handling)**, **IAT patching**, and **proxy DLL shims**.
 
-This is the first open research project of its kind that documents and implements userspace-only spoofing for the full fingerprint surface used by modern DRM and anti-cheat systems. It exists purely for educational study of detection and anti-detection techniqes in controlled enviroments.
+This is the first open research project of its kind that documents and implements userspace-only spoofing for the full fingerprint surface used by modern DRM and anti-cheat systems. It exists purely for educational study of detection and anti-detection techniqes in controlled enviroments lol.
 
 > **WARNING: Educational / security research only.** This porject exists to study fingerprinting mechanisms.
 > It does NOT support any specific aplication, game, or DRM system.
@@ -116,7 +116,7 @@ Target Process (Ring 3)
 
 ### Prerequisites
 
-- Windows 10/11 x64 with Visual Studio 2022 C++ workload
+- Windows 10/11 x64 with Visual Studio 2022 C++ workoad
 - CMake 3.20+
 - Windows SDK (includes `WinHvPlatform.h`)
 - Optional: Hyper-V + Windows Hypervisor Platform enabled
@@ -219,7 +219,7 @@ Tested with engine active (IAT + VEH mode):
 ## Limitations
 
 - WHP `WHvCreatePartition` may return `0xC0351000` on some systems - engine degrades to VEH + IAT-only mode
-- KUSER_SHARED_DATA at `0x7FFE0000` cannot be rewritten from user mode; works via EPT (WHP) or shared memory (VEH)
+- KUSER_SHARED_DATA at `0x7FFE0000` cant be rewritten from user mode; works via EPT (WHP) or shared memory (VEH)
 - IAT patching applies to the main EXE only
 - GPU-intensive apps pass through via GpuBridge (always fall through to real GPU)
 

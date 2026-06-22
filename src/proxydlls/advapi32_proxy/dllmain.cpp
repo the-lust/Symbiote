@@ -15,7 +15,7 @@ static const WCHAR* SPOOFED_BRAND = L"Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz"
 static const WCHAR TARGET_PATH[] = L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0";
 static const WCHAR TARGET_VALUE[] = L"ProcessorNameString";
 
-// Track opened key handles -> whether they match the target path
+// Track opened key handles -> wheter they match the target path
 struct KeyEntry { bool matched; };
 static KeyEntry keyMap[64];
 static int keyCount = 0;

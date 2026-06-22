@@ -103,7 +103,7 @@ typedef struct _SYSTEM_FIRMWARE_TABLE_INFORMATION {
 
 static void SpoofAcpiMadt(void* tableData, ULONG* tableLen)
 {
-    // Verify it's the MADT ('APIC') table
+    // Verify its the MADT ('APIC') table
     char* sig = (char*)tableData;
     if (sig[0] != 'A' || sig[1] != 'P' || sig[2] != 'I' || sig[3] != 'C')
         return;
@@ -136,7 +136,7 @@ static void SpoofAcpiMadt(void* tableData, ULONG* tableLen)
         pos += len;
     }
 
-    // Build new MADT with 20 processor entries
+    // Build new MADT with 20 proccessor entries
     const int targetCount = 20;
     uint8_t newTable[4096];
 
@@ -154,7 +154,7 @@ static void SpoofAcpiMadt(void* tableData, ULONG* tableLen)
         wp += 8;
     }
 
-    // Copy saved non-processor entries (IO APIC, interrupt overrides, etc.)
+    // Copy saved non-processor entrys (IO APIC, interrupt overrides, etc.)
     for (int i = 0; i < savedCount; i++) {
         memcpy(wp, saved[i].data, saved[i].length);
         wp += saved[i].length;
@@ -165,7 +165,7 @@ static void SpoofAcpiMadt(void* tableData, ULONG* tableLen)
     // Update length field in header
     *(ULONG*)(newTable + 4) = newLen;
 
-    // Fix checksum: sum of all bytes must be 0
+    // Fix checkcum: sum of all bytes must be 0
     uint8_t sum = 0;
     for (ULONG i = 0; i < newLen; i++) sum += newTable[i];
     newTable[9] = (uint8_t)((uint8_t)newTable[9] - sum); // Adjust checksum byte
@@ -181,7 +181,7 @@ static void SpoofAcpiMadt(void* tableData, ULONG* tableLen)
 static NTSTATUS NTAPI HookedNtQueryInformationProcess(
     HANDLE ProcessHandle, ULONG InfoClass, PVOID Info, ULONG InfoLen, PULONG RetLen)
 {
-    // Intercept ProcessDebugPort (class 7) - return -1 = no debugger
+    // Intercept ProcessDebugPort (class 7) - return -1 = no debuger
     if (InfoClass == 7) {
         if (Info && InfoLen >= sizeof(int32_t)) {
             *(int32_t*)Info = -1; // 0xFFFFFFFF
@@ -199,7 +199,7 @@ static NTSTATUS NTAPI HookedNtQueryInformationProcess(
         return 0;
     }
 
-    // Intercept ProcessDebugObjectHandle (class 30 = 0x1E) - return NULL
+    // Intercept ProcessDebugObjectHandle (class 30 = 0x1E) - return NULL lol
     if (InfoClass == 30) {
         if (Info && InfoLen >= sizeof(HANDLE)) {
             *(HANDLE*)Info = nullptr;
@@ -210,7 +210,7 @@ static NTSTATUS NTAPI HookedNtQueryInformationProcess(
 
     // Intercept ProcessBasicInformation (class 0) - return real PEB via direct syscall
     if (InfoClass == 0) {
-        // Use direct syscall to avoid the broken InlineHook trampoline
+        // Use direct syscall to avoid the broken InlineHook trampoline lol
         // Read real PEB from TEB
         uint64_t peb = (uint64_t)__readgsqword(0x60);
         if (Info && InfoLen >= sizeof(uintptr_t) * 4) {
@@ -284,7 +284,7 @@ static NTSTATUS NTAPI HookedNtQuerySystemInformation(
             }
         }
 
-        // Also handle size-query case for ACPI MADT (buffer == NULL)
+        // Also handle size-query case for ACPI MADT (buffer was NULL)
         if (InfoClass == 75 && Info && RetLen &&
             status == STATUS_BUFFER_TOO_SMALL) {
             SYSTEM_FIRMWARE_TABLE_INFORMATION* fti = (SYSTEM_FIRMWARE_TABLE_INFORMATION*)Info;

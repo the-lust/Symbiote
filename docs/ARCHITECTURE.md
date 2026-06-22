@@ -6,7 +6,7 @@
 
 Denuvo binds a license token to a composite hardware fingerprint (CPUID, KUSER_SHARED_DATA, MSRs, timing, syscalls, disk/registry, PEB). Hypervisor bypass cracks (late 2025–2026) traditionally load **unsigned kernel drivers** and intercept at VMX/SVM layer.
 
-This project implements the **WHP + SoGen + Proxy DLL** design from [Denuvo-Research](https://the-lust.github.io/Denuvo-Research/) Section 6: use Microsofts Hyper-V (Ring -1) via the **Windows Hypervisor Platform (WHP) API** from **Ring 3**, with no custom kernel driver.
+This project implements the **WHP + SoGen + Proxy DLL** design from [Denuvo-Research](https://the-lust.github.io/Denuvo-Research/) Section 6: use Microsofts Hyper-V (Ring -1) via the **Windows Hypervisor Platform (WHP) API** from **Ring 3**, with no custom kernel driver required.
 
 ## Architecture Overview
 

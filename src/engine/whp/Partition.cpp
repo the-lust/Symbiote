@@ -18,7 +18,7 @@ bool Partition::Create()
         m_logger->Trace(LOG_ERROR, "WHvCreatePartition failed: 0x%08X", hr);
         return false;
     }
-    m_logger->Trace(LOG_WHP, "Partition created: handle=0x%p", m_handle);
+    m_logger->Trace(LOG_WHP, "Partition creatd: handle=0x%p", m_handle);
     return true;
 }
 
