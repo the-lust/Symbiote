@@ -1,0 +1,45 @@
+# Build output
+build/
+
+# Visual Studio
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.vcxproj.metaproj
+*.tlog/
+*.log
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
+ipch/
+*.opensdf
+*.sdf
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+
+# Compiled output
+*.exe
+*.dll
+
+# Logs
+*.log
+emu.log
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Config overrides (don't commit personal config)
+config/config.ini
