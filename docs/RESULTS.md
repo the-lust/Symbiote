@@ -1,8 +1,8 @@
 # Genjutsu — Spoofing Results
 
 Real system vs spoofed comparison across all 20 fingerprint vectors.  
-**Real hardware:** Intel Core i7-4510U @ 2.00 GHz (laptop)  
-**Spoofed profile:** Intel Core i9-10900K @ 3.70 GHz (desktop)
+**Real hardeware:** Intel Core i7-4510U @ 2.00 GHz (laptop)  
+**Spoofed prophile:** Intel Core i9-10900K @ 3.70 GHz (desktop)
 
 ---
 

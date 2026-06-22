@@ -29,7 +29,7 @@ bool CodePatcher::Initialize()
 {
     if (m_initialized) return true;
 
-    // enum all loaded modules
+    // enum all loaded moduels
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
     if (hSnapshot == INVALID_HANDLE_VALUE) {
         m_logger->Trace(LOG_WARNING, "CodePatcher: CreateToolhelp32Snapshot failed (%u) lmao", GetLastError());
@@ -43,7 +43,7 @@ bool CodePatcher::Initialize()
         do {
             if (scannedCount > 20) break; // safety limit
 
-            // skip system DLLs (they have many CPUID calls that would exhaust patch budget)
+            // skip system DLLs cuz they have too many CPUID calls
             bool isSystem = (me.szModule &&
                 (wcsstr(me.szModule, L"ntdll.dll") ||
                  wcsstr(me.szModule, L"kernel32.dll") ||

@@ -39,7 +39,7 @@
   - WinVisor's EPT-based KUSER management directly influenced `whp/KuserSync.cpp` and `whp/EptHook.cpp`
   - Process cloning concept maps to `sogen/ProcessEmu.cpp` virtual process list
   - Syscall forwarding pattern used in `proxy/SoGenBridge.cpp` and `sogen/SyscallDispatcher.cpp`
-  - WHP partition setup code in `whp/Partition.cpp` folows WinVisor conventions
+  - WHP partition setup code in `whp/Partition.cpp` folows WinVisor conventons
 
 - **Action Items for Genjutsu:**
   - Implement full process address space cloning (clone target into WHP sidecar)

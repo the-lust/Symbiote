@@ -14,11 +14,11 @@ How each fingerprint vector works, why anti-cheat/DRM systems use it, and how Ge
 - **Leaves 0x80000002–4**: Processor brand string (48 bytes)
 - **Leaf 0x80000001**: Extended feature flags (SVM on AMD, etc.)
 
-### How it's used for fingerprinting
-DRM (Denuvo, etc.) and anti-cheat call CPUID with multiple leafs to build a hardware signature. The presense of a hypervisor leaf (`0x40000000`) is a red flag for VM detection. Brand string and signature identify the specific CPU model.
+### How its used for fingerprinting
+DRM (Denuvo, etc.) and anti-cheat call CPUID with multiple leafs to build a hardware signature. The presense of a hypervisor leaf (`0x40000000`) is a red flag for VM detection. Brand string and signature identifys the specific CPU model.
 
 ### How Genjutsu spoofs it
-1. **WHP exit handler** (when available): Configures CPUID exit handling on the WHP partition. On every CPUID execution, the VCPU exits to user-space where engine.dll returns spoofed registers from the profile.
+1. **WHP exit handler** (when available): Configures CPUID exit handling on the WHP parition. On every CPUID execution, the VCPU exits to user-space where engine.dll returns spoofed registers from the profile.
 2. **CodePatcher (VEH fallback)**: Scans the target `.text` section for `cpuid` instructions (opcode `0F A2`), overwrites them with `UD2` (`0F 0B`). When the target executs the `UD2`, a VEH handler catches the exception, runs the original CPUID instruction, modifys the result registers, and resumes execution.
 3. **Hypervisor leaf hiding**: Leaves `0x40000000` and `0x40000001` are explicitly zeroed.
 

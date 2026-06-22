@@ -5,7 +5,7 @@
 #include "Logger.h"
 #include "ProxyExport.h"
 
-// argbytes = paramCount * 4. SOCKET is u64 on x64 but pushed as 4 bytes on x86.
+// argbytes = paramCount * 4. SOCKET is u64 on x64 but pushed as 4 bytes on x86 lol.
 // On x86 every param below is 4 bytes; counts are read from the signatures above.
 PROXY_EXPORT(WSAGetLastError,         proxy_WSAGetLastError,          0)  // 0
 PROXY_EXPORT(WSAStartup,              proxy_WSAStartup,               8)  // 2

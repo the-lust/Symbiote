@@ -1,7 +1,7 @@
 #include "SoGenBridge.h"
 #include "sogen/SoGenEmulator.h"
 
-// Set by engine Main.cpp after SoGen emulator is created
+// Set by engine Main.cpp after SoGen emulator is created yo
 static SoGenEmulator* g_bridgeSoGen = nullptr;
 
 void SetSoGenBridge(SoGenEmulator* emu)
