@@ -1,12 +1,12 @@
 # Genjutsu — Research Architecture
 
-**Educational / security research only.** This document describes how the WHP-based Ring-3 research platform models Denuvo-style environment fingerprinting and spoofing, as an alternative to custom ring -1/-2 hypervisors (SimpleSVM, HyperDBG, etc.).
+**Educational / security research only.** This document describes how the WHP-based Ring-3 research platform models Denuvo-style environment fingerprinting and spoofing, as an alternative to custom ring -1/-2 hypervisors (SimpleSVM, HyperDBG, and others).
 
 ## Problem Statement
 
 Denuvo binds a license token to a composite hardware fingerprint (CPUID, KUSER_SHARED_DATA, MSRs, timing, syscalls, disk/registry, PEB). Hypervisor bypass cracks (late 2025–2026) traditionally load **unsigned kernel drivers** and intercept at VMX/SVM layer.
 
-This project implements the **WHP + SoGen + Proxy DLL** design from [Denuvo-Research](https://the-lust.github.io/Denuvo-Research/) Section 6: use Microsoft's Hyper-V (Ring -1) via the **Windows Hypervisor Platform (WHP) API** from **Ring 3**, with no custom kernel driver.
+This project implements the **WHP + SoGen + Proxy DLL** design from [Denuvo-Research](https://the-lust.github.io/Denuvo-Research/) Section 6: use Microsofts Hyper-V (Ring -1) via the **Windows Hypervisor Platform (WHP) API** from **Ring 3**, with no custom kernel driver.
 
 ## Architecture Overview
 
@@ -41,7 +41,7 @@ This project implements the **WHP + SoGen + Proxy DLL** design from [Denuvo-Rese
 | **SoGen emulator** | Minimal in-process kernel: spoofed handles, registry, files, syscalls |
 | **WHP / WinVisor-style** | Sidecar VM + multi-VCPU; EPT maps spoofed KUSER page |
 | **CodePatcher** | UD2 + VEH on CPUID/RDTSC/RDTSCP in target `.text` |
-| **internal test harness** | 9-phase Denuvo-like fingerprint test suite (internal dev only) |
+| **internal verification** | 9-phase fingerprint test suite (internal dev only) |
 
 ## vs Ring -1/-2 Custom Hypervisors
 
@@ -54,7 +54,7 @@ This project implements the **WHP + SoGen + Proxy DLL** design from [Denuvo-Rese
 | Auditability | Obfuscated scene binaries | Full source in Ring 3 |
 | Hyper-V dependency | Disable/compete with VBS | Uses Hyper-V / WHP |
 
-Reference implementation patterns were reviewed in `Desktop/emu/hatsune-miku-hv-src` (HyperKD / SimpleSVM) for **fingerprint field values** (i9-10900K profile, KUSER layout), not for driver loading.
+Reference implementation patterns were reviewed in `Desktop/emu/hatsune-miku-hv-src` (HyperKD / SimpleSVM) for **fingerprint field values** (i9-10900K profile, KUSER structure), not for driver loading.
 
 ## Verification Approach
 

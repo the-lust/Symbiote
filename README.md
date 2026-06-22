@@ -2,14 +2,14 @@
 
 **Ring-3 Windows userspace hardware fingerprint spoofing framework - educational / security research**
 
-Genjutsu is a research platform for studying how environment fingerprinting techniques work (used by DRM, anti-cheat, and software licensing systems) and how they can be spoofed from user mode **without custom kernel drivers**. It demonstrates that every common hardware fingerprint vector (CPUID, MSR, KUSER_SHARED_DATA, WMI, registry, syscalls, timing) can be intercepted and spoofed using only Microsoft's **Windows Hypervisor Platform (WHP)** API, **VEH (Vectored Exception Handling)**, **IAT patching**, and **proxy DLL shims**.
+Genjutsu is a research platform for studing how environment fingerprinting techniques work (used by DRM, anti-cheat, and software licensing systems) and how they can be spoofed from user mode **without custom kernel drivers**. It demonstrates that every common hardware fingerprint vector (CPUID, MSR, KUSER_SHARED_DATA, WMI, registry, syscalls, timing) can be intercepted and spoofed using only Microsofts **Windows Hypervisor Platform (WHP)** API, **VEH (Vectored Exception Handling)**, **IAT patching**, and **proxy DLL shims**.
 
-This is the first open research project of its kind that documents and implements userspace-only spoofing for the full fingerprint surface used by modern DRM and anti-cheat systems. It exists purely for educational study of detection and anti-detection techniques in controlled environments.
+This is the first open research project of its kind that documents and implements userspace-only spoofing for the full fingerprint surface used by modern DRM and anti-cheat systems. It exists purely for educational study of detection and anti-detection techniqes in controlled enviroments.
 
-> **WARNING: Educational / security research only.** This project exists to study fingerprinting mechanisms.
-> It does NOT support any specific application, game, or DRM system.
-> I am NOT responsible for anyone who uses this for any purpose, legal or otherwise.
-> If you use this to violate terms of service or copyright law, that is on you, not me.
+> **WARNING: Educational / security research only.** This porject exists to study fingerprinting mechanisms.
+> It does NOT support any specific aplication, game, or DRM system.
+> I am NOT responsible for anyone who uses this for any porpuse, legal or otherwise.
+> If you use this to violate terms of service or copywrite law, that is on you, not me.
 
 ---
 
@@ -44,14 +44,12 @@ genjutsu/
 │   │   ├── profile/         # CPU/GPU/Storage/Timing profiles
 │   │   └── log/             # Logger subsystem
 │   └── proxydlls/           # 13 proxy DLL shims (ntdll to ws2_32)
-├── internal/                # Dev-only test harness (not shipped)
 ├── scripts/
 │   └── build.bat            # Full build pipeline
 ├── docs/
 │   ├── RESULTS.md           # Real vs spoofed comparison
 │   ├── TECHNIQUES.md        # Per-vector spoofing explainers
 │   └── ARCHITECTURE.md      # Research architecture
-└── AGENTS.md                # AI assistant context
 ```
 
 ---
@@ -215,14 +213,6 @@ Tested with engine active (IAT + VEH mode):
 | Coreinfo64 | CPUID signature 000A0655 (i9-10900K), brand spoofed |
 | Procmon64 | No registry/file/process leaks detected |
 | WinObj64 | No handle leaks |
-
----
-
-## PoC / Internal Tools
-
-The `internal/` directory contains a PoC fingerprint test harness and unit tests used during development. These are NOT shipped or distributed - they exist as internal validation tools only. The PoC runs 57 checks across all 9 detection phases (CPUID, RDTSC, MSR, KUSER, PEB, syscalls, file/registry, WMI, cross-layer consistency) and validates that the real system values are replaced with the spoofed profile.
-
-Results from these tests are documented in `docs/RESULTS.md`.
 
 ---
 

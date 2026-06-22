@@ -20,7 +20,7 @@ Real system vs spoofed comparison across all 20 fingerprint vectors.
 | 0x80000001 | Extended features ECX | `0x121` | `0x121` |
 | 0x80000002–4 | Brand string | (varies) | `Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz` |
 
-**Result:** All CP UID leaves fully spoofed. Hypervisor bit clear. VMM leaves hidden.
+**Result:** All CPUID leaves fully spoofed. Hypervisor bit clear. VMM leafs hidden.
 
 ---
 
@@ -35,7 +35,7 @@ Real system vs spoofed comparison across all 20 fingerprint vectors.
 | QPC value | System clock | System clock (passthrough) |
 | QPC frequency | `0x989680` | `0x989680` (passthrough) |
 
-**Result:** No timing-based hypervisor detection possible. RDTSC values are consistent and monotonic.
+**Result:** No timing-based hypervisor detection possible. RDTSC values are consistant and monotonic.
 
 ---
 
@@ -46,7 +46,7 @@ Real system vs spoofed comparison across all 20 fingerprint vectors.
 | RDMSR from user-mode | Blocked by Windows | Blocked (kernel only) |
 | XGETBV XCR0 | `0x7` (X87+SSE+AVX) | `0x7` |
 
-**Result:** MSRs are kernel-protected on Windows. Engine patches RDMSR/WRMSR instructions if found in target `.text`.
+**Result:** MSRs are kernel-protected on Windows. Engine patches RDMSR/WRMSR instructions if found in the target `.text` segment.
 
 ---
 
