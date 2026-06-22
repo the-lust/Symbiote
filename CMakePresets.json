@@ -1,0 +1,106 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "msvc-x64",
+            "displayName": "MSVC x64 (Release)",
+            "description": "Visual Studio 2022 x64 Release build",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build/msvc/x64",
+            "cacheVariables": {
+                "CMAKE_CONFIGURATION_TYPES": "Release",
+                "GENJUTSU_DEBUG": "OFF"
+            }
+        },
+        {
+            "name": "msvc-x64-debug",
+            "displayName": "MSVC x64 (Debug)",
+            "description": "Visual Studio 2022 x64 Debug build with verbose logging",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build/msvc/x64-debug",
+            "cacheVariables": {
+                "CMAKE_CONFIGURATION_TYPES": "Debug",
+                "GENJUTSU_DEBUG": "ON"
+            }
+        },
+        {
+            "name": "msvc-x86",
+            "displayName": "MSVC x86 (Release)",
+            "description": "Visual Studio 2022 x86 Release build",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "Win32",
+            "binaryDir": "${sourceDir}/build/msvc/x86",
+            "cacheVariables": {
+                "CMAKE_CONFIGURATION_TYPES": "Release",
+                "GENJUTSU_DEBUG": "OFF"
+            }
+        },
+        {
+            "name": "msvc-x86-debug",
+            "displayName": "MSVC x86 (Debug)",
+            "description": "Visual Studio 2022 x86 Debug build with verbose logging",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "Win32",
+            "binaryDir": "${sourceDir}/build/msvc/x86-debug",
+            "cacheVariables": {
+                "CMAKE_CONFIGURATION_TYPES": "Debug",
+                "GENJUTSU_DEBUG": "ON"
+            }
+        },
+        {
+            "name": "mingw-x64",
+            "displayName": "MinGW x64 (Release)",
+            "description": "MinGW-w64 x64 Release build (no WHP)",
+            "generator": "MinGW Makefiles",
+            "binaryDir": "${sourceDir}/build/mingw/x64",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "GENJUTSU_MINGW": "ON"
+            }
+        },
+        {
+            "name": "mingw-x86",
+            "displayName": "MinGW x86 (Release)",
+            "description": "MinGW-w64 x86 Release build (no WHP)",
+            "generator": "MinGW Makefiles",
+            "binaryDir": "${sourceDir}/build/mingw/x86",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "GENJUTSU_MINGW": "ON",
+                "CMAKE_CXX_FLAGS": "-m32"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "msvc-x64",
+            "configurePreset": "msvc-x64",
+            "configuration": "Release"
+        },
+        {
+            "name": "msvc-x64-debug",
+            "configurePreset": "msvc-x64-debug",
+            "configuration": "Debug"
+        },
+        {
+            "name": "msvc-x86",
+            "configurePreset": "msvc-x86",
+            "configuration": "Release"
+        },
+        {
+            "name": "msvc-x86-debug",
+            "configurePreset": "msvc-x86-debug",
+            "configuration": "Debug"
+        },
+        {
+            "name": "mingw-x64",
+            "configurePreset": "mingw-x64"
+        },
+        {
+            "name": "mingw-x86",
+            "configurePreset": "mingw-x86"
+        }
+    ]
+}
