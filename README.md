@@ -233,6 +233,12 @@ Tested with engine active (IAT + VEH mode):
 
 ---
 
+## Special Thanks
+
+Andreh, Daniel Roster, DoctorY, gitgitkit, mojtaba, oureveryday, PRS, SouNobbao, Verix, 0xZeon — thanks for the help with everything.
+
+---
+
 ## License
 
 This project is open source for fair usage and educational study.
