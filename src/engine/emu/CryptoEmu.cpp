@@ -37,7 +37,7 @@ bool CryptoEmu::HandleNtQueryInformationToken(uint64_t* args, uint64_t* result)
         status = realFunc(tokenHandle, infoClass, outBuf, bufLen, retLen);
     }
 
-    m_logger->Trace(LOG_SOGEN, "NtQueryInformationToken class=%d -> 0x%08X",
+    m_logger->Trace(LOG_EMU, "NtQueryInformationToken class=%d -> 0x%08X",
         (int)infoClass, status);
     *result = (uint64_t)status;
     return true;
@@ -59,17 +59,17 @@ bool CryptoEmu::HandleNtOpenProcessToken(uint64_t* args, uint64_t* result)
         status = realFunc(processHandle, access, tokenHandle);
     }
 
-    m_logger->Trace(LOG_SOGEN, "NtOpenProcessToken -> 0x%08X", status);
+    m_logger->Trace(LOG_EMU, "NtOpenProcessToken -> 0x%08X", status);
     *result = (uint64_t)status;
     return true;
 }
 
 bool CryptoEmu::HandleCryptGetProvParam(uint64_t* args, uint64_t* result)
 {
-    // CryptGetProvParam is used by Denuvo to get CryptoAPI container name
+    // CryptGetProvParam is used to get CryptoAPI container name
     // This is a Win32 API, not a syscall. Intercepted via IAT patch.
-    // If we get here via SoGen, we spoof the provider params.
-    m_logger->Trace(LOG_SOGEN, "CryptGetProvParam intercepted");
+    // If we get here via the emulator, we spoof the provider params.
+    m_logger->Trace(LOG_EMU, "CryptGetProvParam intercepted");
     *result = 0; // success with default/safe values
     return true;
 }
@@ -93,7 +93,7 @@ bool CryptoEmu::HandleNtDuplicateToken(uint64_t* args, uint64_t* result)
         status = realFunc(existingHandle, access, attr, effectiveOnly, tokenType, newHandle);
     }
 
-    m_logger->Trace(LOG_SOGEN, "NtDuplicateToken -> 0x%08X", status);
+    m_logger->Trace(LOG_EMU, "NtDuplicateToken -> 0x%08X", status);
     *result = (uint64_t)status;
     return true;
 }

@@ -94,7 +94,7 @@ bool MemoryEmu::HandleNtAllocateVirtualMemory(uint64_t* args, uint64_t* result)
     }
 
     *result = (uint64_t)status;
-    m_logger->Trace(LOG_SOGEN, "NtAllocateVirtualMemory -> 0x%08X base=%p size=%zu", status, baseAddr, regionSize);
+    m_logger->Trace(LOG_EMU, "NtAllocateVirtualMemory -> 0x%08X base=%p size=%zu", status, baseAddr, regionSize);
     return true;
 }
 
@@ -115,7 +115,7 @@ bool MemoryEmu::HandleNtFreeVirtualMemory(uint64_t* args, uint64_t* result)
     }
 
     *result = (uint64_t)status;
-    m_logger->Trace(LOG_SOGEN, "NtFreeVirtualMemory -> 0x%08X", status);
+    m_logger->Trace(LOG_EMU, "NtFreeVirtualMemory -> 0x%08X", status);
     return true;
 }
 
@@ -136,7 +136,7 @@ bool MemoryEmu::HandleNtProtectVirtualMemory(uint64_t* args, uint64_t* result)
         status = ok ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
     }
 
-    m_logger->Trace(LOG_SOGEN, "NtProtectVirtualMemory -> 0x%08X", status);
+    m_logger->Trace(LOG_EMU, "NtProtectVirtualMemory -> 0x%08X", status);
     *result = (uint64_t)status;
     return true;
 }

@@ -3,12 +3,11 @@
 #include <unordered_map>
 #include "Logger.h"
 
-class CpuProfile;
-class TimingProfile;
+class IKernelBackend;
 
 class CodePatcher {
 public:
-    CodePatcher(Logger* logger, CpuProfile* cpuProfile, TimingProfile* timingProfile);
+    CodePatcher(Logger* logger, IKernelBackend* backend);
     ~CodePatcher();
 
     bool Initialize();
@@ -25,8 +24,7 @@ private:
     using PatchMap = std::unordered_map<void*, PatchEntry>;
 
     Logger* m_logger;
-    CpuProfile* m_cpuProfile;
-    TimingProfile* m_timingProfile;
+    IKernelBackend* m_backend;
     PatchMap m_patches;
     void* m_vehHandle;
     CRITICAL_SECTION m_cs;

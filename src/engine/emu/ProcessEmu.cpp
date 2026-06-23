@@ -189,13 +189,13 @@ void ProcessEmu::BuildVirtualProcessList()
 
     addProc(GetCurrentProcessId(), 0x2F0, gameName.c_str(), 1, 80, 8);
 
-    m_logger->Trace(LOG_SOGEN, "Built virtual process list with %zu entries",
+    m_logger->Trace(LOG_EMU, "Built virtual process list with %zu entries",
         m_virtualProcessList.size());
 }
 
 uint64_t ProcessEmu::GetSpoofedPebField(uint32_t offset)
 {
-    // PEB fields that Denuvo reads for fingerprinting
+    // PEB fields read for fingerprinting
     switch (offset) {
         case 0x0B8: return 0; // TlsExpansionCounter
         case 0x118: return (uint64_t)(uintptr_t)GetProcessHeap(); // ProcessParameters
@@ -213,7 +213,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
     uint32_t infoLength = static_cast<uint32_t>(args[2]);
     uint64_t returnLengthPtr = args[3];
 
-    m_logger->Trace(LOG_SOGEN, "NtQuerySystemInformation class=0x%X length=0x%X",
+    m_logger->Trace(LOG_EMU, "NtQuerySystemInformation class=0x%X length=0x%X",
         infoClass, infoLength);
 
     switch (infoClass) {
@@ -324,7 +324,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
         }
 
         case 0x0B: { // SystemModuleInformation
-            // Denuvo enumerates kernel modules to detect unsigned drivers
+            // Some implementations enumerate kernel modules to detect unsigned drivers
             // Return empty module list
             uint32_t neededSize = sizeof(uint32_t); // just entry count = 0
             if (infoLength < neededSize) {
@@ -335,7 +335,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             *(uint32_t*)infoBuffer = 0; // zero modules
             if (returnLengthPtr) *(uint32_t*)returnLengthPtr = neededSize;
             *result = STATUS_SUCCESS;
-            m_logger->Trace(LOG_SOGEN, "SystemModuleInformation: returned empty list (0 modules)");
+            m_logger->Trace(LOG_EMU, "SystemModuleInformation: returned empty list (0 modules)");
             return true;
         }
 
@@ -529,7 +529,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             fti->FirmwareTableBuffer = tableBuffer;
             fti->FirmwareTableBufferLength = pos;
             *result = STATUS_SUCCESS;
-            m_logger->Trace(LOG_SOGEN, "SMBIOS 3.2 spoofed: %u bytes, Type4 handle=4", pos);
+            m_logger->Trace(LOG_EMU, "SMBIOS 3.2 spoofed: %u bytes, Type4 handle=4", pos);
             return true;
         }
 
@@ -549,7 +549,7 @@ bool ProcessEmu::HandleNtOpenProcess(uint64_t* args, uint64_t* result)
     ACCESS_MASK access = (ACCESS_MASK)args[1];
     uint32_t pid = (uint32_t)args[3];
 
-    m_logger->Trace(LOG_SOGEN, "NtOpenProcess: access=0x%X pid=%u", access, pid);
+    m_logger->Trace(LOG_EMU, "NtOpenProcess: access=0x%X pid=%u", access, pid);
 
     HMODULE nt = GetModuleHandleA("ntdll.dll");
     if (!nt) { *result = STATUS_ACCESS_DENIED; return true; }
@@ -572,7 +572,7 @@ bool ProcessEmu::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* resul
 {
     uint32_t infoClass = static_cast<uint32_t>(args[2]);
 
-    m_logger->Trace(LOG_SOGEN, "NtQueryInformationProcess class=0x%X", infoClass);
+    m_logger->Trace(LOG_EMU, "NtQueryInformationProcess class=0x%X", infoClass);
 
     switch (infoClass) {
         case 0x07: {

@@ -1,22 +1,13 @@
 #include "CpuidHandler.h"
-#include "profile/CpuProfile.h"
-#include <intrin.h>
+#include "kernel/IKernelBackend.h"
 
-CpuidHandler::CpuidHandler(Logger* logger, CpuProfile* cpuProfile)
-    : m_logger(logger), m_cpuProfile(cpuProfile)
+CpuidHandler::CpuidHandler(Logger* logger, IKernelBackend* backend)
+    : m_logger(logger), m_backend(backend)
 {
 }
 
 CpuidHandler::~CpuidHandler()
 {
-}
-
-void CpuidHandler::LoadSpoofs()
-{
-    if (m_cpuProfile) {
-        m_cpuProfile->LoadFromConfig();
-    }
-    m_logger->Trace(LOG_CPUID, "CPUID spoofs loaded");
 }
 
 bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t* rbx,
@@ -35,16 +26,14 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t
         return true;
     }
 
-    // magic cpuid already handled in VcpuManager
-
     bool spoofed = false;
-    uint32_t eax, ebx, ecx, edx;
+    CpuidResult result;
 
-    if (m_cpuProfile && m_cpuProfile->GetSpoof(leaf, subleaf, &eax, &ebx, &ecx, &edx)) {
-        *rax = eax;
-        *rbx = ebx;
-        *rcx = ecx;
-        *rdx = edx;
+    if (m_backend && m_backend->HandleCpuid(leaf, subleaf, result)) {
+        *rax = result.eax;
+        *rbx = result.ebx;
+        *rcx = result.ecx;
+        *rdx = result.edx;
         spoofed = true;
     } else {
         int cpuInfo[4] = {0};

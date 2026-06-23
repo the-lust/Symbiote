@@ -6,8 +6,6 @@
 #include "MsrHandler.h"
 #include "MagicCpuid.h"
 #include "ExceptionHandler.h"
-#include "sogen/SoGenEmulator.h"
-#include "profile/CpuProfile.h"
 #include <cstring>
 #include <intrin.h>
 
@@ -15,11 +13,11 @@
 
 VcpuManager::VcpuManager(Logger* logger, Partition* partition, ExitDispatcher* exitDispatcher,
                          CpuidHandler* cpuidHandler, RdtscHandler* rdtscHandler,
-                         MsrHandler* msrHandler, CpuProfile* cpuProfile)
+                         MsrHandler* msrHandler)
     : m_logger(logger), m_partition(partition), m_exitDispatcher(exitDispatcher),
       m_cpuidHandler(cpuidHandler), m_rdtscHandler(rdtscHandler),
-      m_msrHandler(msrHandler), m_cpuProfile(cpuProfile),
-      m_magicCpuid(nullptr), m_soGenEmulator(nullptr),
+      m_msrHandler(msrHandler),
+      m_magicCpuid(nullptr), m_syscallHandler(nullptr),
       m_exceptionHandler(nullptr),
       m_vcpuCount(0), m_bootCodeLoaded(false)
 {

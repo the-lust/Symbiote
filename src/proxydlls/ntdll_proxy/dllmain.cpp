@@ -34,17 +34,16 @@ static HMODULE GetRealNtdll()
     return realNtdll;
 }
 
-// Get SoGen route fucntion from engine.dll
-typedef bool (__stdcall* SoGenRoute_t)(uint64_t, uint64_t*, uint64_t*);
-static SoGenRoute_t GetSoGenRoute()
+typedef bool (__stdcall* RouteSyscall_t)(uint64_t, uint64_t*, uint64_t*);
+static RouteSyscall_t GetRouteSyscall()
 {
-    static SoGenRoute_t route = nullptr;
+    static RouteSyscall_t route = nullptr;
     static bool init = false;
     if (!init) {
         init = true;
         HMODULE hEngine = GetModuleHandleW(L"engine.dll");
         if (hEngine) {
-            route = (SoGenRoute_t)GetProcAddress(hEngine, "SoGenRouteSyscall");
+            route = (RouteSyscall_t)GetProcAddress(hEngine, "RouteSyscall");
         }
     }
     return route;
@@ -94,7 +93,7 @@ struct NtQuerySystemInfoArgs {
 extern "C" NTSTATUS NTAPI Proxy_NtQuerySystemInformation(
     ULONG InfoClass, PVOID Info, ULONG Length, PULONG ReturnLength)
 {
-    SoGenRoute_t route = GetSoGenRoute();
+    RouteSyscall_t route = GetRouteSyscall();
     if (route) {
         uint64_t args[4] = { InfoClass, (uint64_t)Info, Length, (uint64_t)ReturnLength };
         uint64_t result = 0;
@@ -125,7 +124,7 @@ struct NtQueryInformationProcessArgs {
 extern "C" NTSTATUS NTAPI Proxy_NtQueryInformationProcess(
     HANDLE ProcessHandle, ULONG InfoClass, PVOID Info, ULONG Length, PULONG ReturnLength)
 {
-    SoGenRoute_t route = GetSoGenRoute();
+    RouteSyscall_t route = GetRouteSyscall();
     if (route) {
         uint64_t args[5] = { (uint64_t)ProcessHandle, InfoClass, (uint64_t)Info, Length, (uint64_t)ReturnLength };
         uint64_t result = 0;

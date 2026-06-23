@@ -13,7 +13,7 @@ if not "%1"=="" (
     if /i "%1"=="mingw-x86" set PRESET=mingw-x86
 )
 
-echo === Genjutsu Build System ===
+echo === Symbiote Build System ===
 echo Preset: %PRESET%
 echo Root: %ROOT%
 echo.

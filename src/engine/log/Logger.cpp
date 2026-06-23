@@ -10,7 +10,7 @@ static const char* CategoryToString(LogCategory cat) {
         case LOG_WARNING: return "WARN";
         case LOG_ERROR: return "ERR";
         case LOG_WHP: return "WHP";
-        case LOG_SOGEN: return "SOGEN";
+        case LOG_EMU: return "EMU";
         case LOG_PROXY: return "PROXY";
         case LOG_EPT: return "EPT";
         case LOG_CPUID: return "CPUID";

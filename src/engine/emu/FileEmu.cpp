@@ -72,7 +72,7 @@ bool FileEmu::IsSensitiveFile(const std::wstring& path) const
 bool FileEmu::HandleNtCreateFile(uint64_t* args, uint64_t* result)
 {
     std::wstring path = GetFileNameFromCreateArgs(args);
-    m_logger->Trace(LOG_SOGEN, "NtCreateFile: %ls", path.c_str());
+    m_logger->Trace(LOG_EMU, "NtCreateFile: %ls", path.c_str());
 
     if (IsSensitiveFile(path)) {
         *result = STATUS_OBJECT_NAME_NOT_FOUND;
@@ -135,7 +135,7 @@ bool FileEmu::HandleNtDeviceIoControlFile(uint64_t* args, uint64_t* result)
 {
     uint32_t ioControlCode = (uint32_t)args[5];
 
-    m_logger->Trace(LOG_SOGEN, "NtDeviceIoControlFile code=0x%X", ioControlCode);
+    m_logger->Trace(LOG_EMU, "NtDeviceIoControlFile code=0x%X", ioControlCode);
 
     switch (ioControlCode) {
         case IOCTL_STORAGE_QUERY_PROPERTY: {

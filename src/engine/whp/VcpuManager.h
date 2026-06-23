@@ -8,16 +8,15 @@ class ExitDispatcher;
 class CpuidHandler;
 class RdtscHandler;
 class MsrHandler;
-class CpuProfile;
 class MagicCpuid;
-class SoGenEmulator;
 class ExceptionHandler;
+using SyscallHandler = bool(uint64_t syscallNumber, uint64_t* args, uint64_t* result);
 
 class VcpuManager {
 public:
     VcpuManager(Logger* logger, Partition* partition, ExitDispatcher* exitDispatcher,
                 CpuidHandler* cpuidHandler, RdtscHandler* rdtscHandler,
-                MsrHandler* msrHandler, CpuProfile* cpuProfile);
+                MsrHandler* msrHandler);
     ~VcpuManager();
 
     bool CreateVcpu(uint32_t vcpuIndex);
@@ -25,7 +24,7 @@ public:
     void Stop(uint32_t vcpuIndex);
 
     void SetMagicCpuid(MagicCpuid* magic) { m_magicCpuid = magic; }
-    void SetSoGenEmulator(SoGenEmulator* emu) { m_soGenEmulator = emu; }
+    void SetSyscallHandler(SyscallHandler* handler) { m_syscallHandler = handler; }
     void SetExceptionHandler(ExceptionHandler* handler) { m_exceptionHandler = handler; }
 
 private:
@@ -41,9 +40,8 @@ private:
     CpuidHandler* m_cpuidHandler;
     RdtscHandler* m_rdtscHandler;
     MsrHandler* m_msrHandler;
-    CpuProfile* m_cpuProfile;
     MagicCpuid* m_magicCpuid;
-    SoGenEmulator* m_soGenEmulator;
+    SyscallHandler* m_syscallHandler;
     ExceptionHandler* m_exceptionHandler;
 
     struct VcpuContext {

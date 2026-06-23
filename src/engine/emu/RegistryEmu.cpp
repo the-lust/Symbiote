@@ -86,12 +86,12 @@ bool RegistryEmu::HandleNtOpenKey(uint64_t* args, uint64_t* result)
 
     if (sensitive) {
         *result = STATUS_OBJECT_NAME_NOT_FOUND;
-        m_logger->Trace(LOG_SOGEN, "NtOpenKey BLOCKED: %s", path.c_str());
+        m_logger->Trace(LOG_EMU, "NtOpenKey BLOCKED: %s", path.c_str());
         return true;
     }
 
     // non-sensitive, fall through
-    m_logger->Trace(LOG_SOGEN, "NtOpenKey fall through: %s", path.c_str());
+    m_logger->Trace(LOG_EMU, "NtOpenKey fall through: %s", path.c_str());
     return false;
 }
 

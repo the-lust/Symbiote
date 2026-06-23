@@ -1,4 +1,4 @@
-# Genjutsu - MinGW Makefile
+# Symbiote - MinGW Makefile
 # Requires: mingw-w64, cmake (or use CMakeLists.txt for full build)
 
 CXX      ?= g++
@@ -17,6 +17,10 @@ BIN_DIR   := $(BUILD_DIR)/bin
 
 ENGINE_SRCS := \
     $(SRC_DIR)/engine/Main.cpp \
+    $(SRC_DIR)/engine/kernel/SystemProfile.cpp \
+    $(SRC_DIR)/engine/kernel/KernelBackend.cpp \
+    $(SRC_DIR)/engine/kernel/MinimalKernel.cpp \
+    $(SRC_DIR)/engine/whp/AllocTracker.cpp \
     $(SRC_DIR)/engine/whp/CodePatcher.cpp \
     $(SRC_DIR)/engine/whp/CpuidHandler.cpp \
     $(SRC_DIR)/engine/whp/ExceptionHandler.cpp \
@@ -31,31 +35,28 @@ ENGINE_SRCS := \
     $(SRC_DIR)/engine/whp/RdtscHandler.cpp \
     $(SRC_DIR)/engine/whp/ThreadScheduler.cpp \
     $(SRC_DIR)/engine/whp/VcpuManager.cpp \
-    $(SRC_DIR)/engine/sogen/CryptoEmu.cpp \
-    $(SRC_DIR)/engine/sogen/FileEmu.cpp \
-    $(SRC_DIR)/engine/sogen/MemoryEmu.cpp \
-    $(SRC_DIR)/engine/sogen/ObjectEmu.cpp \
-    $(SRC_DIR)/engine/sogen/PeLoader.cpp \
-    $(SRC_DIR)/engine/sogen/ProcessEmu.cpp \
-    $(SRC_DIR)/engine/sogen/RegistryEmu.cpp \
-    $(SRC_DIR)/engine/sogen/SectionEmu.cpp \
-    $(SRC_DIR)/engine/sogen/SoGenEmulator.cpp \
-    $(SRC_DIR)/engine/sogen/SyscallDispatcher.cpp \
-    $(SRC_DIR)/engine/sogen/SyscallNames.cpp \
-    $(SRC_DIR)/engine/sogen/ThreadManager.cpp \
-    $(SRC_DIR)/engine/sogen/TimingEmu.cpp \
-    $(SRC_DIR)/engine/sogen/VirtualState.cpp \
-    $(SRC_DIR)/engine/profile/CpuProfile.cpp \
+    $(SRC_DIR)/engine/emu/CryptoEmu.cpp \
+    $(SRC_DIR)/engine/emu/FileEmu.cpp \
+    $(SRC_DIR)/engine/emu/MemoryEmu.cpp \
+    $(SRC_DIR)/engine/emu/ObjectEmu.cpp \
+    $(SRC_DIR)/engine/emu/PeLoader.cpp \
+    $(SRC_DIR)/engine/emu/ProcessEmu.cpp \
+    $(SRC_DIR)/engine/emu/RegistryEmu.cpp \
+    $(SRC_DIR)/engine/emu/SectionEmu.cpp \
+    $(SRC_DIR)/engine/emu/SyscallNames.cpp \
+    $(SRC_DIR)/engine/emu/ThreadManager.cpp \
+    $(SRC_DIR)/engine/emu/TimingEmu.cpp \
+    $(SRC_DIR)/engine/emu/VirtualState.cpp \
     $(SRC_DIR)/engine/profile/GpuProfile.cpp \
     $(SRC_DIR)/engine/profile/StorageProfile.cpp \
-    $(SRC_DIR)/engine/profile/TimingProfile.cpp \
     $(SRC_DIR)/engine/proxy/Fallthrough.cpp \
     $(SRC_DIR)/engine/proxy/GpuBridge.cpp \
     $(SRC_DIR)/engine/proxy/IatPatch.cpp \
     $(SRC_DIR)/engine/proxy/InlineHook.cpp \
+    $(SRC_DIR)/engine/proxy/InstructionDecoder.cpp \
     $(SRC_DIR)/engine/proxy/ModuleCloak.cpp \
     $(SRC_DIR)/engine/proxy/ProxyBase.cpp \
-    $(SRC_DIR)/engine/proxy/SoGenBridge.cpp \
+    $(SRC_DIR)/engine/proxy/SyscallBridge.cpp \
     $(SRC_DIR)/launcher/ConfigParser.cpp \
     $(SRC_DIR)/engine/log/Logger.cpp
 
@@ -74,10 +75,10 @@ LAUNCHER_OBJS  := $(LAUNCHER_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 all: dirs engine launcher
 
 dirs:
-	@mkdir -p $(BUILD_DIR)/engine/whp $(BUILD_DIR)/engine/sogen $(BUILD_DIR)/engine/profile $(BUILD_DIR)/engine/proxy $(BUILD_DIR)/engine/log $(BUILD_DIR)/engine/launcher $(BUILD_DIR)/launcher $(BIN_DIR)
+	@mkdir -p $(BUILD_DIR)/engine/kernel $(BUILD_DIR)/engine/whp $(BUILD_DIR)/engine/emu $(BUILD_DIR)/engine/profile $(BUILD_DIR)/engine/proxy $(BUILD_DIR)/engine/log $(BUILD_DIR)/engine/launcher $(BUILD_DIR)/launcher $(BIN_DIR)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -I$(SRC_DIR)/engine -I$(SRC_DIR)/engine/log -I$(SRC_DIR)/launcher -DGENJUTSU_MINGW -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR)/engine -I$(SRC_DIR)/engine/log -I$(SRC_DIR)/launcher -DSYMBIOTE_MINGW -c -o $@ $<
 
 engine: $(ENGINE_OBJS)
 	$(CXX) -shared -o $(BIN_DIR)/engine.dll $^ $(LDFLAGS)

@@ -4,9 +4,11 @@
 #include <atomic>
 #include "Logger.h"
 
+class IKernelBackend;
+
 class RdtscHandler {
 public:
-    explicit RdtscHandler(Logger* logger, class CpuProfile* cpuProfile, class TimingProfile* timingProfile);
+    explicit RdtscHandler(Logger* logger, IKernelBackend* backend);
 
     bool HandleRdtsc(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t* rdx, uint64_t* rip);
     bool HandleRdtscp(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t* rdx, uint64_t* rcx, uint64_t* rip);
@@ -19,8 +21,7 @@ public:
 
 private:
     Logger* m_logger;
-    class CpuProfile* m_cpuProfile;
-    class TimingProfile* m_timingProfile;
+    IKernelBackend* m_backend;
     uint64_t m_tscOffset;
 
     std::atomic<uint64_t> m_lastTsc;

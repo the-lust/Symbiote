@@ -147,7 +147,7 @@ int main(int argc, char** argv)
 
     // Allow engine thread to finish hook installation before target main runs
     // Wait for engine ready event (created by engine.dll on init complete)
-    HANDLE hEngineReady = OpenEventW(EVENT_ALL_ACCESS, FALSE, L"GenjutsuEngineReady");
+    HANDLE hEngineReady = OpenEventW(EVENT_ALL_ACCESS, FALSE, L"SymbioteEngineReady");
     if (hEngineReady) {
         WaitForSingleObject(hEngineReady, 5000);
         CloseHandle(hEngineReady);

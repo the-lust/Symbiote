@@ -8,7 +8,7 @@ enum LogCategory {
     LOG_WARNING = 1,
     LOG_ERROR = 2,
     LOG_WHP = 3,
-    LOG_SOGEN = 4,
+    LOG_EMU = 4,
     LOG_PROXY = 5,
     LOG_EPT = 6,
     LOG_CPUID = 7,

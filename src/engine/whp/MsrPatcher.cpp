@@ -1,6 +1,5 @@
 #include "MsrPatcher.h"
-#include "profile/CpuProfile.h"
-#include "profile/TimingProfile.h"
+#include "kernel/IKernelBackend.h"
 #include <tlhelp32.h>
 #include <string>
 
@@ -8,8 +7,8 @@
 
 MsrPatcher* MsrPatcher::s_instance = nullptr;
 
-MsrPatcher::MsrPatcher(Logger* logger, CpuProfile* cpuProfile, TimingProfile* timingProfile)
-    : m_logger(logger), m_cpuProfile(cpuProfile), m_timingProfile(timingProfile),
+MsrPatcher::MsrPatcher(Logger* logger, IKernelBackend* backend)
+    : m_logger(logger), m_backend(backend),
       m_vehHandle(nullptr), m_initialized(false)
 {
     InitializeCriticalSection(&m_cs);
@@ -114,7 +113,6 @@ bool MsrPatcher::ScanModule(const wchar_t* moduleName, uint8_t* baseAddr, SIZE_T
 {
     if (!baseAddr || moduleSize < 0x1000) return false;
 
-    // skip ourselves
     if (moduleName && (wcsstr(moduleName, L"engine.dll") || wcsstr(moduleName, L"ENGINE.DLL"))) {
         return false;
     }
@@ -130,7 +128,7 @@ bool MsrPatcher::ScanModule(const wchar_t* moduleName, uint8_t* baseAddr, SIZE_T
     WORD sectionCount = nt->FileHeader.NumberOfSections;
 
     static const size_t MAX_PATCHES = 200;
-    static const uint32_t MAX_SECTION_SIZE = 50 * 1024 * 1024; // 50 MB
+    static const uint32_t MAX_SECTION_SIZE = 50 * 1024 * 1024;
 
     for (WORD i = 0; i < sectionCount; i++) {
         IMAGE_SECTION_HEADER* section = &sections[i];
@@ -158,7 +156,6 @@ bool MsrPatcher::ScanSection(uint8_t* sectionStart, SIZE_T sectionSize)
 
         void* addr = sectionStart + i;
 
-        // RDMSR: 0F 32
         if (sectionStart[i] == 0x0F && sectionStart[i + 1] == 0x32) {
             EnterCriticalSection(&m_cs);
             if (m_patches.find(addr) == m_patches.end()) {
@@ -174,7 +171,6 @@ bool MsrPatcher::ScanSection(uint8_t* sectionStart, SIZE_T sectionSize)
             continue;
         }
 
-        // WRMSR: 0F 30
         if (sectionStart[i] == 0x0F && sectionStart[i + 1] == 0x30) {
             EnterCriticalSection(&m_cs);
             if (m_patches.find(addr) == m_patches.end()) {
@@ -199,16 +195,11 @@ uint64_t MsrPatcher::HandleMsrRead(uint32_t msr)
 
     switch (msr) {
         case 0x10: // MSR_IA32_TSC
-            if (m_timingProfile) {
-                uint64_t realTsc = __rdtsc();
-                result = realTsc + m_timingProfile->GetTscOffset();
-            } else {
-                result = __rdtsc();
-            }
+            result = __rdtsc() + m_backend->GetTscOffset();
             break;
 
         case 0x17: // MSR_IA32_APIC_BASE
-            result = 0xFEE00000ULL | (1ULL << 11); // APIC enabled, BSP
+            result = 0xFEE00000ULL | (1ULL << 11);
             break;
 
         case 0x1B: // MSR_IA32_APIC_INTERRUPT_TARGET
@@ -216,7 +207,7 @@ uint64_t MsrPatcher::HandleMsrRead(uint32_t msr)
             break;
 
         case 0x8B: // MSR_IA32_PLATFORM_ID
-            result = 0x4000000000000ULL; // 0x400 = Max Efficiency Frequency
+            result = 0x4000000000000ULL;
             break;
 
         case 0xE2: // MSR_PKG_CST_CONFIG_CONTROL
@@ -224,9 +215,8 @@ uint64_t MsrPatcher::HandleMsrRead(uint32_t msr)
             break;
 
         case 0xCE: // MSR_IA32_PERF_STATUS
-            // Report max ratio (0x2800 = 40.00 ratio = 4000 MHz for e.g.)
-            if (m_cpuProfile && m_cpuProfile->GetTscFrequency() > 0) {
-                uint64_t freqMHz = m_cpuProfile->GetTscFrequency() / 1000000;
+            if (m_backend && m_backend->GetTscFrequency() > 0) {
+                uint64_t freqMHz = m_backend->GetTscFrequency() / 1000000;
                 result = (freqMHz & 0xFF) << 8;
             } else {
                 result = 0x2800;
@@ -246,7 +236,7 @@ uint64_t MsrPatcher::HandleMsrRead(uint32_t msr)
             break;
 
         case 0x1AA: // MSR_IA32_MCG_CAP
-            result = 0x000000000000000EULL; // 14 MCA banks
+            result = 0x000000000000000EULL;
             break;
 
         case 0xFE: // MSR_IA32_MTRRCAP
@@ -254,39 +244,35 @@ uint64_t MsrPatcher::HandleMsrRead(uint32_t msr)
             break;
 
         case 0x2FF: // MSR_IA32_MTRR_DEF_TYPE
-            result = 0x0000000000000C00ULL; // MTRR enabled, Write-back
+            result = 0x0000000000000C00ULL;
             break;
 
         case 0xC0000080: // MSR_IA32_EFER
-            result = 0x0000000000000D01ULL; // NXE, LME, LMA, SCE
+            result = 0x0000000000000D01ULL;
             break;
-
-        // --- Turbo Ratio & Power MSRs (CPU-Z/AIDA64 read these) ---
 
         case 0x1AC: // MSR_TURBO_RATIO_LIMIT1
-            result = 0x0000000000000035ULL; // #1-core turbo ratio = 53
+            result = 0x0000000000000035ULL;
             break;
 
-        case 0x1AD: // MSR_TURBO_RATIO_LIMIT (8-core limits)
-            // i9-10900K: 1-2C=53, 3-4C=51, 5-6C=50, 7-8C=49
+        case 0x1AD: // MSR_TURBO_RATIO_LIMIT
             result = 0x3131323233333535ULL;
             break;
 
-        case 0x1AE: // MSR_TURBO_RATIO_LIMIT_CORES (9-10 core limits)
-            // i9-10900K: 9-10C=48
+        case 0x1AE: // MSR_TURBO_RATIO_LIMIT_CORES
             result = 0x0030003000000000ULL;
             break;
 
         case 0x1FC: // MSR_POWER_CTL
-            result = 0x0000000000000040ULL; // Package C-State limit enabled
+            result = 0x0000000000000040ULL;
             break;
 
         case 0x606: // MSR_RAPL_POWER_UNIT
-            result = 0x0000000A0E001003ULL; // 1W power unit, 0.3s time unit
+            result = 0x0000000A0E001003ULL;
             break;
 
         case 0x610: // MSR_PKG_POWER_LIMIT
-            result = 0x0000B3CA001500C0ULL; // 250W PL1, 320W PL2 (i9-10900K typical)
+            result = 0x0000B3CA001500C0ULL;
             break;
 
         case 0x611: // MSR_PKG_ENERGY_STATUS
@@ -294,11 +280,11 @@ uint64_t MsrPatcher::HandleMsrRead(uint32_t msr)
             break;
 
         case 0x614: // MSR_PKG_POWER_INFO
-            result = 0x00000000000000C8ULL; // 200W thermal design power
+            result = 0x00000000000000C8ULL;
             break;
 
         case 0x648: // MSR_CONFIG_TDP_NOMINAL
-            result = 0x0000000000000037ULL; // 55 ratio = 5.5 GHz (actually 3.7 GHz base for i9-10900K)
+            result = 0x0000000000000037ULL;
             break;
 
         case 0x649: // MSR_CONFIG_TDP_LEVEL1
@@ -313,15 +299,11 @@ uint64_t MsrPatcher::HandleMsrRead(uint32_t msr)
             result = 0x0000000000000000ULL;
             break;
 
-        // --- Thermal MSRs (AIDA64 reads these) ---
-
         case 0x19C: // MSR_IA32_THERM_STATUS
-            // Bit 0 = thermal throttle, bit 31 = PROCHOT
-            result = 0x0000000000000000ULL; // No thermal throttle
+            result = 0x0000000000000000ULL;
             break;
 
         case 0x1A2: // MSR_IA32_TEMPERATURE_TARGET
-            // bits 23:16 = TjMax = 100°C (typical for i9-10900K)
             result = 0x0000000000640000ULL;
             break;
 
@@ -338,11 +320,11 @@ uint64_t MsrPatcher::HandleMsrRead(uint32_t msr)
             break;
 
         case 0x19A: // MSR_IA32_CLOCK_MODULATION
-            result = 0x0000000000000000ULL; // Clock modulation disabled
+            result = 0x0000000000000000ULL;
             break;
 
         case 0x1B0: // MSR_IA32_ENERGY_PERF_BIAS
-            result = 0x0000000000000006ULL; // Balanced performance
+            result = 0x0000000000000006ULL;
             break;
 
         default:
@@ -380,13 +362,11 @@ LONG MsrPatcher::OnException(EXCEPTION_POINTERS* ep)
     LeaveCriticalSection(&m_cs);
 
     if (pe.isWrite) {
-        // WRMSR Ã¢â‚¬â€ just log and skip (can't execute it from user mode)
         uint32_t msr = (uint32_t)ctx->Rcx;
         uint64_t value = (ctx->Rdx << 32) | (ctx->Rax & 0xFFFFFFFF);
         m_logger->Trace(LOG_INFO, "MsrPatcher: WRMSR(0x%X) = 0x%llX (blocked)", msr, value);
         ctx->Rip += pe.instrLength;
     } else {
-        // RDMSR Ã¢â‚¬â€ return spoofed value
         uint32_t msr = (uint32_t)ctx->Rcx;
         uint64_t value = HandleMsrRead(msr);
         ctx->Rax = value & 0xFFFFFFFF;
