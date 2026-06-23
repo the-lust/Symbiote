@@ -13,6 +13,7 @@ enum LogCategory {
     LOG_EPT = 6,
     LOG_CPUID = 7,
     LOG_TIMING = 8,
+    LOG_DEBUG = 9,
 };
 
 class Logger {

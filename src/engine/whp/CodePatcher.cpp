@@ -375,7 +375,7 @@ LONG CodePatcher::OnException(EXCEPTION_POINTERS* ep)
             ctx->Rdx = (spoofedTsc >> 32) & 0xFFFFFFFF;
             ctx->Rip += pe.instrLength;
 
-            m_logger->Trace(LOG_TIMING, "CodePatcher RDTSC => 0x%llX (offset=0x%llX)", spoofedTsc, m_timingProfile ? m_timingProfile->GetTscOffset() : 0);
+            m_logger->Trace(LOG_DEBUG, "CodePatcher RDTSC => 0x%llX", spoofedTsc);
             break;
         }
         case 2: { // RDTSCP
@@ -412,7 +412,7 @@ LONG CodePatcher::OnException(EXCEPTION_POINTERS* ep)
             ctx->Rcx = 0x00000001;
             ctx->Rip += pe.instrLength;
 
-            m_logger->Trace(LOG_TIMING, "CodePatcher RDTSCP => 0x%llX", spoofedTsc);
+            m_logger->Trace(LOG_DEBUG, "CodePatcher RDTSCP => 0x%llX", spoofedTsc);
             break;
         }
     }
