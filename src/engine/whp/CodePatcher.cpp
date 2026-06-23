@@ -43,18 +43,62 @@ bool CodePatcher::Initialize()
         do {
             if (scannedCount > 20) break; // safety limit
 
-            // skip system DLLs cuz they have too many CPUID calls
-            bool isSystem = (me.szModule &&
-                (wcsstr(me.szModule, L"ntdll.dll") ||
-                 wcsstr(me.szModule, L"kernel32.dll") ||
-                 wcsstr(me.szModule, L"kernelbase.dll") ||
-                 wcsstr(me.szModule, L"ucrtbase.dll") ||
-                 wcsstr(me.szModule, L"msvcrt.dll") ||
-                 wcsstr(me.szModule, L"combase.dll") ||
-                 wcsstr(me.szModule, L"ole32.dll") ||
-                 wcsstr(me.szModule, L"shell32.dll") ||
-                 wcsstr(me.szModule, L"shlwapi.dll") ||
-                 wcsstr(me.szModule, L"advapi32.dll")));
+            // skip system DLLs cuz they have too many CPUID calls (case-insensitive)
+            bool isSystem = false;
+            if (me.szModule) {
+                wchar_t name[64];
+                wcscpy_s(name, me.szModule);
+                _wcslwr_s(name);
+                isSystem = (
+                    wcsstr(name, L"ntdll.dll") ||
+                    wcsstr(name, L"kernel32.dll") ||
+                    wcsstr(name, L"kernelbase.dll") ||
+                    wcsstr(name, L"ucrtbase.dll") ||
+                    wcsstr(name, L"msvcrt.dll") ||
+                    wcsstr(name, L"combase.dll") ||
+                    wcsstr(name, L"ole32.dll") ||
+                    wcsstr(name, L"oleaut32.dll") ||
+                    wcsstr(name, L"rpcrt4.dll") ||
+                    wcsstr(name, L"rpcss.dll") ||
+                    wcsstr(name, L"shell32.dll") ||
+                    wcsstr(name, L"shlwapi.dll") ||
+                    wcsstr(name, L"advapi32.dll") ||
+                    wcsstr(name, L"sechost.dll") ||
+                    wcsstr(name, L"bcrypt.dll") ||
+                    wcsstr(name, L"user32.dll") ||
+                    wcsstr(name, L"gdi32.dll") ||
+                    wcsstr(name, L"win32u.dll") ||
+                    wcsstr(name, L"gdi32full.dll") ||
+                    wcsstr(name, L"msvcp_win.dll") ||
+                    wcsstr(name, L"ws2_32.dll") ||
+                    wcsstr(name, L"vcruntime140.dll") ||
+                    wcsstr(name, L"msvcp140.dll") ||
+                    wcsstr(name, L"winhttp.dll") ||
+                    wcsstr(name, L"dnsapi.dll") ||
+                    wcsstr(name, L"iphlpapi.dll") ||
+                    wcsstr(name, L"crypt32.dll") ||
+                    wcsstr(name, L"secur32.dll") ||
+                    wcsstr(name, L"wtsapi32.dll") ||
+                    wcsstr(name, L"wbemprox.dll") ||
+                    wcsstr(name, L"wbem.dll") ||
+                    wcsstr(name, L"wmi.dll") ||
+                    wcsstr(name, L"clbcatq.dll") ||
+                    wcsstr(name, L"apphelp.dll") ||
+                    wcsstr(name, L"sspicli.dll") ||
+                    wcsstr(name, L"cryptbase.dll") ||
+                    wcsstr(name, L"devobj.dll") ||
+                    wcsstr(name, L"cfgmgr32.dll") ||
+                    wcsstr(name, L"winsta.dll") ||
+                    wcsstr(name, L"powrprof.dll") ||
+                    wcsstr(name, L"umpdc.dll") ||
+                    wcsstr(name, L"kernel.appcore.dll") ||
+                    wcsstr(name, L"windows.storage.dll") ||
+                    wcsstr(name, L"wldp.dll") ||
+                    wcsstr(name, L"msasn1.dll") ||
+                    wcsstr(name, L"ncrypt.dll") ||
+                    wcsstr(name, L"ntasn1.dll") ||
+                    wcsstr(name, L"profapi.dll"));
+            }
             if (isSystem) {
                 scannedCount++;
                 continue;
