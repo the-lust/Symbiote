@@ -3,12 +3,11 @@
 #include <unordered_map>
 #include "Logger.h"
 
-class CpuProfile;
-class TimingProfile;
+class IKernelBackend;
 
 class MsrPatcher {
 public:
-    MsrPatcher(Logger* logger, CpuProfile* cpuProfile, TimingProfile* timingProfile);
+    MsrPatcher(Logger* logger, IKernelBackend* backend);
     ~MsrPatcher();
 
     bool Initialize();
@@ -20,14 +19,13 @@ private:
         uint8_t originalByte;
         int instrLength;
         uint32_t msrIndex;
-        bool isWrite; // false = RDMSR, true = WRMSR
+        bool isWrite;
     };
 
     using PatchMap = std::unordered_map<void*, PatchEntry>;
 
     Logger* m_logger;
-    CpuProfile* m_cpuProfile;
-    TimingProfile* m_timingProfile;
+    IKernelBackend* m_backend;
     PatchMap m_patches;
     void* m_vehHandle;
     CRITICAL_SECTION m_cs;

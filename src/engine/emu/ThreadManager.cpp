@@ -40,7 +40,7 @@ bool ThreadManager::HandleNtCreateThread(uint64_t* args, uint64_t* result)
         *result = STATUS_ACCESS_DENIED;
     }
 
-    m_logger->Trace(LOG_SOGEN, "NtCreateThread -> hThread=0x%p", hThread);
+    m_logger->Trace(LOG_EMU, "NtCreateThread -> hThread=0x%p", hThread);
     return true;
 }
 
@@ -82,7 +82,7 @@ bool ThreadManager::HandleNtSuspendThread(uint64_t* args, uint64_t* result)
     }
 
     *result = (uint64_t)status;
-    m_logger->Trace(LOG_SOGEN, "NtSuspendThread -> 0x%08X", status);
+    m_logger->Trace(LOG_EMU, "NtSuspendThread -> 0x%08X", status);
     return true;
 }
 
@@ -103,7 +103,7 @@ bool ThreadManager::HandleNtResumeThread(uint64_t* args, uint64_t* result)
     }
 
     *result = (uint64_t)status;
-    m_logger->Trace(LOG_SOGEN, "NtResumeThread -> 0x%08X", status);
+    m_logger->Trace(LOG_EMU, "NtResumeThread -> 0x%08X", status);
     return true;
 }
 
@@ -125,7 +125,7 @@ bool ThreadManager::HandleNtTerminateThread(uint64_t* args, uint64_t* result)
     }
 
     *result = (uint64_t)status;
-    m_logger->Trace(LOG_SOGEN, "NtTerminateThread -> 0x%08X", status);
+    m_logger->Trace(LOG_EMU, "NtTerminateThread -> 0x%08X", status);
     return true;
 }
 
@@ -190,7 +190,7 @@ bool ThreadManager::HandleNtCreateEvent(uint64_t* args, uint64_t* result)
     }
 
     *result = (uint64_t)status;
-    m_logger->Trace(LOG_SOGEN, "NtCreateEvent -> 0x%08X handle=0x%p", status,
+    m_logger->Trace(LOG_EMU, "NtCreateEvent -> 0x%08X handle=0x%p", status,
         eventHandle ? *eventHandle : nullptr);
     return true;
 }
@@ -231,7 +231,7 @@ bool ThreadManager::HandleNtWaitForSingleObject(uint64_t* args, uint64_t* result
     }
 
     *result = (uint64_t)status;
-    m_logger->Trace(LOG_SOGEN, "NtWaitForSingleObject handle=0x%p -> 0x%08X", hObject, status);
+    m_logger->Trace(LOG_EMU, "NtWaitForSingleObject handle=0x%p -> 0x%08X", hObject, status);
     return true;
 }
 

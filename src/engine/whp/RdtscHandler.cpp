@@ -1,17 +1,16 @@
 #include "RdtscHandler.h"
-#include "profile/CpuProfile.h"
-#include "profile/TimingProfile.h"
+#include "kernel/IKernelBackend.h"
 
 static inline uint64_t ReadTSC() {
     return __rdtsc();
 }
 
-RdtscHandler::RdtscHandler(Logger* logger, CpuProfile* cpuProfile, TimingProfile* timingProfile)
-    : m_logger(logger), m_cpuProfile(cpuProfile), m_timingProfile(timingProfile),
+RdtscHandler::RdtscHandler(Logger* logger, IKernelBackend* backend)
+    : m_logger(logger), m_backend(backend),
       m_tscOffset(0), m_lastTsc(0), m_noiseEnabled(true), m_noiseAmplitude(100)
 {
-    if (m_timingProfile) {
-        m_tscOffset = m_timingProfile->GetTscOffset();
+    if (m_backend) {
+        m_tscOffset = m_backend->GetTscOffset();
     }
 }
 

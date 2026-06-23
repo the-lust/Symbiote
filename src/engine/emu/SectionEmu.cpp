@@ -75,7 +75,7 @@ bool SectionEmu::HandleNtCreateSection(uint64_t* args, uint64_t* result)
         m_sections.push_back(info);
 
         *(HANDLE*)(uintptr_t)args[0] = sectionHandle;
-        m_logger->Trace(LOG_SOGEN, "NtCreateSection: handle=%p size=%llu", sectionHandle, maxSize);
+        m_logger->Trace(LOG_EMU, "NtCreateSection: handle=%p size=%llu", sectionHandle, maxSize);
     }
 
     if (result) *result = (uint64_t)status;

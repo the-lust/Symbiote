@@ -1,6 +1,5 @@
 #include "CodePatcher.h"
-#include "profile/CpuProfile.h"
-#include "profile/TimingProfile.h"
+#include "kernel/IKernelBackend.h"
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <string>
@@ -11,8 +10,8 @@ static const size_t CODE_PATCHER_MAX_PATCHES = 200;
 
 CodePatcher* CodePatcher::s_instance = nullptr;
 
-CodePatcher::CodePatcher(Logger* logger, CpuProfile* cpuProfile, TimingProfile* timingProfile)
-    : m_logger(logger), m_cpuProfile(cpuProfile), m_timingProfile(timingProfile),
+CodePatcher::CodePatcher(Logger* logger, IKernelBackend* backend)
+    : m_logger(logger), m_backend(backend),
       m_vehHandle(nullptr), m_initialized(false),
       m_lastSpoofedTsc(0), m_cpuidTimingBase(0), m_cpuidTimingPending(false)
 {
@@ -135,8 +134,6 @@ bool CodePatcher::Initialize()
         PatchEntry& pe = entry.second;
         if (VirtualProtect(addr, 2, PAGE_EXECUTE_READWRITE, &oldProtect)) {
             pe.originalByte = *(uint8_t*)addr;
-            // Write UD2 (0F 0B) - guaranteed to raise #UD
-            // This replaces the first 2 bytes of CPUID (0F A2), RDTSC (0F 31), or RDTSCP (0F 01)
             *(uint16_t*)addr = 0x0B0F; // UD2 in little-endian
             VirtualProtect(addr, 2, oldProtect, &oldProtect);
             FlushInstructionCache(GetCurrentProcess(), addr, 2);
@@ -165,7 +162,6 @@ void CodePatcher::Shutdown()
         m_vehHandle = nullptr;
     }
 
-    // Restore origional bytes
     DWORD oldProtect;
     for (auto& entry : m_patches) {
         void* addr = entry.first;
@@ -188,7 +184,6 @@ bool CodePatcher::ScanModule(const wchar_t* moduleName, uint8_t* baseAddr, SIZE_
 {
     if (!baseAddr || moduleSize < 0x1000) return false;
 
-    // skip ourselves + proxy DLLs
     if (moduleName && (
         wcsstr(moduleName, L"engine.dll") ||
         wcsstr(moduleName, L"_proxy.dll") ||
@@ -207,12 +202,11 @@ bool CodePatcher::ScanModule(const wchar_t* moduleName, uint8_t* baseAddr, SIZE_
     IMAGE_SECTION_HEADER* sections = IMAGE_FIRST_SECTION(nt);
     WORD sectionCount = nt->FileHeader.NumberOfSections;
 
-    static const uint32_t MAX_SECTION_SIZE = 50 * 1024 * 1024; // 50 MB
+    static const uint32_t MAX_SECTION_SIZE = 50 * 1024 * 1024;
 
     for (WORD i = 0; i < sectionCount; i++) {
         IMAGE_SECTION_HEADER* section = &sections[i];
 
-        // only care about executable sections
         bool isExecutable = (section->Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
         if (!isExecutable) continue;
 
@@ -246,7 +240,7 @@ bool CodePatcher::ScanSection(uint8_t* sectionStart, SIZE_T sectionSize)
         return true;
     };
 
-    // Pass 1: RDTSC/RDTSCP first — Denuvo timing checks depend on these being hooked
+    // Pass 1: RDTSC/RDTSCP first
     size_t timingPatches = 0;
     for (SIZE_T i = 0; i < sectionSize - 4; i++) {
         if (m_patches.size() >= CODE_PATCHER_MAX_PATCHES || timingPatches >= MAX_TIMING_PATCHES) break;
@@ -270,7 +264,7 @@ bool CodePatcher::ScanSection(uint8_t* sectionStart, SIZE_T sectionSize)
         }
     }
 
-    // Pass 2: CPUID (lower priority — large CRT/init blocks can exhaust patch budget)
+    // Pass 2: CPUID
     for (SIZE_T i = 0; i < sectionSize - 4; i++) {
         if (m_patches.size() >= CODE_PATCHER_MAX_PATCHES) break;
 
@@ -319,9 +313,12 @@ LONG CodePatcher::OnException(EXCEPTION_POINTERS* ep)
                 ctx->Rax = 0; ctx->Rbx = 0; ctx->Rcx = 0; ctx->Rdx = 0;
                 m_logger->Trace(LOG_CPUID, "CodePatcher CPUID hypervisor leaf 0x%X => HIDDEN", leaf);
             } else {
-                uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
-                if (m_cpuProfile && m_cpuProfile->GetSpoof(leaf, subleaf, &eax, &ebx, &ecx, &edx)) {
-                    ctx->Rax = eax; ctx->Rbx = ebx; ctx->Rcx = ecx; ctx->Rdx = edx;
+                CpuidResult result;
+                if (m_backend && m_backend->HandleCpuid(leaf, subleaf, result)) {
+                    ctx->Rax = result.eax;
+                    ctx->Rbx = result.ebx;
+                    ctx->Rcx = result.ecx;
+                    ctx->Rdx = result.edx;
                 } else {
                     int info[4] = {0};
                     __try { __cpuidex(info, leaf, subleaf); } __except(EXCEPTION_EXECUTE_HANDLER) { info[0]=info[1]=info[2]=info[3]=0; }
@@ -350,11 +347,9 @@ LONG CodePatcher::OnException(EXCEPTION_POINTERS* ep)
             } else {
                 uint64_t realTsc = __rdtsc();
                 spoofedTsc = realTsc;
-                if (m_timingProfile) {
-                    spoofedTsc += m_timingProfile->GetTscOffset();
-                }
+                spoofedTsc += m_backend->GetTscOffset();
 
-                if (m_timingProfile && m_timingProfile->GetTscFrequency() > 0) {
+                if (m_backend->GetTscFrequency() > 0) {
                     uint32_t seed = (uint32_t)(spoofedTsc & 0x7FFFFFFF);
                     uint32_t noise = ((seed * 1103515245U + 12345U) & 0x7FFFFFFFU) % 200 - 100;
                     spoofedTsc += noise;
@@ -388,9 +383,7 @@ LONG CodePatcher::OnException(EXCEPTION_POINTERS* ep)
             } else {
                 uint64_t realTsc = __rdtsc();
                 spoofedTsc = realTsc;
-                if (m_timingProfile) {
-                    spoofedTsc += m_timingProfile->GetTscOffset();
-                }
+                spoofedTsc += m_backend->GetTscOffset();
 
                 uint32_t seed = (uint32_t)(spoofedTsc & 0x7FFFFFFF);
                 uint32_t noise = ((seed * 1103515245U + 12345U) & 0x7FFFFFFFU) % 200 - 100;

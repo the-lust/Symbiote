@@ -328,7 +328,7 @@ static void TestNetwork() {
 
 int main() {
     printf("========================================\n");
-    printf(" Genjutsu Spoof Verification Tool\n");
+    printf(" Symbiote Spoof Verification Tool\n");
     printf("========================================\n");
 
     bool underEngine = GetModuleHandleW(L"engine.dll") != nullptr;
@@ -361,7 +361,7 @@ int main() {
 
     // write detailed results to log
     std::ofstream log("verify_results.log");
-    log << "Genjutsu Verification Results\n";
+    log << "Symbiote Verification Results\n";
     log << "Engine loaded: " << (underEngine ? "YES" : "NO (baseline)") << "\n\n";
     for (auto& r : g_results) {
         log << "[" << (r.spoofed ? "OK" : "FAIL") << "] " << r.category

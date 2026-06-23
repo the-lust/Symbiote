@@ -1,4 +1,4 @@
-# Genjutsu — Spoofing Results
+# Symbiote — Spoofing Results
 
 Real system vs spoofed comparison across all 20 fingerprint vectors.  
 **Real hardeware:** Intel Core i7-4510U @ 2.00 GHz (laptop)  

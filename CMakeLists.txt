@@ -1,25 +1,25 @@
 cmake_minimum_required(VERSION 3.20)
-project(genjutsu LANGUAGES CXX)
+project(symbiote LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-option(GENJUTSU_DEBUG "Enable debug logging in engine and launcher" OFF)
-option(GENJUTSU_MINGW "Build with MinGW compatibility (disable WHP-dependent features)" OFF)
+option(SYMBIOTE_DEBUG "Enable debug logging in engine and launcher" OFF)
+option(SYMBIOTE_MINGW "Build with MinGW compatibility (disable WHP-dependent features)" OFF)
 
-if(GENJUTSU_DEBUG)
-    add_compile_definitions(GENJUTSU_DEBUG=1)
+if(SYMBIOTE_DEBUG)
+    add_compile_definitions(SYMBIOTE_DEBUG=1)
 endif()
 
 # WHP requires x64 host — disable on x86 and MinGW builds
-if(GENJUTSU_MINGW OR CMAKE_SIZEOF_VOID_P LESS 8)
-    set(GENJUTSU_NO_WHP ON)
-    add_compile_definitions(GENJUTSU_NO_WHP=1)
+if(SYMBIOTE_MINGW OR CMAKE_SIZEOF_VOID_P LESS 8)
+    set(SYMBIOTE_NO_WHP ON)
+    add_compile_definitions(SYMBIOTE_NO_WHP=1)
 endif()
 
 # Find WHP SDK (only for MSVC x64 builds)
-if(NOT GENJUTSU_NO_WHP)
+if(NOT SYMBIOTE_NO_WHP)
     find_path(WHP_INCLUDE_DIR WinHvPlatform.h)
     find_library(WHP_LIBRARY WinHvPlatform)
     if(NOT WHP_LIBRARY)
@@ -43,13 +43,13 @@ set(LAUNCHER_SOURCES
     src/launcher/ProcessUtils.cpp
     src/launcher/app.manifest
 )
-if(NOT GENJUTSU_NO_WHP)
+if(NOT SYMBIOTE_NO_WHP)
     list(APPEND LAUNCHER_SOURCES src/launcher/WhpDetection.cpp)
 endif()
 add_executable(launcher WIN32 ${LAUNCHER_SOURCES})
 target_include_directories(launcher PRIVATE src/launcher src/engine/log)
 target_link_libraries(launcher PRIVATE logger)
-if(NOT GENJUTSU_NO_WHP)
+if(NOT SYMBIOTE_NO_WHP)
     target_link_libraries(launcher PRIVATE ${WHP_LIBRARY})
 endif()
 
@@ -58,39 +58,42 @@ set(ENGINE_SOURCES
     src/launcher/ConfigParser.cpp
     src/engine/Main.cpp
     # WHP-free VEH components (always compiled)
+    src/engine/whp/AllocTracker.cpp
     src/engine/whp/CodePatcher.cpp
     src/engine/whp/KuserHook.cpp
     src/engine/whp/MsrPatcher.cpp
-    # SoGen syscall emulator
-    src/engine/sogen/CryptoEmu.cpp
-    src/engine/sogen/FileEmu.cpp
-    src/engine/sogen/MemoryEmu.cpp
-    src/engine/sogen/ObjectEmu.cpp
-    src/engine/sogen/PeLoader.cpp
-    src/engine/sogen/ProcessEmu.cpp
-    src/engine/sogen/RegistryEmu.cpp
-    src/engine/sogen/SectionEmu.cpp
-    src/engine/sogen/SoGenEmulator.cpp
-    src/engine/sogen/SyscallDispatcher.cpp
-    src/engine/sogen/SyscallNames.cpp
-    src/engine/sogen/ThreadManager.cpp
-    src/engine/sogen/TimingEmu.cpp
-    src/engine/sogen/VirtualState.cpp
+    # Syscall emulator
+    src/engine/emu/CryptoEmu.cpp
+    src/engine/emu/FileEmu.cpp
+    src/engine/emu/MemoryEmu.cpp
+    src/engine/emu/ObjectEmu.cpp
+    src/engine/emu/PeLoader.cpp
+    src/engine/emu/ProcessEmu.cpp
+    src/engine/emu/RegistryEmu.cpp
+    src/engine/emu/SectionEmu.cpp
+
+    src/engine/emu/SyscallNames.cpp
+    src/engine/emu/ThreadManager.cpp
+    src/engine/emu/TimingEmu.cpp
+    src/engine/emu/VirtualState.cpp
+    # Kernel abstraction
+    src/engine/kernel/MinimalKernel.cpp
+    src/engine/kernel/SystemProfile.cpp
+    src/engine/kernel/KernelBackend.cpp
     # Profiles
-    src/engine/profile/CpuProfile.cpp
     src/engine/profile/GpuProfile.cpp
     src/engine/profile/StorageProfile.cpp
-    src/engine/profile/TimingProfile.cpp
     # Proxy/IAT support
     src/engine/proxy/Fallthrough.cpp
     src/engine/proxy/GpuBridge.cpp
     src/engine/proxy/IatPatch.cpp
     src/engine/proxy/InlineHook.cpp
+    src/engine/proxy/InstructionDecoder.cpp
     src/engine/proxy/ModuleCloak.cpp
     src/engine/proxy/ProxyBase.cpp
-    src/engine/proxy/SoGenBridge.cpp
+    src/engine/proxy/SyscallBridge.cpp
 )
-if(NOT GENJUTSU_NO_WHP)
+if(NOT SYMBIOTE_NO_WHP)
     list(APPEND ENGINE_SOURCES
         # WHP-dependent components (x64 only)
         src/engine/whp/CpuidHandler.cpp

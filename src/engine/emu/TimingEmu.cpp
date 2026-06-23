@@ -7,8 +7,8 @@ typedef LONG NTSTATUS;
 #include <ntstatus.h>
 #include <profileapi.h>
 
-TimingEmu::TimingEmu(Logger* logger, TimingProfile* profile)
-    : m_logger(logger), m_profile(profile), m_qpcOffset(0x100000000ULL)
+TimingEmu::TimingEmu(Logger* logger)
+    : m_logger(logger), m_qpcOffset(0x100000000ULL)
 {
 }
 

@@ -104,7 +104,7 @@ bool PeLoader::ResolveImports(uint8_t* image, size_t size)
         importDesc++;
     }
 
-    m_logger->Trace(LOG_SOGEN, "PeLoader: imports resolved");
+    m_logger->Trace(LOG_EMU, "PeLoader: imports resolved");
     return true;
 }
 
@@ -152,7 +152,7 @@ bool PeLoader::ApplyRelocations(uint8_t* image, size_t size, uint64_t baseAddr)
         relocData += reloc->SizeOfBlock;
     }
 
-    m_logger->Trace(LOG_SOGEN, "PeLoader: relocations applied (delta=0x%llX)", delta);
+    m_logger->Trace(LOG_EMU, "PeLoader: relocations applied (delta=0x%llX)", delta);
     return true;
 }
 

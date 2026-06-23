@@ -2,11 +2,10 @@
 #include <cstdint>
 #include <windows.h>
 #include "Logger.h"
-#include "profile/TimingProfile.h"
 
 class TimingEmu {
 public:
-    explicit TimingEmu(Logger* logger, class TimingProfile* profile = nullptr);
+    explicit TimingEmu(Logger* logger);
 
     bool HandleNtQueryPerformanceCounter(uint64_t* args, uint64_t* result);
     bool HandleNtSetTimerResolution(uint64_t* args, uint64_t* result);
@@ -18,6 +17,5 @@ public:
 
 private:
     Logger* m_logger;
-    class TimingProfile* m_profile;
     uint64_t m_qpcOffset;
 };

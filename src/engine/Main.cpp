@@ -18,29 +18,18 @@
 #include "whp/CodePatcher.h"
 #include "whp/MsrPatcher.h"
 #include "whp/MagicCpuid.h"
+#include "whp/AllocTracker.h"
 #include "whp/ExceptionHandler.h"
 #include "whp/ThreadScheduler.h"
-#include "profile/CpuProfile.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
-#include "profile/TimingProfile.h"
-#include "sogen/SyscallDispatcher.h"
-#include "sogen/ProcessEmu.h"
-#include "sogen/MemoryEmu.h"
-#include "sogen/FileEmu.h"
-#include "sogen/TimingEmu.h"
-#include "sogen/RegistryEmu.h"
-#include "sogen/CryptoEmu.h"
-#include "sogen/VirtualState.h"
-#include "sogen/ThreadManager.h"
-#include "sogen/SoGenEmulator.h"
-#include "sogen/SectionEmu.h"
-#include "sogen/ObjectEmu.h"
-#include "sogen/PeLoader.h"
+#include "kernel/MinimalKernel.h"
 #include "proxy/IatPatch.h"
-#include "proxy/SoGenBridge.h"
+#include "proxy/SyscallBridge.h"
 #include "proxy/GpuBridge.h"
 #include "proxy/InlineHook.h"
+#include "kernel/SystemProfile.h"
+#include "kernel/KernelBackend.h"
 
 static Logger g_logger;
 static Partition* g_partition = nullptr;
@@ -52,31 +41,21 @@ static MsrHandler* g_msrHandler = nullptr;
 static EptHook* g_eptHook = nullptr;
 static KuserSync* g_kuserSync = nullptr;
 static MagicCpuid* g_magicCpuid = nullptr;
-static CpuProfile* g_cpuProfile = nullptr;
 static GpuProfile* g_gpuProfile = nullptr;
 static StorageProfile* g_storageProfile = nullptr;
-static TimingProfile* g_timingProfile = nullptr;
-static SyscallDispatcher* g_syscallDispatcher = nullptr;
-static ProcessEmu* g_processEmu = nullptr;
-static MemoryEmu* g_memoryEmu = nullptr;
-static FileEmu* g_fileEmu = nullptr;
-static TimingEmu* g_timingEmu = nullptr;
-static RegistryEmu* g_registryEmu = nullptr;
-static CryptoEmu* g_cryptoEmu = nullptr;
-static VirtualState* g_virtualState = nullptr;
-static ThreadManager* g_threadManager = nullptr;
-static SoGenEmulator* g_soGenEmulator = nullptr;
+static MinimalKernel* g_minimalKernel = nullptr;
 static HMODULE g_engineModule = nullptr;
 static IatPatch* g_iatPatch = nullptr;
 static CodePatcher* g_codePatcher = nullptr;
 static KuserHook* g_kuserHook = nullptr;
 static MsrPatcher* g_msrPatcher = nullptr;
 static ExceptionHandler* g_exceptionHandler = nullptr;
+static AllocTracker* g_allocTracker = nullptr;
+static SystemProfile* g_systemProfile = nullptr;
+static KernelBackend* g_kernelBackend = nullptr;
 extern GpuBridge* g_gpuBridge;
 static ThreadScheduler* g_threadScheduler = nullptr;
-static SectionEmu* g_sectionEmu = nullptr;
-static ObjectEmu* g_objectEmu = nullptr;
-static PeLoader* g_peLoader = nullptr;
+
 static HANDLE g_engineReadyEvent = nullptr;
 static HANDLE g_engineActiveEvent = nullptr;
 
@@ -209,18 +188,23 @@ static NTSTATUS NTAPI HookedNtQueryInformationProcess(
     }
 
     // Intercept ProcessBasicInformation (class 0) - return proper struct
+    // NOTE: trampoline bypassed here because InlineHook copies 16 raw bytes
+    // which can split a multi-byte instruction and corrupt the stack.
+    // This avoids the broken trampoline entirely.
     if (InfoClass == 0) {
-        // Read real values from ntdll via trampoline since we need PID etc.
-        auto realFunc = (NtQueryInfoProcessFunc)g_ntqiTrampoline;
-        if (realFunc) {
-            return realFunc(ProcessHandle, InfoClass, Info, InfoLen, RetLen);
-        }
-        // Fallback: read PEB from TEB only
-        uint64_t peb = (uint64_t)__readgsqword(0x60);
         if (Info && InfoLen >= sizeof(uintptr_t) * 6) {
             memset(Info, 0, InfoLen);
-            *(uintptr_t*)((uint8_t*)Info + 8) = peb;
+            uint64_t peb = (uint64_t)__readgsqword(0x60);
+            uint64_t pid = (uint64_t)GetCurrentProcessId();
+            *(uintptr_t*)((uint8_t*)Info + 0) = 0;                     // ExitStatus
+            *(uintptr_t*)((uint8_t*)Info + 8) = peb;                   // PebBaseAddress
+            *(uintptr_t*)((uint8_t*)Info + 16) = 0;                    // AffinityMask
+            *(uintptr_t*)((uint8_t*)Info + 24) = 0;                    // BasePriority
+            *(uintptr_t*)((uint8_t*)Info + 32) = pid;                  // UniqueProcessId
+            *(uintptr_t*)((uint8_t*)Info + 40) = 0;                    // InheritedFromUniqueProcessId
             if (RetLen) *RetLen = sizeof(uintptr_t) * 6;
+        } else if (RetLen) {
+            *RetLen = sizeof(uintptr_t) * 6;
         }
         return 0;
     }
@@ -236,7 +220,7 @@ static NTSTATUS NTAPI HookedNtQuerySystemInformation(
 {
     uint64_t args[4] = { InfoClass, (uint64_t)Info, InfoLen, (uint64_t)RetLen };
     uint64_t result = 0;
-    if (SoGenRouteSyscall(0x0001, args, &result)) {
+    if (RouteSyscall(0x0001, args, &result)) {
         return (NTSTATUS)result;
     }
 
@@ -282,7 +266,7 @@ static NTSTATUS NTAPI HookedNtQuerySystemInformation(
             if (fti->ProviderSignature == 0x49435041 &&       // 'ACPI'
                 fti->FirmwareTableID == 0x43495041 &&          // 'APIC'
                 fti->FirmwareTableBuffer && fti->FirmwareTableBufferLength >= 44) {
-                g_logger.Trace(LOG_SOGEN, "ACPI MADT table detected - spoofing to %d processor entries", 20);
+                g_logger.Trace(LOG_EMU, "ACPI MADT table detected - spoofing to %d processor entries", 20);
                 SpoofAcpiMadt(fti->FirmwareTableBuffer, &fti->FirmwareTableBufferLength);
             }
         }
@@ -298,7 +282,7 @@ static NTSTATUS NTAPI HookedNtQuerySystemInformation(
                 ULONG needed = fti->FirmwareTableBufferLength + (20 * 8);
                 if (needed > fti->FirmwareTableBufferLength) {
                     fti->FirmwareTableBufferLength = needed;
-                    g_logger.Trace(LOG_SOGEN, "ACPI MADT size-query: bumped to %u bytes", needed);
+                    g_logger.Trace(LOG_EMU, "ACPI MADT size-query: bumped to %u bytes", needed);
                 }
             }
         }
@@ -311,16 +295,7 @@ static NTSTATUS NTAPI HookedNtQuerySystemInformation(
 static void CleanupAll()
 {
     delete g_vcpuManager; g_vcpuManager = nullptr;
-    delete g_soGenEmulator; g_soGenEmulator = nullptr;
-    delete g_syscallDispatcher; g_syscallDispatcher = nullptr;
-    delete g_threadManager; g_threadManager = nullptr;
-    delete g_virtualState; g_virtualState = nullptr;
-    delete g_cryptoEmu; g_cryptoEmu = nullptr;
-    delete g_registryEmu; g_registryEmu = nullptr;
-    delete g_timingEmu; g_timingEmu = nullptr;
-    delete g_fileEmu; g_fileEmu = nullptr;
-    delete g_memoryEmu; g_memoryEmu = nullptr;
-    delete g_processEmu; g_processEmu = nullptr;
+    delete g_minimalKernel; g_minimalKernel = nullptr;
     delete g_kuserSync; g_kuserSync = nullptr;
     delete g_eptHook; g_eptHook = nullptr;
     delete g_exitDispatcher; g_exitDispatcher = nullptr;
@@ -328,20 +303,19 @@ static void CleanupAll()
     delete g_msrHandler; g_msrHandler = nullptr;
     delete g_rdtscHandler; g_rdtscHandler = nullptr;
     delete g_cpuidHandler; g_cpuidHandler = nullptr;
-    delete g_timingProfile; g_timingProfile = nullptr;
+
     delete g_storageProfile; g_storageProfile = nullptr;
     delete g_gpuProfile; g_gpuProfile = nullptr;
-    delete g_cpuProfile; g_cpuProfile = nullptr;
+    delete g_kernelBackend; g_kernelBackend = nullptr;
+    delete g_systemProfile; g_systemProfile = nullptr;
     delete g_partition; g_partition = nullptr;
     delete g_iatPatch; g_iatPatch = nullptr;
     delete g_codePatcher; g_codePatcher = nullptr;
     delete g_kuserHook; g_kuserHook = nullptr;
     delete g_msrPatcher; g_msrPatcher = nullptr;
     delete g_exceptionHandler; g_exceptionHandler = nullptr;
+    delete g_allocTracker; g_allocTracker = nullptr;
     delete g_threadScheduler; g_threadScheduler = nullptr;
-    delete g_sectionEmu; g_sectionEmu = nullptr;
-    delete g_objectEmu; g_objectEmu = nullptr;
-    delete g_peLoader; g_peLoader = nullptr;
     g_ntqiHook.Remove();
     g_ntqsiHook.Remove();
     delete g_gpuBridge; g_gpuBridge = nullptr;
@@ -421,7 +395,7 @@ static std::wstring GetConfigPath(HMODULE hModule)
 
 LONG CALLBACK EngineVehHandler(EXCEPTION_POINTERS* ep)
 {
-    // STATUS_ILLEGAL_INSTRUCTION (UD2) is handled by CodePatcher/MsrPatcher - skip logging
+    // Guard page violations are handled by AllocTracker - skip logging
     if (ep->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION) {
         ULONG_PTR info0 = ep->ExceptionRecord->ExceptionInformation[0];
         ULONG_PTR info1 = ep->ExceptionRecord->ExceptionInformation[1];
@@ -472,28 +446,26 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     bool spoofThread  = configParser.GetBool("spoof", "thread", true);
     bool cloakModule  = configParser.GetBool("spoof", "module_cloak", true);
 
-    // profile init lol
-    g_cpuProfile = new CpuProfile();
     g_gpuProfile = new GpuProfile();
     g_storageProfile = new StorageProfile();
-    g_timingProfile = new TimingProfile();
-
-    // load config into profiles
-    g_cpuProfile->LoadFromConfig(&configParser);
     g_gpuProfile->LoadFromConfig(&configParser);
     g_storageProfile->LoadFromConfig(&configParser);
-    g_timingProfile->LoadFromConfig(&configParser);
+
+    // Create SystemProfile + KernelBackend (unified spoof data source)
+    g_systemProfile = new SystemProfile();
+    g_kernelBackend = new KernelBackend(g_systemProfile);
 
     // CPUID vendor - overrides individual leafs
     std::string cpuType = configParser.GetString("cpuid", "vendor", "intel");
     if (cpuType == "amd" || cpuType == "AMD") {
-        g_cpuProfile->LoadAmdProfile();
-        // re-apply config on top AMD
-        g_cpuProfile->LoadFromConfig(&configParser);
+        g_systemProfile->LoadAmdRyzen9_5950X();
         g_logger.Trace(LOG_INFO, "Using AMD CPU profile with config overrides");
     } else {
+        g_systemProfile->LoadIntelI9_10900K();
         g_logger.Trace(LOG_INFO, "Using Intel CPU profile with config overrides");
     }
+
+    g_systemProfile->LoadFromConfig(&configParser);
 
     // GPU bridge - always initialized so GPU calls never intercepted
     g_gpuBridge = new GpuBridge(&g_logger);
@@ -501,8 +473,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
     // exit handlers for CPUID, RDTSC, MSR, memory
     if (spoofCpuid) {
-        g_cpuidHandler = new CpuidHandler(&g_logger, g_cpuProfile);
-        g_cpuidHandler->LoadSpoofs();
+        g_cpuidHandler = new CpuidHandler(&g_logger, g_kernelBackend);
     } else {
         g_logger.Trace(LOG_INFO, "CPUID spoofing disabled by config");
     }
@@ -510,7 +481,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     g_magicCpuid = new MagicCpuid(&g_logger);
 
     if (spoofRdtsc) {
-        g_rdtscHandler = new RdtscHandler(&g_logger, g_cpuProfile, g_timingProfile);
+        g_rdtscHandler = new RdtscHandler(&g_logger, g_kernelBackend);
         uint32_t tscNoise = (uint32_t)configParser.GetUint64("timing", "tsc_noise", 100);
         g_rdtscHandler->SetNoiseEnabled(tscNoise > 0);
         g_rdtscHandler->SetNoiseAmplitude(tscNoise);
@@ -524,46 +495,23 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "MSR spoofing disabled by config");
     }
 
-    // SoGen syscall emulators init (conditionally based on config)
-    g_processEmu = new ProcessEmu(&g_logger, nullptr);
-    g_processEmu->LoadFromConfig(&configParser);
-    g_memoryEmu = new MemoryEmu(&g_logger);
-    g_fileEmu = new FileEmu(&g_logger);
-    g_timingEmu = new TimingEmu(&g_logger, g_timingProfile);
-    g_registryEmu = new RegistryEmu(&g_logger);
-    g_cryptoEmu = new CryptoEmu(&g_logger);
-    g_virtualState = new VirtualState(&g_logger);
-    g_threadManager = new ThreadManager(&g_logger);
-
-    // new extended SoGen modules
-    g_sectionEmu = new SectionEmu(&g_logger);
-    g_objectEmu = new ObjectEmu(&g_logger);
-    g_peLoader = new PeLoader(&g_logger);
-
-    // route syscall nums to handlers
-    g_syscallDispatcher = new SyscallDispatcher(&g_logger);
-    g_syscallDispatcher->RegisterHandlers(g_processEmu, g_memoryEmu, g_fileEmu,
-        g_timingEmu, g_registryEmu, g_cryptoEmu, g_virtualState, g_threadManager);
-    g_syscallDispatcher->RegisterExtendedHandlers(g_sectionEmu, g_objectEmu);
-
-    g_soGenEmulator = new SoGenEmulator(&g_logger, g_syscallDispatcher);
-    SetSoGenBridge(g_soGenEmulator);
-
-    // build virtual process list (spoofing)
-    if (g_processEmu) {
-        g_processEmu->BuildVirtualProcessList();
-    }
+    // MinimalKernel: unified syscall handler owns all emulator instances
+    g_minimalKernel = new MinimalKernel(&g_logger, g_kernelBackend);
+    g_minimalKernel->Initialize();
+    g_minimalKernel->LoadFromConfig(&configParser);
+    g_minimalKernel->BuildVirtualProcessList();
+    SetSyscallHandler(MinimalKernel::DispatchThunk);
 
     // Phase 2: patching native code w/ VEH
     if (spoofCpuid || spoofRdtsc) {
-        g_codePatcher = new CodePatcher(&g_logger, g_cpuProfile, g_timingProfile);
+        g_codePatcher = new CodePatcher(&g_logger, g_kernelBackend);
         if (g_codePatcher->Initialize()) {
             g_logger.Trace(LOG_INFO, "CodePatcher initialized");
         }
     }
 
     if (spoofMsr) {
-        g_msrPatcher = new MsrPatcher(&g_logger, g_cpuProfile, g_timingProfile);
+        g_msrPatcher = new MsrPatcher(&g_logger, g_kernelBackend);
         if (g_msrPatcher->Initialize()) {
             g_logger.Trace(LOG_INFO, "MsrPatcher initialized");
         }
@@ -604,7 +552,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_exitDispatcher = new ExitDispatcher(&g_logger);
         g_exitDispatcher->RegisterHandler(WHvRunVpExitReasonMemoryAccess, g_eptHook);
 
-        // install kernel memory hooks (WinVisor upgrade)
+        // install kernel memory hooks via WHP
         g_eptHook->InstallKernelMemoryHooks();
         g_eptHook->InstallMsrBitmapHook();
 
@@ -619,9 +567,9 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
         // VCPU manager w/ all handlers
         g_vcpuManager = new VcpuManager(&g_logger, g_partition, g_exitDispatcher,
-            g_cpuidHandler, g_rdtscHandler, g_msrHandler, g_cpuProfile);
+            g_cpuidHandler, g_rdtscHandler, g_msrHandler);
         g_vcpuManager->SetMagicCpuid(g_magicCpuid);
-        g_vcpuManager->SetSoGenEmulator(g_soGenEmulator);
+        g_vcpuManager->SetSyscallHandler(MinimalKernel::DispatchThunk);
         g_vcpuManager->SetExceptionHandler(g_exceptionHandler);
 
         // start kuser sync (1ms update)
@@ -661,6 +609,16 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
     } else {
         g_logger.Trace(LOG_INFO, "Inline hooks disabled by config");
+    }
+
+    // Init AllocTracker for allocated-memory CPUID interception
+    g_allocTracker = new AllocTracker(&g_logger);
+    if (g_allocTracker->Initialize()) {
+        g_logger.Trace(LOG_INFO, "AllocTracker initialized - tracking executable allocations");
+    } else {
+        g_logger.Trace(LOG_WARNING, "AllocTracker failed to initialize");
+        delete g_allocTracker;
+        g_allocTracker = nullptr;
     }
 
     // Signal launcher / PoC that hooks, patches, and shared KUSER are ready
@@ -720,7 +678,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             g_logger.Trace(LOG_INFO, "Engine loaded");
 
             // create event so PoC can detect bypass is active
-            g_engineActiveEvent = CreateEventW(NULL, TRUE, FALSE, L"LustResearch_EngineActive");
+            g_engineActiveEvent = CreateEventW(NULL, TRUE, FALSE, L"Symbiote_EngineActive");
             break;
         }
         case DLL_PROCESS_DETACH:
@@ -744,7 +702,7 @@ ENGINE_DLL_EXPORT void Engine_Init()
     g_logger.Trace(LOG_INFO, "Engine_Init called");
 
     if (!g_engineReadyEvent) {
-        g_engineReadyEvent = CreateEventW(NULL, TRUE, FALSE, L"LustResearch_EngineReady");
+        g_engineReadyEvent = CreateEventW(NULL, TRUE, FALSE, L"Symbiote_EngineReady");
     } else {
         ResetEvent(g_engineReadyEvent);
     }

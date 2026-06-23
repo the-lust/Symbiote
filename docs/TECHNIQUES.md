@@ -1,6 +1,6 @@
-# Genjutsu — Spoofing Techniques Reference
+# Symbiote — Spoofing Techniques Reference
 
-How each fingerprint vector works, why anti-cheat/DRM systems use it, and how Genjutsu intercepts them from Ring 3.
+How each fingerprint vector works, why protection systems use it, and how Symbiote intercepts them from Ring 3.
 
 ---
 
@@ -15,9 +15,9 @@ How each fingerprint vector works, why anti-cheat/DRM systems use it, and how Ge
 - **Leaf 0x80000001**: Extended feature flags (SVM on AMD, etc.)
 
 ### How its used for fingerprinting
-DRM (Denuvo, etc.) and anti-cheat call CPUID with multiple leafs to build a hardware signature. The presense of a hypervisor leaf (`0x40000000`) is a red flag for VM detection. Brand string and signature identifys the specific CPU model.
+Protection systems call CPUID with multiple leafs to build a hardware signature. The presense of a hypervisor leaf (`0x40000000`) is a red flag for VM detection. Brand string and signature identifys the specific CPU model.
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **WHP exit handler** (when available): Configures CPUID exit handling on the WHP parition. On every CPUID execution, the VCPU exits to user-space where engine.dll returns spoofed registers from the profile.
 2. **CodePatcher (VEH fallback)**: Scans the target `.text` section for `cpuid` instructions (opcode `0F A2`), overwrites them with `UD2` (`0F 0B`). When the target executs the `UD2`, a VEH handler catches the exception, runs the original CPUID instruction, modifys the result registers, and resumes execution.
 3. **Hypervisor leaf hiding**: Leaves `0x40000000` and `0x40000001` are explicitly zeroed.
@@ -32,9 +32,9 @@ DRM (Denuvo, etc.) and anti-cheat call CPUID with multiple leafs to build a hard
 - **TSC deltas** around CPUID: Hypervisors typically cause measurable latency when CPUID triggers a VM exit
 
 ### How it's used for fingerprinting
-Anti-cheat measures the delta of RDTSC calls around CPUID. A high delta (>1000 cycles) suggests a VM exit occured. TSC monotonicity checks detect if values are fabricated (not monotonicaly increasing).
+Protection systems measure the delta of RDTSC calls around CPUID. A high delta (>1000 cycles) suggests a VM exit occured. TSC monotonicity checks detect if values are fabricated (not monotonicaly increasing).
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **WHP exit handler**: Handles RDTSC/RDTSCP exits, returns spoofed TSC values from `TimingProfile` with configurable frequency and noise.
 2. **CodePatcher (VEH fallback)**: Patches `rdtsc` (`0F 31`) and `rdtscp` (`0F 01 F9`) instructions with `UD2`. VEH handler returns consistent monotonic TSC values.
 3. **TSC frequency**: Configurable in `config.ini` — default `3.696 GHz` for i9-10900K.
@@ -54,7 +54,7 @@ Anti-cheat measures the delta of RDTSC calls around CPUID. A high delta (>1000 c
 ### How it's used for fingerprinting
 VMX enable bit in `IA32_FEATURE_CONTROL` reveals if virtualization is active. Some MSRs have expected values on real hardware that differ under emulation.
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **WHP MsrHandler**: If WHP partition is available, MSR access exits are handled and spoofed values returned.
 2. **MsrPatcher (VEH fallback)**: Scans target `.text` for `rdmsr`/`wrmsr` instructions, patches them with `UD2`. VEH handler emulates the instruction with spoofed MSR values.
 3. **Note**: RDMSR/WRMSR are kernel-mode instructions on x64 Windows. If the target code runs at Ring 3, a kernel-mode MSR access indicates something suspicious already.
@@ -74,12 +74,12 @@ The shared page at `0x7FFE0000` (readable from user mode) contains:
 - Various kernel-exposed debug flags
 
 ### How it's used for fingerprinting
-Anti-cheat directly reads bytes from `0x7FFE0000` to check for:
+Protection systems directly read bytes from `0x7FFE0000` to check for:
 - Kernel debugger presence (`KdDebuggerEnabled` byte)
 - System time consistency (compare with other time sources)
 - Processor feature bitmask consistency (cross-check with CPUID)
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **EPT hook (WHP)**: Maps a custom physical page at the same GPA as KUSER_SHARED_DATA. When the target reads from `0x7FFE0000`, it hits our spoofed page.
 2. **KuserHook (VEH fallback)**: Creates a shared memory region mapped to a spoofed KUSER page. Memory access violations are caught by VEH and redirected to the spoofed page.
 3. **Note**: The real KUSER page at `0x7FFE0000` is owned by the kernel and cannot be directly rewritten from user mode.
@@ -103,9 +103,9 @@ Anti-cheat directly reads bytes from `0x7FFE0000` to check for:
   - Class `0x1F` (ProcessDebugFlags): Being debugged?
 
 ### How it's used for fingerprinting
-These are the primary APIs for process/system introspection. Anti-cheat enumerates processes, checks for debuggers, inspects kernel module load state, and verifies code integrity flags.
+These are the primary APIs for process/system introspection. Protection systems enumerate processes, check for debuggers, inspect kernel module load state, and verify code integrity flags.
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **InlineHook**: 5-byte `JMP` rel32 hook at the start of `ntdll.dll!NtQuerySystemInformation` and `NtQueryInformationProcess`. The hook redirects to the SoGen emulator.
 2. **SoGen Emulator**: Maintains a spoofed virtual process list (25 entries), returns empty module list, hides kernel debugger, disables DSE, zeroes debug object handles, and masks hypervisor info.
 3. **Fallthrough**: For non-sensitive classes, the real syscall is dispatched.
@@ -121,9 +121,9 @@ These are the primary APIs for process/system introspection. Anti-cheat enumerat
 - Various OEM/hardware-specific keys
 
 ### How it's used for fingerprinting
-Anti-cheat reads registry keys that expose processor name, BIOS version, disk model, and other hardware identifiers. These are often cross-referenced with CPUID and WMI values.
+Protection systems read registry keys that expose processor name, BIOS version, disk model, and other hardware identifiers. These are often cross-referenced with CPUID and WMI values.
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **advapi32_proxy**: Intercepts `RegOpenKeyExW`, `RegQueryValueExW`, `RegCloseKey`. For known sensitive keys (processor name, hardware description), returns spoofed values.
 2. **ntdll_proxy**: Intercepts low-level `NtOpenKey`, `NtQueryValueKey` for targets that bypass `advapi32`.
 3. **kernel32_proxy**: `GetComputerNameW`, `CreateFileW` for volume queries.
@@ -141,9 +141,9 @@ Anti-cheat reads registry keys that expose processor name, BIOS version, disk mo
 - **Win32_BaseBoard**: Motherboard manufacturer, product, serial
 
 ### How it's used for fingerprinting
-WMI is the gold standard for hardware fingerprinting because it returns rich, structured data from multiple hardware providers. Denuvo and anti-cheat extensively query Win32_Processor and Win32_VideoController.
+WMI is the gold standard for hardware fingerprinting because it returns rich, structured data from multiple hardware providers.
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **wbem_proxy.dll**: A full COM shim that implements:
    - `IWbemLocator` (1 method: `ConnectServer`)
    - `IWbemServices` (6 methods: `ExecQuery`, `ExecMethod`, etc.)
@@ -163,12 +163,12 @@ WMI is the gold standard for hardware fingerprinting because it returns rich, st
 - **PEB+0x130**: NtGlobalFlag (heap flags when debugger present)
 
 ### How it's used for fingerprinting
-Direct PEB reads are fast and don't require syscalls. Anti-cheat checks BeingDebugged, NtGlobalFlag, and LDR module lists from the PEB.
+Direct PEB reads are fast and don't require syscalls. Protection systems check BeingDebugged, NtGlobalFlag, and LDR module lists from the PEB.
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **SoGen ProcessEmu**: Maintains a virtual PEB structure with clean debug flags.
 2. **KUSER_SHARED_DATA masking**: Some PEB-adjacent state is also exposed via KUSER.
-3. **Note**: PEB is per-process and relatively simple to clean. Most anti-cheat focuses on cross-layer consistency instead.
+3. **Note**: PEB is per-process and relatively simple to clean. Most protection focuses on cross-layer consistency instead.
 
 ---
 
@@ -181,9 +181,9 @@ Direct PEB reads are fast and don't require syscalls. Anti-cheat checks BeingDeb
 - **RDTSC deltas**: Execution time of sensitive code paths
 
 ### How it's used for fingerprinting
-Anti-cheat measures execution time of functions that should be fast on real hardware. If a function (like CPUID) takes suspiciously long, it suggests a VM exit occurred. QPC values should be consistent with CPUID TSC values.
+Protection systems measure execution time of functions that should be fast on real hardware. If a function (like CPUID) takes suspiciously long, it suggests a VM exit occurred. QPC values should be consistent with CPUID TSC values.
 
-### How Genjutsu spoofs it
+### How Symbiote spoofs it
 1. **TimingEmu**: Returns consistent timing values aligned with the spoofed TSC frequency.
 2. **SoGen fallthrough**: Non-sensitive timing calls go to the real system.
 3. **Cross-layer consistency**: Spoofed TSC values are designed to be consistent with QPC and GetTickCount.

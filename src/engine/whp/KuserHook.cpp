@@ -19,7 +19,7 @@ bool KuserHook::TryProtectKuserPage()
 {
     // KUSER page is kernel-managed, can't be made writable from user mode.
     // writing to it causes STATUS_GUARD_PAGE_VIOLATION and crashes the process.
-    // the PoC reads from our shared memory "LustResearch_KuserSpoof" instead.
+    // the target reads from our shared memory "Symbiote_KuserSpoof" instead.
     m_logger->Trace(LOG_WARNING, "KuserHook: cant modify KUSER page (kernel owns it)");
     return false;
 }
@@ -68,7 +68,7 @@ void KuserHook::CopyStaticSpoofs()
     // ProductType: Workstation (0x01) — set at all known offsets for cross-build compatibility
     kuser[0x26E] = 0x01;   // pre-19041 layout
     kuser[0x2D8] = 0x01;   // 19041+ layout
-    kuser[0x2E8] = 0x01;   // fallback offset used by some Denuvo versions
+    kuser[0x2E8] = 0x01;   // fallback offset for cross-build compatibility
 
     ApplyStableSpoofs();
 
@@ -88,7 +88,7 @@ void KuserHook::ApplyStableSpoofs()
     if (!m_spoofedKuser) return;
 
     uint8_t* kuser = (uint8_t*)m_spoofedKuser;
-    // KdDebuggerEnabled @ 0x2D4 — bit 1 = KdDebuggerNotPresent (HyperKD / Denuvo token profile)
+    // KdDebuggerEnabled @ 0x2D4 — bit 1 = KdDebuggerNotPresent
     kuser[0x2D4] = 0x02;
     kuser[0x2D5] = 0x01;
 }
@@ -153,7 +153,7 @@ bool KuserHook::Initialize()
 
     // Create a named shared memory with spoofed KUSER for external tools / PoC
     m_sharedMap = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-        0, KUSER_PAGE_SIZE, L"LustResearch_KuserSpoof");
+        0, KUSER_PAGE_SIZE, L"Symbiote_KuserSpoof");
     m_sharedView = nullptr;
     if (m_sharedMap) {
         m_sharedView = MapViewOfFile(m_sharedMap, FILE_MAP_WRITE, 0, 0, KUSER_PAGE_SIZE);
@@ -177,7 +177,7 @@ bool KuserHook::Initialize()
         return false;
     }
 
-    // Start sync thread even if page protection failed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â SoGen Handlers still use the buffer
+    // Start sync thread even if page protection failed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â emulator handlers still use the buffer
     m_stopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (m_stopEvent) {
         m_syncThread = CreateThread(NULL, 0, SyncThreadProc, this, 0, NULL);

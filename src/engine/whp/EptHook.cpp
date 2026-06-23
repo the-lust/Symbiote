@@ -123,7 +123,7 @@ bool EptHook::InstallKernelMemoryHooks()
 bool EptHook::InstallMsrBitmapHook()
 {
     // WHP handles MSR exits natively via MsrHandler, no bitmap needed
-    // this is a placeholder to show WinVisor-style MSR trapping awareness
+    // WHP handles MSR exits natively via MsrHandler
     m_logger->Trace(LOG_EPT, "MSR bitmap hook: handled by WHP MsrHandler natively");
     return true;
 }

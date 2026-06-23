@@ -1,23 +1,20 @@
-# Genjutsu
+# Symbiote
 
 **Ring-3 Windows userspace hardware fingerprint spoofing framework - educational / security research**
 
-Genjutsu is a research platform for studing how environment fingerprinting techniques work (used by DRM, anti-cheat, and software licensing systems) and how they can be spoofed from user mode **without custom kernel drivers**. It demonstrates that every common hardware fingerprint vector (CPUID, MSR, KUSER_SHARED_DATA, WMI, registry, syscalls, timing) can be intercepted and spoofed using only Microsofts **Windows Hypervisor Platform (WHP)** API, **VEH (Vectored Exception Handling)**, **IAT patching**, and **proxy DLL shims**.
+Symbiote is a research platform for studying how environment fingerprinting techniques work (used by executable-binaries protection systems) and how they can be spoofed from user mode **without custom kernel drivers**. It demonstrates that every common hardware fingerprint vector (CPUID, MSR, KUSER_SHARED_DATA, WMI, registry, syscalls, timing) can be intercepted and spoofed using only Microsoft's **Windows Hypervisor Platform (WHP)** API, **VEH (Vectored Exception Handling)**, **IAT patching**, **inline hooks**, **guard-page VEH fallback**, and **proxy DLL shims**.
 
-This is the first open research project of its kind that documents and implements userspace-only spoofing for the full fingerprint surface used by modern DRM and anti-cheat systems. It exists purely for educational study of detection and anti-detection techniqes in controlled enviroments lol.
-
-> **WARNING: Educational / security research only.** This porject exists to study fingerprinting mechanisms.
-> It does NOT support any specific aplication, game, or DRM system.
-> I am NOT responsible for anyone who uses this for any porpuse, legal or otherwise.
-> If you use this to violate terms of service or copywrite law, that is on you, not me.
+> **WARNING: Educational / security research only.** This project exists to study fingerprinting mechanisms.
+> It does NOT support any specific application, game, or software.
+> If you use this to violate terms of service or copyright law, that is on you, not me.
 
 ---
 
 ## Quick Start
 
 ```bat
-git clone https://github.com/yourname/genjutsu
-cd genjutsu
+git clone https://github.com/the-lust/Symbiote
+cd Symbiote
 cmake --preset msvc-x64
 cmake --build --preset msvc-x64
 build\msvc\x64\bin\Release\launcher.exe --target C:\Path\to\target.exe
@@ -28,7 +25,7 @@ build\msvc\x64\bin\Release\launcher.exe --target C:\Path\to\target.exe
 ## Project Structure
 
 ```
-genjutsu/
+symbiote/
 ├── CMakeLists.txt           # Multi-arch build (MSVC x64/x86, MinGW)
 ├── CMakePresets.json        # 6 build presets
 ├── Makefile                 # MinGW fallback
@@ -37,11 +34,12 @@ genjutsu/
 │   └── config.example.ini   # Example config
 ├── src/
 │   ├── launcher/            # launcher.exe - CLI, process create, inject
-│   ├── engine/              # engine.dll - WHP + VEH + IAT + SoGen
-│   │   ├── whp/             # WHP partition, CPUID/RDTSC/MSR/EPT
-│   │   ├── sogen/           # Syscall emulator (NtQuery*, NtOpen*)
-│   │   ├── proxy/           # IAT patching, inline hooks, GpuBridge
-│   │   ├── profile/         # CPU/GPU/Storage/Timing profiles
+│   ├── engine/              # engine.dll - WHP + VEH + IAT + syscall emu
+│   │   ├── kernel/          # MinimalKernel, SystemProfile, KernelBackend
+│   │   ├── whp/             # WHP partition, CPUID/RDTSC/MSR/EPT, AllocTracker
+│   │   ├── emu/             # Syscall emulators (Process, Memory, Registry, ...)
+│   │   ├── proxy/           # IAT patching, inline hooks, SyscallBridge, GpuBridge
+│   │   ├── profile/         # GPU/Storage profiles
 │   │   └── log/             # Logger subsystem
 │   └── proxydlls/           # 13 proxy DLL shims (ntdll to ws2_32)
 ├── scripts/
@@ -58,12 +56,25 @@ genjutsu/
 
 ```
 Target Process (Ring 3)
-  Proxy DLLs (13 shims)  -->  engine.dll (VEH + IAT hooks)  -->  SoGen Emulator (syscall dispatch)
-  ntdll, kernel32, ...        CodePatcher, MsrPatcher            Process, Memory, Registry
-  wbem, ws2_32, ...           KuserHook, InlineHook              File, Crypto, Timing
-                              GpuBridge
+  Proxy DLLs (13 shims)  -->  engine.dll (VEH + IAT + inline hooks)
+  ntdll, kernel32, ...        CodePatcher, MsrPatcher
+  wbem, ws2_32, ...           KuserHook, AllocTracker, GpuBridge
+                                    |
+                              SyscallBridge --> MinimalKernel::DispatchThunk
+                                    |                  |
+                                    |            +-----+------+
+                                    |            | emulator   |
+                                    |            | Process    |
+                                    |            | Memory     |
+                                    |            | Registry   |
+                                    |            | File       |
+                                    |            | Timing     |
+                                    |            | Crypto     |
+                                    |            | Thread     |
+                                    |            +------------+
                                     |
                               WHP Sidecar VM (CPUID/RDTSC/MSR/EPT)
+                              Guard-page VEH (allocated-memory CPUID)
                                     |
                               Real Windows Kernel + GPU (native passthru)
 ```
@@ -73,11 +84,16 @@ Target Process (Ring 3)
 | Component | Role |
 |-----------|------|
 | **launcher.exe** | Creates target suspended, injects `engine.dll`, calls `Engine_Init`, resumes |
-| **engine.dll** | Core spoofing engine - WHP partition, VEH handlers, IAT patching, inline hooks |
+| **engine.dll** | Core spoofing engine - WHP partition, VEH handlers, IAT patching, inline hooks, guard-page VEH |
 | **Proxy DLLs** (13) | IAT shims that intercept API calls and route to engine or fall through to real system |
-| **SoGen Emulator** | In-process syscall dispatcher - handles NtQuerySystemInformation, NtOpenKey, registry, file I/O |
+| **MinimalKernel** | Unified syscall dispatcher owning all emulator instances, static DispatchThunk for proxy bridge |
+| **SystemProfile/KernelBackend** | IKernelBackend interface providing CPUID leaves, TSC frequency/offset, processor count, brand string |
+| **Syscall Emulators** (emu/) | Per-subsystem handlers: Process, Memory, File, Timing, Registry, Crypto, Thread, Section, Object, VirtualState |
 | **WHP Sidecar** | Hyper-V partition for CPUID/RDTSC/MSR/EPT exit handling (degrades to VEH if unavailable) |
-| **CodePatcher** | UD2 + VEH patches for CPUID/RDTSC/RDTSCP in target `.text` section |
+| **CodePatcher** | UD2 + VEH patches for CPUID/RDTSC/RDTSCP in target `.text` sections |
+| **AllocTracker** | Guard-page VEH + timer for allocated (JIT) memory CPUID interception |
+| **InlineHook** | x64-safe 12-byte `mov rax,imm64; jmp rax` hook with complete-instruction trampoline |
+| **GpuBridge** | GPU DLL passthrough — GPU-intensive calls always go to real system |
 
 ---
 
@@ -87,9 +103,10 @@ Target Process (Ring 3)
 |--------|-------------------|--------|
 | CPUID leaves (0x0-0x40000000) | WHP exit handler + VEH CodePatcher | Done |
 | CPUID extended leaves (0x80000000+) | WHP exit handler + VEH CodePatcher | Done |
+| CPUID from JIT/allocated memory | Guard-page VEH + AllocTracker (50ms timer) | Done |
 | RDTSC / RDTSCP | WHP exit handler + VEH CodePatcher | Done |
 | MSRs (IA32_PLATFORM_ID, FEATURE_CONTROL, etc.) | WHP MsrHandler + MsrPatcher | Done |
-| KUSER_SHARED_DATA (0x7FFE0000) | EPT hook + VEH KuserHook | Done |
+| KUSER_SHARED_DATA (0x7FFE0000) | EPT hook + VEH KuserHook + shared memory | Done |
 | Processor brand string | Registry (NtOpenKey + RegQueryValueExW) + CPUID leaves 0x80000002-4 | Done |
 | ACPI MADT (processor count) | Syscall hook on NtQuerySystemInformation | Done |
 | SMBIOS / DMI | Syscall intercept | Done |
@@ -98,8 +115,8 @@ Target Process (Ring 3)
 | Process debug flags | InlineHook on NtQueryInformationProcess | Done |
 | Registry (hardware, processor name) | advapi32_proxy + ntdll_proxy | Done |
 | Volume serial / drive info | kernel32_proxy (CreateFileW) | Done |
-| Timing analysis | TimingEmu + SoGen timing spoofing | Done |
-| PEB / TEB offsets | SoGen ProcessEmu | Done |
+| Timing analysis | TimingEmu + MinimalKernel timing spoofing | Done |
+| PEB / TEB offsets | ProcessEmu via MinimalKernel | Done |
 | Network adapter info | iphlpapi_proxy | Done |
 | DNS queries | dnsapi_proxy | Done |
 | Crypto provider info | crypt32_proxy | Done |
@@ -116,7 +133,7 @@ Target Process (Ring 3)
 
 ### Prerequisites
 
-- Windows 10/11 x64 with Visual Studio 2022 C++ workoad
+- Windows 10/11 x64 with Visual Studio 2022 C++ workload
 - CMake 3.20+
 - Windows SDK (includes `WinHvPlatform.h`)
 - Optional: Hyper-V + Windows Hypervisor Platform enabled
@@ -158,6 +175,7 @@ All binaries go to `build/<preset>/bin/`:
 ```
 engine.dll       - Core spoofing engine
 launcher.exe     - Process launcher + injector
+verify.exe       - Spoof verification tool (baseline only)
 *_proxy.dll      - 13 proxy DLL shims
 ```
 
@@ -199,6 +217,7 @@ name = AMD Radeon RX 6800 XT
 
 [timing]
 tsc_frequency = 3696000000
+tsc_offset = 0
 tsc_noise = 100
 ```
 
@@ -218,19 +237,49 @@ Tested with engine active (IAT + VEH mode):
 
 ## Limitations
 
-- WHP `WHvCreatePartition` may return `0xC0351000` on some systems - engine degrades to VEH + IAT-only mode
-- KUSER_SHARED_DATA at `0x7FFE0000` cant be rewritten from user mode; works via EPT (WHP) or shared memory (VEH)
+- WHP `WHvCreatePartition` may return `0xC0351000` on some systems — engine degrades to VEH + IAT-only mode
+- KUSER_SHARED_DATA at `0x7FFE0000` can't be rewritten from user mode; works via EPT (WHP) or shared memory (VEH)
 - IAT patching applies to the main EXE only
 - GPU-intensive apps pass through via GpuBridge (always fall through to real GPU)
-- Some parts are vibe coded, missing, or broken due to irl issues and lack of time. I am very very sorry about that. Will fix when things calm down.
+- Some parts are vibe coded, missing, or broken due to irl issues and lack of time. Will fix when things calm down.
+
+---
+
+## Performance
+
+| Mode | Gameplay overhead | Initialization overhead | Mechanism |
+|------|------------------|------------------------|-----------|
+| **WHP** (VMX non-root) | **~0%** | ~50–200 VM exits at ~2000 cycles each | Only CPUID/RDTSC/MSR cause hardware VM exits; all other instructions run natively on real CPU |
+| **VEH fallback** (no WHP) | **5–30%+** if CPUID/RDTSC hit during gameplay | 5–10% during init | Each patched instruction triggers a kernel exception (5000–10000+ cycles) |
+| **Ring -1 HV** (HyperDbg/SimpleSVM) | **~0–3%** | ~0% | Same VM exit mechanism as WHP, but full OS runs as guest = more exits |
+
+### Why WHP has near-zero overhead
+
+WHP does **not emulate** the game. It uses Intel VT-x / AMD-V hardware directly. When `WHvRunVp` is called, the CPU enters VMX non-root mode and the game's code runs **natively on the real CPU cores** — the same `mov`, `add`, `cmp`, `jmp`, SSE/AVX, and syscall instructions execute at full speed with zero translation or interpretation.
+
+Only three instruction types are configured to cause VM exits:
+1. **CPUID** — trapped via VMCS CPUID-interception controls
+2. **RDTSC/RDTSCP** — trapped via VMCS TSC-offset / RDTSC-exiting controls
+3. **MSR access** — trapped via VMCS MSR-bitmap
+
+Each exit takes ~1000–3000 CPU cycles to handle and return. Since Denuvo only calls these during its decryption/initialization phase (typically 50–200 total hits), the cost is negligible — under 400K cycles on a 3–4 GHz CPU.
+
+During gameplay, **zero VM exits occur** for the intercepted instructions if the game doesn't call them in its hot path. The game loop runs at bare-metal speed.
+
+### Compare to emulation
+
+| Technique | How it runs code | Overhead |
+|-----------|-----------------|----------|
+| **Emulation** (QEMU, Unicorn) | Interprets every instruction | 100x–1000x slower |
+| **Binary translation** (QEMU TCG, DynamoRIO) | Translates blocks, caches, runs | 2x–10x slower |
+| **WHP / VT-x hardware VM** | Native execution on real CPU | **~0%** (exits for specific events only) |
 
 ---
 
 ## Related Research
 
-- momo5502/sogen - Syscall emulator (Unicorn + icicle-emu backends)
-- x86matthew/WinVisor - WHP user-mode VM (process cloning, PEB/TEB/KUSER management)
-- the-lust/Denuvo-Research - DRM fingerprinting analysis & design spec
+- Microsoft WHP API (WinHvPlatform.h) - Windows Hypervisor Platform
+- momo5502/sogen — syscall emulator inspiration (architecture only, no code used)
 
 ---
 
