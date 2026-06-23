@@ -9,6 +9,7 @@
 #pragma comment(lib, "wbemuuid.lib")
 
 static LONG g_refCount = 0;
+static Logger g_logger;
 
 class CSpoofWbemClassObject;
 class CSpoofEnumWbemClassObject;
@@ -361,6 +362,7 @@ public:
     HRESULT STDMETHODCALLTYPE ConnectServer(BSTR strNetworkResource, BSTR strUser, BSTR strPassword, BSTR strLocale, long lSecurityFlags, BSTR strAuthority, IWbemContext* pCtx, IWbemServices** ppNamespace) override {
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->ConnectServer(strNetworkResource, strUser, strPassword, strLocale, lSecurityFlags, strAuthority, pCtx, ppNamespace);
+        g_logger.Trace(LOG_PROXY, "ConnectServer: hr=0x%08X", hr);
         if (SUCCEEDED(hr) && ppNamespace && *ppNamespace) {
             *ppNamespace = new CSpoofWbemServices(*ppNamespace);
         }
@@ -378,6 +380,7 @@ extern "C" HRESULT STDMETHODCALLTYPE Proxy_CoCreateInstance(REFCLSID rclsid, IUn
 {
     if (!RealCoCreateInstance) {
         HMODULE hOle32 = GetModuleHandleW(L"ole32.dll");
+        if (!hOle32) hOle32 = LoadLibraryW(L"ole32.dll");
         if (hOle32) RealCoCreateInstance = (RealCoCreateInstance_t)GetProcAddress(hOle32, "CoCreateInstance");
         if (!RealCoCreateInstance) return E_FAIL;
     }
@@ -398,6 +401,11 @@ extern "C" HRESULT STDMETHODCALLTYPE Proxy_CoCreateInstance(REFCLSID rclsid, IUn
 PROXY_EXPORT(CoCreateInstance, Proxy_CoCreateInstance, 20)
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
-{    DisableThreadLibraryCalls(hModule);
+{
+    if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
+        g_logger.Init();
+        g_logger.Trace(LOG_PROXY, "wbem_proxy loaded");
+        DisableThreadLibraryCalls(hModule);
+    }
     return TRUE;
 }

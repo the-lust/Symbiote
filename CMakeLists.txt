@@ -143,4 +143,9 @@ add_proxy_dll(dnsapi_proxy     src/proxydlls/dnsapi_proxy/dllmain.cpp)
 add_proxy_dll(iphlpapi_proxy   src/proxydlls/iphlpapi_proxy/dllmain.cpp)
 add_proxy_dll(ws2_32_proxy     src/proxydlls/ws2_32_proxy/dllmain.cpp)
 
+# ─── Verify Tool ──────────────────────────────────────────────────────
+add_executable(verify src/verify/Main.cpp)
+target_include_directories(verify PRIVATE src/engine/log)
+target_link_libraries(verify PRIVATE logger)
+
 
