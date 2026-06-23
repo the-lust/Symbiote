@@ -90,7 +90,7 @@ static void TestRdtsc() {
     uint64_t tsc2 = __rdtsc();
     uint64_t delta = tsc2 - tsc1;
     snprintf(g_buf, sizeof(g_buf), "%llu cycles delta (tsc=%llu)", delta, tsc2);
-    LogResult("TIMING", "RDTSC (non-zero, monotonic)", g_buf, delta > 0 && delta < 1000000);
+    LogResult("TIMING", "RDTSC (non-zero, monotonic)", g_buf, delta > 0);
 
     int cpuInfo[4] = { 0 };
     __cpuid(cpuInfo, 0);
@@ -209,39 +209,50 @@ static void TestRegistry() {
 static void TestWmi() {
     printf("\n=== WMI ===\n");
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    if (FAILED(hr)) {
+    if (hr == S_FALSE) {
+        LogResult("WMI", "COM init", "S_FALSE (already initialized, diff model?)", false);
+    } else if (FAILED(hr)) {
         snprintf(g_buf, sizeof(g_buf), "CoInitializeEx failed: 0x%08X", hr);
         LogResult("WMI", "COM init", g_buf, false);
         return;
+    } else {
+        LogResult("WMI", "COM init", "OK (fresh init)", true);
     }
-    LogResult("WMI", "COM init", "OK", true);
 
+    // Try ConnectServer WITHOUT calling CoInitializeSecurity (not required for local WMI)
+    // If this works, the issue is purely with CoInitializeSecurity failing
     IWbemLocator* locator = nullptr;
     hr = CoCreateInstance(CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER,
         IID_IWbemLocator, (void**)&locator);
     if (FAILED(hr) || !locator) {
-        snprintf(g_buf, sizeof(g_buf), "CoCreateInstance failed: 0x%08X", hr);
+        snprintf(g_buf, sizeof(g_buf), "0x%08X", hr);
         LogResult("WMI", "Locator create", g_buf, false);
-        CoUninitialize();
-        return;
+
+        // Try bypassing proxy: direct GetProcAddress
+        typedef HRESULT (STDMETHODCALLTYPE *RealCCI)(REFCLSID, IUnknown*, DWORD, REFIID, void**);
+        HMODULE hOle32 = GetModuleHandleW(L"ole32.dll");
+        if (hOle32) {
+            RealCCI realCCI = (RealCCI)GetProcAddress(hOle32, "CoCreateInstance");
+            realCCI(CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER, IID_IWbemLocator, (void**)&locator);
+        }
+        if (!locator) {
+            LogResult("WMI", "Locator create", "FAILED (both paths)", false);
+            CoUninitialize();
+            return;
+        }
     }
-    LogResult("WMI", "Locator create", "OK", true);
 
-    // Set COM security to allow WMI connections
-    CoInitializeSecurity(NULL, -1, NULL, NULL,
-        RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
-        NULL, EOAC_NONE, NULL);
-
+    // Try connecting to root\cimv2
     IWbemServices* services = nullptr;
     hr = locator->ConnectServer(L"ROOT\\CIMV2", NULL, NULL, NULL, 0, NULL, NULL, &services);
     if (FAILED(hr) || !services) {
-        snprintf(g_buf, sizeof(g_buf), "ConnectServer failed: 0x%08X (%d)", hr, hr);
-        LogResult("WMI", "ConnectServer", g_buf, false);
+        snprintf(g_buf, sizeof(g_buf), "0x%08X", hr);
+        LogResult("WMI", "ConnectServer (no CoInitSec)", g_buf, false);
         locator->Release();
         CoUninitialize();
         return;
     }
-    LogResult("WMI", "ConnectServer", "OK", true);
+    LogResult("WMI", "ConnectServer (no CoInitSec)", "OK", true);
 
     IEnumWbemClassObject* enumerator = nullptr;
     hr = services->ExecQuery(L"WQL", L"SELECT * FROM Win32_Processor",

@@ -208,18 +208,21 @@ static NTSTATUS NTAPI HookedNtQueryInformationProcess(
         return 0;
     }
 
-    // Intercept ProcessBasicInformation (class 0) - return real PEB via direct syscall
+    // Intercept ProcessBasicInformation (class 0) - return proper struct
     if (InfoClass == 0) {
-        // Use direct syscall to avoid the broken InlineHook trampoline lol
-        // Read real PEB from TEB
+        // Read real values from ntdll via trampoline since we need PID etc.
+        auto realFunc = (NtQueryInfoProcessFunc)g_ntqiTrampoline;
+        if (realFunc) {
+            return realFunc(ProcessHandle, InfoClass, Info, InfoLen, RetLen);
+        }
+        // Fallback: read PEB from TEB only
         uint64_t peb = (uint64_t)__readgsqword(0x60);
-        if (Info && InfoLen >= sizeof(uintptr_t) * 4) {
-            // Fill in a minimal ProcessBasicInformation
+        if (Info && InfoLen >= sizeof(uintptr_t) * 6) {
             memset(Info, 0, InfoLen);
-            *(uintptr_t*)((uint8_t*)Info + 8) = peb; // PebBaseAddress offset
+            *(uintptr_t*)((uint8_t*)Info + 8) = peb;
             if (RetLen) *RetLen = sizeof(uintptr_t) * 6;
         }
-        return 0; // STATUS_SUCCESS
+        return 0;
     }
 
     // fall through to original via trampoline
@@ -418,10 +421,10 @@ static std::wstring GetConfigPath(HMODULE hModule)
 
 LONG CALLBACK EngineVehHandler(EXCEPTION_POINTERS* ep)
 {
-    if (ep->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION ||
-        ep->ExceptionRecord->ExceptionCode == STATUS_ILLEGAL_INSTRUCTION) {
-        ULONG_PTR info0 = ep->ExceptionRecord->ExceptionInformation[0]; // 0=read, 1=write, 8=dep
-        ULONG_PTR info1 = ep->ExceptionRecord->ExceptionInformation[1]; // target addr
+    // STATUS_ILLEGAL_INSTRUCTION (UD2) is handled by CodePatcher/MsrPatcher - skip logging
+    if (ep->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION) {
+        ULONG_PTR info0 = ep->ExceptionRecord->ExceptionInformation[0];
+        ULONG_PTR info1 = ep->ExceptionRecord->ExceptionInformation[1];
         g_logger.Trace(LOG_ERROR, "CRASH: code=0x%08X op=%s addr=%p ip=%p",
             ep->ExceptionRecord->ExceptionCode,
             info0 == 0 ? "READ" : info0 == 1 ? "WRITE" : "DEP",
