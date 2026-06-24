@@ -33,23 +33,23 @@ bool KernelBackend::HandleRdtscp(uint64_t& tsc, uint32_t& processorId)
     return true;
 }
 
-bool KernelBackend::HandleRdmsr(uint32_t msr, uint64_t& value)
+bool KernelBackend::HandleRdmsr(uint32_t, uint64_t& value)
 {
     value = 0;
     return false;
 }
 
-bool KernelBackend::HandleWrmsr(uint32_t msr, uint64_t value)
+bool KernelBackend::HandleWrmsr(uint32_t, uint64_t)
 {
     return false;
 }
 
-bool KernelBackend::HandleMemoryRead(uint64_t address, void* buffer, size_t size)
+bool KernelBackend::HandleMemoryRead(uint64_t, void*, size_t)
 {
     return false;
 }
 
-bool KernelBackend::HandleMemoryWrite(uint64_t address, const void* buffer, size_t size)
+bool KernelBackend::HandleMemoryWrite(uint64_t, const void*, size_t)
 {
     return false;
 }

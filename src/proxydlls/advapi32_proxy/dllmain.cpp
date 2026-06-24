@@ -114,7 +114,7 @@ PROXY_EXPORT(RegCreateKeyExW,   Proxy_RegCreateKeyExW,   36) // HKEY,LPCWSTR,DWO
 PROXY_EXPORT(RegEnumKeyExW,     Proxy_RegEnumKeyExW,     32) // HKEY,DWORD,LPWSTR,LPDWORD,LPDWORD,LPWSTR,LPDWORD,PFILETIME
 PROXY_EXPORT(RegEnumValueW,     Proxy_RegEnumValueW,     32) // HKEY,DWORD,LPWSTR,LPDWORD,LPDWORD,LPDWORD,LPBYTE,LPDWORD
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {

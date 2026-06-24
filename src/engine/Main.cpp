@@ -21,6 +21,8 @@
 #include "whp/AllocTracker.h"
 #include "whp/ExceptionHandler.h"
 #include "whp/ThreadScheduler.h"
+#include "whp/TimingCoordinator.h"
+#include "whp/Canary.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
 #include "kernel/MinimalKernel.h"
@@ -32,6 +34,7 @@
 #include "kernel/KernelBackend.h"
 
 static Logger g_logger;
+static TimingCoordinator g_timingCoordinator;
 static Partition* g_partition = nullptr;
 static VcpuManager* g_vcpuManager = nullptr;
 static ExitDispatcher* g_exitDispatcher = nullptr;
@@ -50,7 +53,6 @@ static CodePatcher* g_codePatcher = nullptr;
 static KuserHook* g_kuserHook = nullptr;
 static MsrPatcher* g_msrPatcher = nullptr;
 static ExceptionHandler* g_exceptionHandler = nullptr;
-static AllocTracker* g_allocTracker = nullptr;
 static SystemProfile* g_systemProfile = nullptr;
 static KernelBackend* g_kernelBackend = nullptr;
 extern GpuBridge* g_gpuBridge;
@@ -319,6 +321,7 @@ static void CleanupAll()
     g_ntqiHook.Remove();
     g_ntqsiHook.Remove();
     delete g_gpuBridge; g_gpuBridge = nullptr;
+    delete g_canary; g_canary = nullptr;
 }
 
 static wchar_t g_engineDir[MAX_PATH] = {0};
@@ -441,10 +444,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     bool spoofRegistry = configParser.GetBool("spoof", "registry", true);
     bool spoofFile    = configParser.GetBool("spoof", "file", true);
     bool spoofTiming  = configParser.GetBool("spoof", "timing", true);
-    bool spoofGpu     = configParser.GetBool("spoof", "gpu", true);
-    bool spoofToken   = configParser.GetBool("spoof", "token", true);
     bool spoofThread  = configParser.GetBool("spoof", "thread", true);
-    bool cloakModule  = configParser.GetBool("spoof", "module_cloak", true);
 
     g_gpuProfile = new GpuProfile();
     g_storageProfile = new StorageProfile();
@@ -474,6 +474,19 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     // exit handlers for CPUID, RDTSC, MSR, memory
     if (spoofCpuid) {
         g_cpuidHandler = new CpuidHandler(&g_logger, g_kernelBackend);
+        g_cpuidHandler->SetTimingCoordinator(&g_timingCoordinator);
+
+        // Load brand string from config (leaves 0x80000002-0x80000004)
+        std::string brandStr = configParser.GetString("cpuid", "brand_string", "");
+        if (!brandStr.empty()) {
+            g_cpuidHandler->SetBrandString(brandStr.c_str());
+            g_logger.Trace(LOG_INFO, "CPUID brand string set: '%s'", brandStr.c_str());
+        }
+        std::string enhancedBrand = configParser.GetString("cpuid", "enhanced_brand_string", "");
+        if (!enhancedBrand.empty()) {
+            g_cpuidHandler->SetEnhancedBrandString(enhancedBrand.c_str());
+            g_logger.Trace(LOG_INFO, "CPUID enhanced brand string set: '%s'", enhancedBrand.c_str());
+        }
     } else {
         g_logger.Trace(LOG_INFO, "CPUID spoofing disabled by config");
     }
@@ -482,6 +495,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
     if (spoofRdtsc) {
         g_rdtscHandler = new RdtscHandler(&g_logger, g_kernelBackend);
+        g_rdtscHandler->SetTimingCoordinator(&g_timingCoordinator);
         uint32_t tscNoise = (uint32_t)configParser.GetUint64("timing", "tsc_noise", 100);
         g_rdtscHandler->SetNoiseEnabled(tscNoise > 0);
         g_rdtscHandler->SetNoiseAmplitude(tscNoise);
@@ -621,7 +635,17 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_allocTracker = nullptr;
     }
 
-    // Signal launcher / PoC that hooks, patches, and shared KUSER are ready
+    // Init Canary for memory scanner detection and handshake page
+    Canary* canary = new Canary(&g_logger);
+    if (canary->Initialize()) {
+        g_logger.Trace(LOG_INFO, "Canary initialized at %p", canary->GetCanaryPage());
+    } else {
+        g_logger.Trace(LOG_WARNING, "Canary failed to initialize");
+        delete canary;
+        canary = nullptr;
+    }
+
+    // Signal launcher / target that hooks, patches, and shared KUSER are ready
     if (g_engineReadyEvent) {
         SetEvent(g_engineReadyEvent);
         g_logger.Trace(LOG_INFO, "Engine ready — hooks active");
@@ -664,7 +688,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     return 0;
 }
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {
@@ -677,7 +701,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             g_logger.Init(path);
             g_logger.Trace(LOG_INFO, "Engine loaded");
 
-            // create event so PoC can detect bypass is active
+            // create event to signal engine active to target process
             g_engineActiveEvent = CreateEventW(NULL, TRUE, FALSE, L"Symbiote_EngineActive");
             break;
         }

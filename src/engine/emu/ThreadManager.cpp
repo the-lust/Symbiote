@@ -35,9 +35,9 @@ bool ThreadManager::HandleNtCreateThread(uint64_t* args, uint64_t* result)
 
     if (hThread) {
         if (args[0]) *(HANDLE*)(uintptr_t)args[0] = hThread;
-        *result = STATUS_SUCCESS;
+        *result = (uint64_t)STATUS_SUCCESS;
     } else {
-        *result = STATUS_ACCESS_DENIED;
+        *result = (uint64_t)STATUS_ACCESS_DENIED;
     }
 
     m_logger->Trace(LOG_EMU, "NtCreateThread -> hThread=0x%p", hThread);

@@ -30,7 +30,7 @@ bool IsWHPEnabledInWindows()
     return (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
 }
 
-static bool RunElevatedDism(const wchar_t* args, const wchar_t* caption)
+static bool RunElevatedDism(const wchar_t* args, const wchar_t*)
 {
     wchar_t sysDir[MAX_PATH];
     GetSystemDirectoryW(sysDir, MAX_PATH);

@@ -1,9 +1,34 @@
 #include "MsrHandler.h"
 #include <intrin.h>
+#include <string.h>
 
 static bool IsCanonical(uint64_t addr) {
     uint64_t mask = 0xFFFF800000000000ULL;
     return ((addr & mask) == 0) || ((addr & mask) == mask);
+}
+
+// Separate function for SEH-safe VMX MSR caching (no C++ object unwinding)
+static void CacheVmxMsrs(uint64_t* out, uint32_t count)
+{
+    __try {
+        for (uint32_t i = 0; i < count; i++) {
+            out[i] = __readmsr(0x480 + i);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        memset(out, 0, sizeof(out[0]) * count);
+    }
+}
+
+static void JitterDelay()
+{
+    LARGE_INTEGER freq, start, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&start);
+    uint64_t delayUs = (uint64_t)((double)rand() / RAND_MAX * 200.0);
+    uint64_t target = (uint64_t)start.QuadPart + (delayUs * (uint64_t)freq.QuadPart) / 1000000;
+    do {
+        QueryPerformanceCounter(&now);
+    } while ((uint64_t)now.QuadPart < target);
 }
 
 MsrHandler::MsrHandler(Logger* logger)
@@ -11,24 +36,31 @@ MsrHandler::MsrHandler(Logger* logger)
       m_efer(1), m_star(0), m_lstar(0), m_cstar(0), m_sfMask(0),
       m_sceAlwaysTrue(true)
 {
+    srand((unsigned int)GetCurrentProcessId() ^ (unsigned int)(GetTickCount64() ^ 0x80000000));
+
+    // Cache real hardware VMX MSR values (raw helper avoids C++/SEH conflict)
+    CacheVmxMsrs(m_vmxMsrs, MSR_IA32_VMX_COUNT);
 }
 
 bool MsrHandler::IsValidMsr(uint32_t msr)
 {
-    // standard MSR ranges
-    // also allow Hyper-V synthetic MSRs
+    // Bare-metal MSR ranges (Hyper-V TLFS MSRs 0x40000000-0x40000FFF intentionally excluded => #GP)
     if (msr <= 0x1FFF) return true;
     if (msr >= 0xC0000000 && msr <= 0xC0001FFF) return true;
-    if (msr >= 0x40000000 && msr <= 0x40000FFF) return true;
     return false;
 }
 
 uint64_t MsrHandler::GetSpoofedMsr(uint32_t msr)
 {
+    // IA32_VMX MSRs (0x480-0x493): return cached real HW values
+    if (msr >= MSR_IA32_VMX_RANGE_START && msr <= MSR_IA32_VMX_RANGE_END) {
+        return m_vmxMsrs[msr - MSR_IA32_VMX_RANGE_START];
+    }
+
     switch (msr) {
         case MSR_IA32_PLATFORM_ID:        return 0x0ULL;
         case MSR_IA32_BIOS_SIGN_ID:       return 0x0ULL; // No microcode update
-        case MSR_IA32_FEATURE_CONTROL:    return 0x5ULL; // Locked, VMX enabled
+        case MSR_IA32_FEATURE_CONTROL:    return 0x4ULL; // Locked, VMX disabled, SMX disabled, SGX disabled
         case MSR_IA32_ARCH_CAPABILITIES:  return 0x0ULL; // No mitigations needed
         case MSR_IA32_MISC_ENABLE:        return 0x400088ULL; // Fast-strings, x87 FPU
         case MSR_IA32_MCG_CAP:            return 0x1EULL;
@@ -69,14 +101,16 @@ uint64_t MsrHandler::GetSpoofedMsr(uint32_t msr)
         case MSR_IA32_FS_BASE:            return 0x0ULL;
         case MSR_IA32_GS_BASE:            return 0x0ULL;
         case MSR_IA32_KERNEL_GS_BASE:     return 0x0ULL;
-        case MSR_HV_X64_GUEST_IDLE:       return 0x0ULL;
+        case MSR_HV_GUEST_IDLE:           return 0x0ULL;
         case MSR_IA32_TSC:                return __rdtsc();
         default:                          return 0x0ULL; // All valid-range MSRs return 0
     }
 }
 
-bool MsrHandler::HandleMsrRead(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t* value)
+bool MsrHandler::HandleMsrRead(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t* value)
 {
+    JitterDelay();
+
     if (!IsValidMsr(msr)) {
         m_logger->Trace(LOG_WARNING, "RDMSR invalid 0x%X => #GP injected", msr);
         return false; // Let WHP inject #GP
@@ -96,8 +130,10 @@ bool MsrHandler::HandleMsrRead(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t*
     return true;
 }
 
-bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t value)
+bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t value)
 {
+    JitterDelay();
+
     if (!IsValidMsr(msr)) {
         m_logger->Trace(LOG_WARNING, "WRMSR invalid 0x%X => #GP injected", msr);
         return false;
@@ -201,12 +237,30 @@ bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t
             m_logger->Trace(LOG_WHP, "WRMSR FEATURE_CTRL => 0x%llX (locked)", value);
             break;
 
-        case MSR_HV_X64_GUEST_IDLE:
-            // Hyper-V idle MSR - must handle or system hangs
-            m_logger->Trace(LOG_WHP, "WRMSR GUEST_IDLE (ignored)");
+        // Hyper-V TLFS MSRs - silently ignore all writes to hide Hyper-V presence
+        case MSR_HV_GUEST_OS_ID:
+        case MSR_HV_HYPERCALL:
+        case MSR_HV_VP_INDEX:
+        case MSR_HV_RESET:
+        case MSR_HV_VP_RUNTIME:
+        case MSR_HV_TSC_FREQ:
+        case MSR_HV_APIC_FREQ:
+        case MSR_HV_EOI:
+        case MSR_HV_ICR:
+        case MSR_HV_TPR:
+        case MSR_HV_VP_ASSIST_PAGE:
+        case MSR_HV_REENLIGHTENMENT:
+        case MSR_HV_TSC_DEADLINE:
+        case MSR_HV_REFERENCE_TSC:
+        case MSR_HV_GUEST_IDLE:
             break;
 
         default:
+            // IA32_VMX MSRs are read-only on bare metal — inject #GP on write
+            if (msr >= MSR_IA32_VMX_RANGE_START && msr <= MSR_IA32_VMX_RANGE_END) {
+                m_logger->Trace(LOG_WARNING, "WRMSR VMX 0x%X => #GP (read-only)", msr);
+                return false;
+            }
             m_logger->Trace(LOG_WHP, "WRMSR 0x%X passthrough => 0x%llX", msr, value);
             return false; // Let WHP handle it
     }

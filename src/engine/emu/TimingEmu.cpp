@@ -35,14 +35,14 @@ bool TimingEmu::HandleNtQueryPerformanceCounter(uint64_t* args, uint64_t* result
         *(LARGE_INTEGER*)(uintptr_t)freqPtr = freq;
     }
 
-    *result = STATUS_SUCCESS;
+    *result = (uint64_t)STATUS_SUCCESS;
     m_logger->Trace(LOG_TIMING, "NtQueryPerformanceCounter: QPC=0x%llX", spoofedQpc);
     return true;
 }
 
-bool TimingEmu::HandleNtSetTimerResolution(uint64_t* args, uint64_t* result)
+bool TimingEmu::HandleNtSetTimerResolution(uint64_t*, uint64_t* result)
 {
-    *result = STATUS_SUCCESS;
+    *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }
 
@@ -51,11 +51,11 @@ bool TimingEmu::HandleNtQueryTimerResolution(uint64_t* args, uint64_t* result)
     if (args[0]) *(uint32_t*)(uintptr_t)args[0] = 0x00030D40;
     if (args[1]) *(uint32_t*)(uintptr_t)args[1] = 0x00000C4E;
     if (args[2]) *(uint32_t*)(uintptr_t)args[2] = 0x00030D40;
-    *result = STATUS_SUCCESS;
+    *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }
 
-bool TimingEmu::HandleGetTickCount(uint64_t* args, uint64_t* result)
+bool TimingEmu::HandleGetTickCount(uint64_t*, uint64_t* result)
 {
     *result = GetTickCount64();
     return true;
@@ -68,6 +68,6 @@ bool TimingEmu::HandleGetSystemTime(uint64_t* args, uint64_t* result)
     if (args[0]) {
         memcpy((void*)(uintptr_t)args[0], &st, sizeof(st));
     }
-    *result = STATUS_SUCCESS;
+    *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }

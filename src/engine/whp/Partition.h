@@ -12,6 +12,7 @@ public:
     bool Create();
     bool SetupCpuCount(uint32_t count);
     bool SetupMemory(uint64_t sizeMB);
+    bool SetupMsrBitmap();
     bool Init();
     void Destroy();
 

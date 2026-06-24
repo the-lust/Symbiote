@@ -98,14 +98,6 @@ typedef struct _SYSTEM_BASIC_INFORMATION {
     CCHAR NumberOfProcessors;
 } SYSTEM_BASIC_INFORMATION;
 
-static std::string Narrow(const std::wstring& ws) {
-    if (ws.empty()) return "";
-    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), NULL, 0, NULL, NULL);
-    std::string s(len, 0);
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &s[0], len, NULL, NULL);
-    return s;
-}
-
 ProcessEmu::ProcessEmu(Logger* logger, ModuleCloak* cloak)
     : m_logger(logger), m_moduleCloak(cloak),
       m_processorCount(8), m_affinityMask(0xFF),
@@ -219,7 +211,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
     switch (infoClass) {
         case SystemBasicInformation: {
             if (infoLength < sizeof(SYSTEM_BASIC_INFORMATION)) {
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 if (returnLengthPtr) *(uint32_t*)returnLengthPtr = sizeof(SYSTEM_BASIC_INFORMATION);
                 return true;
             }
@@ -237,7 +229,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             basic.HighestPhysicalPageNumber = 0x000F4000;
             memcpy((void*)infoBuffer, &basic, sizeof(basic));
             if (returnLengthPtr) *(uint32_t*)returnLengthPtr = sizeof(SYSTEM_BASIC_INFORMATION);
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             return true;
         }
 
@@ -280,7 +272,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             uint32_t totalSize = (uint32_t)buffer.size();
             if (totalSize > infoLength) {
                 if (returnLengthPtr) *(uint32_t*)returnLengthPtr = totalSize;
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
 
@@ -292,26 +284,26 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
 
             memcpy((void*)infoBuffer, buffer.data(), buffer.size());
             if (returnLengthPtr) *(uint32_t*)returnLengthPtr = totalSize;
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             return true;
         }
 
         case SystemKernelDebuggerInformation: {
             if (infoLength < 2) {
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
             uint8_t kdBytes[2] = { 0, 1 }; // enabled=FALSE, notPresent=TRUE
             memcpy((void*)infoBuffer, kdBytes, min(infoLength, 2u));
             if (returnLengthPtr) *(uint32_t*)returnLengthPtr = 2;
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             m_logger->Trace(LOG_INFO, "Spoofed KdDebuggerNotPresent=TRUE");
             return true;
         }
 
         case SystemCodeIntegrityInformation: {
             if (infoLength < sizeof(SYSTEM_CODEINTEGRITY_INFORMATION)) {
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
             SYSTEM_CODEINTEGRITY_INFORMATION ciInfo;
@@ -319,7 +311,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             ciInfo.CodeIntegrityOptions = 0;
             memcpy((void*)infoBuffer, &ciInfo, sizeof(ciInfo));
             if (returnLengthPtr) *(uint32_t*)returnLengthPtr = sizeof(SYSTEM_CODEINTEGRITY_INFORMATION);
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             return true;
         }
 
@@ -329,12 +321,12 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             uint32_t neededSize = sizeof(uint32_t); // just entry count = 0
             if (infoLength < neededSize) {
                 if (returnLengthPtr) *(uint32_t*)returnLengthPtr = neededSize;
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
             *(uint32_t*)infoBuffer = 0; // zero modules
             if (returnLengthPtr) *(uint32_t*)returnLengthPtr = neededSize;
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             m_logger->Trace(LOG_EMU, "SystemModuleInformation: returned empty list (0 modules)");
             return true;
         }
@@ -353,7 +345,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             PSYSTEM_FIRMWARE_TABLE_INFORMATION fti = (PSYSTEM_FIRMWARE_TABLE_INFORMATION)(uintptr_t)infoBuffer;
 
             if (infoLength < sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION)) {
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
 
@@ -365,7 +357,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             if (providerSig != 0x52534D42) {
                 // For ACPI ('ACPI' = 0x49435041) or any other provider,
                 // fall through to real OS so tools can read real ACPI tables
-                *result = STATUS_NOT_SUPPORTED;
+                *result = (uint64_t)STATUS_NOT_SUPPORTED;
                 return false;
             }
 
@@ -404,7 +396,6 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             // ---- SMBIOS Structure Table ----
 
             // SMBIOS Type 0 — BIOS Information (24 bytes + strings)
-            uint32_t t0Start = pos;
             smbiosBuf[pos++] = 0;  smbiosBuf[pos++] = 24; // type, length
             smbiosBuf[pos++] = 0;  smbiosBuf[pos++] = 0;  // handle
             smbiosBuf[pos++] = 1;  smbiosBuf[pos++] = 2;  // vendor, version
@@ -418,7 +409,6 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             smbiosBuf[pos++] = 0; // end of strings
 
             // SMBIOS Type 1 — System Information (27 bytes + strings)
-            uint32_t t1Start = pos;
             smbiosBuf[pos++] = 1;  smbiosBuf[pos++] = 27; // type, length
             smbiosBuf[pos++] = 1;  smbiosBuf[pos++] = 0;  // handle
             smbiosBuf[pos++] = 1;  smbiosBuf[pos++] = 2;  // mfr, product
@@ -435,7 +425,6 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             smbiosBuf[pos++] = 0;
 
             // SMBIOS Type 2 — Baseboard (15 bytes + strings)
-            uint32_t t2Start = pos;
             smbiosBuf[pos++] = 2;  smbiosBuf[pos++] = 15; // type, length
             smbiosBuf[pos++] = 2;  smbiosBuf[pos++] = 0;  // handle
             smbiosBuf[pos++] = 1;  smbiosBuf[pos++] = 2;  // mfr, product
@@ -452,7 +441,6 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             smbiosBuf[pos++] = 0;
 
             // SMBIOS Type 3 — Chassis (22 bytes + strings)
-            uint32_t t3Start = pos;
             smbiosBuf[pos++] = 3;  smbiosBuf[pos++] = 22; // type, length
             smbiosBuf[pos++] = 3;  smbiosBuf[pos++] = 0;  // handle
             smbiosBuf[pos++] = 1;  smbiosBuf[pos++] = 3;  // mfr, type=desktop
@@ -469,7 +457,6 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             smbiosBuf[pos++] = 0;
 
             // SMBIOS Type 4 — Processor Information (42 bytes + strings)
-            uint32_t t4Start = pos;
             smbiosBuf[pos++] = 4;  smbiosBuf[pos++] = 42; // type, length
             smbiosBuf[pos++] = 4;  smbiosBuf[pos++] = 0;  // handle
             smbiosBuf[pos++] = 1;                          // socket = "LGA1200"
@@ -522,13 +509,13 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
 
             if (tableBufLen < pos) {
                 fti->FirmwareTableBufferLength = pos;
-                *result = STATUS_BUFFER_TOO_SMALL;
+                *result = (uint64_t)STATUS_BUFFER_TOO_SMALL;
                 return true;
             }
             if (tableBuffer) memcpy(tableBuffer, smbiosBuf, pos);
             fti->FirmwareTableBuffer = tableBuffer;
             fti->FirmwareTableBufferLength = pos;
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             m_logger->Trace(LOG_EMU, "SMBIOS 3.2 spoofed: %u bytes, Type4 handle=4", pos);
             return true;
         }
@@ -536,7 +523,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
         case SystemHandleInformation:
         default: {
             // Unknown/unhandled class - fall through to real OS
-            *result = STATUS_NOT_SUPPORTED;
+            *result = (uint64_t)STATUS_NOT_SUPPORTED;
             return false;
         }
     }
@@ -552,11 +539,11 @@ bool ProcessEmu::HandleNtOpenProcess(uint64_t* args, uint64_t* result)
     m_logger->Trace(LOG_EMU, "NtOpenProcess: access=0x%X pid=%u", access, pid);
 
     HMODULE nt = GetModuleHandleA("ntdll.dll");
-    if (!nt) { *result = STATUS_ACCESS_DENIED; return true; }
+        if (!nt) { *result = (uint64_t)STATUS_ACCESS_DENIED; return true; }
 
     typedef NTSTATUS (WINAPI* NtOpenProcessFunc)(HANDLE*, ACCESS_MASK, void*, uint32_t);
     auto realNtOpenProcess = (NtOpenProcessFunc)GetProcAddress(nt, "NtOpenProcess");
-    if (!realNtOpenProcess) { *result = STATUS_ACCESS_DENIED; return true; }
+    if (!realNtOpenProcess) { *result = (uint64_t)STATUS_ACCESS_DENIED; return true; }
 
     // pack client id into uint32: low 16 bits = pid, high 16 bits = tid
     NTSTATUS status = realNtOpenProcess(&processHandle, access, (void*)args[2], pid);
@@ -577,24 +564,24 @@ bool ProcessEmu::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* resul
     switch (infoClass) {
         case 0x07: {
             if (args[1] == 0 || args[3] < sizeof(uint32_t)) {
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
             *(uint32_t*)(uintptr_t)args[1] = 0xFFFFFFFF;
             if (args[4]) *(uint32_t*)(uintptr_t)args[4] = sizeof(uint32_t);
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             m_logger->Trace(LOG_INFO, "Spoofed ProcessDebugPort=0xFFFFFFFF (no debugger)");
             return true;
         }
 
         case 0x1E: {
             if (args[1] == 0 || args[3] < sizeof(HANDLE)) {
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
             *(HANDLE*)(uintptr_t)args[1] = NULL;
             if (args[4]) *(uint32_t*)(uintptr_t)args[4] = sizeof(HANDLE);
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             m_logger->Trace(LOG_INFO, "Spoofed ProcessDebugObjectHandle=NULL");
             return true;
         }
@@ -610,7 +597,7 @@ bool ProcessEmu::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* resul
             } PROCESS_BASIC_INFORMATION;
 
             if (args[1] == 0 || args[3] < sizeof(PROCESS_BASIC_INFORMATION)) {
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
             PROCESS_BASIC_INFORMATION pbi;
@@ -623,7 +610,7 @@ bool ProcessEmu::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* resul
             pbi.InheritedFromUniqueProcessId = (HANDLE)0x2F0;
             memcpy((void*)(uintptr_t)args[1], &pbi, sizeof(pbi));
             if (args[4]) *(uint32_t*)(uintptr_t)args[4] = sizeof(PROCESS_BASIC_INFORMATION);
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             return true;
         }
 
@@ -636,7 +623,7 @@ bool ProcessEmu::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* resul
 
             if (args[3] < requiredSize) {
                 if (args[4]) *(uint32_t*)(uintptr_t)args[4] = requiredSize;
-                *result = STATUS_INFO_LENGTH_MISMATCH;
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
 
@@ -647,12 +634,12 @@ bool ProcessEmu::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* resul
             memcpy(outStr->Buffer, gamePath, nameLen + sizeof(wchar_t));
 
             if (args[4]) *(uint32_t*)(uintptr_t)args[4] = requiredSize;
-            *result = STATUS_SUCCESS;
+                *result = (uint64_t)STATUS_SUCCESS;
             return true;
         }
 
         default: {
-            *result = STATUS_INVALID_INFO_CLASS;
+            *result = (uint64_t)STATUS_INVALID_INFO_CLASS;
             return true;
         }
     }

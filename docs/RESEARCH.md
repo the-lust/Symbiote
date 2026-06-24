@@ -1,99 +1,75 @@
-# Symbiote — External Research & Influence Map
+# Symbiote — Research Areas
 
-## 1. momo5502/sogen (v4.5+)
+## 1. WHP-Based Hardware Virtualization
 
-- **Stars:** ~3100
-- **URL:** https://github.com/momo5502/sogen
-- **Backends:** Unicorn Engine, icicle-emu, WHP API
-- **Key Features:**
-  - Syscall-level emulation — intercepts Nt*/Zw* at the syscall boundary
-  - Real system DLL loading (ntdll, kernel32 from the host)
-  - Python bindings for scripting emmulation scenarios
-  - State snapshot/restore (serialzation)
-  - GDB protocol stub for debugging emulated code
-  - Multi-architecture (x86, x64, ARM64 via Unicorn)
+The Windows Hypervisor Platform (WHP) provides a userspace API to Hyper-V's
+VMX/SVM virtualization capabilities. Symbiote uses WHP to:
 
-- **Relevance to Symbiote:**
-  - SoGen's syscall dispatch pattern directly inspired `sogen/SyscallDispatcher.cpp` and `sogen/SyscallNames.cpp`
-  - Real DLL loading approach (from system32) is used in our proxy DLLs (`GetRealNtdll()` loads from system32)
-  - WHP backend integration pattern shows how to blend VEH + WHP + syscall emmulation
-  - State serialzation would allow Symbiote to snapshot/restore emulated enviroments
+- Create a lightweight sidecar VM partition
+- Intercept CPUID, RDTSC/RDTSCP, and MSR accesses via VM exits
+- Map spoofed physical pages (EPT) for KUSER_SHARED_DATA interception
+- Operate entirely from Ring 3 with no kernel driver
 
-- **Action Items for Symbiote:**
-  - Consider adding Python bindings to enable scripting of spoof profiles
-  - Evaluate GDB protocol integration for debugging target processes under emulation
-  - Add state serialization to VirtualState for snapshot/restore
+## 2. Vectored Exception Handling (VEH) Fallback
 
-## 3. Microsoft WHP API
+When WHP is unavailable, VEH provides instruction-level interception:
 
-- **Documentation:** https://learn.microsoft.com/en-us/virtualization/api/whp/
-- **Key APIs:**
-  - `WHvCreatePartition` — creates a hypervisor partition
-  - `WHvSetupPartition` — commits partition configuration
-  - `WHvCreateVirtualProcessor` — creates VCPUs
-  - `WHvSetPartitionProperty` — configures partition
-  - `WHvRunVirtualProcessor` — runs a VCPU (with exit context)
-  - `WHvMapGpaRange` — maps guest physical address space
-  - `WHvTranslateGva` — translates guest virtual to guest physical
-  - `WHvGetVirtualProcessorRegisters` — reads VCPU state
-  - `WHvSetVirtualProcessorRegisters` — writes VCPU state
+- CodePatcher overwrites CPUID/RDTSC/MSR instructions with UD2
+- VEH handler catches #UD exceptions, emulates the instruction with spoofed values
+- Guard-page VEH catches first access to allocated (JIT) memory pages
+- AllocTracker manages 50ms re-arm timer for decrypt→execute→re-encrypt cycles
 
-- **Exit Types Handled:**
-  - `WHvRunVpExitReasonMemoryAccess` — EPT violations
-  - `WHvRunVpExitReasonX64Cpuid` — CPUID instructions
-  - `WHvRunVpExitReasonX64MsrAccess` — RDMSR/WRMSR
-  - `WHvRunVpExitReasonX64Rdtsc` — RDTSC/RDTSCP
-  - `WHvRunVpExitReasonX64IoPortAccess` — I/O port access
-  - `WHvRunVpExitReasonX64InterruptWindow` — interrupt delivery
-  - `WHvRunVpExitReasonException` — exceptions (GP, UD, etc.)
+## 3. IAT Patching & Proxy DLL Shims
 
-- **Limitations (experienced):**
-  - `WHvCreatePartition → 0xC0351000` on systems with VBS or without Hyper-V enabled
-  - Cannot create WHP partition if Hyper-V is not active
-  - Only one WHP partition per process
-  - EPT hook granularity limited to 4KB pages
-  - No support for nested virtualization
+13 proxy DLLs intercept IAT-bound API calls:
 
-- **Relevance to Symbiote:**
-  - WHP is our primary hardware virtualization backend
-  - Code in `whp/` directly wraps all these APIs
-  - Exit dispatcher (`ExitDispatcher.cpp`) routes exit types to handlers
-  - EPT hooks (`EptHook.cpp`) manage GPA mapping for KUSER page
+- ntdll, kernel32, kernelbase, advapi32, user32, wbem
+- wtsapi32, secur32, crypt32, winhttp, dnsapi, iphlpapi, ws2_32
+- Each forwards benign calls to the real system
+- Sensitive calls route through engine.dll for spoofed responses
 
-## 4. Other Related Projects
+## 4. Inline Hooks & Syscall Emulation
 
-### a) hat's HyperKD / SimpleSVM
-- Provides reference fingerprint profile values (i9-10900K, Z490, RX 6800 XT)
-- Uses kernel driver with SVM/VMX — Symbiote differs by staying in Ring 3 via WHP
+InlineHook provides 12-byte `mov rax,imm64; jmp rax` hooks at function
+prologues. The trampoline uses a table-driven x64 instruction decoder to
+copy only complete instructions (covering ≥12 bytes). Hooked functions:
 
-### b) Sandboxie / Sandbox
-- **Relevance:** Process isolation via DLL injection + API hooking
-- Comparison: Symbiote's proxy DLL model is similar but extends to WHP + syscall emulation
+- NtQuerySystemInformation — spoofs kernel debugger, module list, CI policy
+- NtQueryInformationProcess — spoofs debug port, flags, object handle
 
-### c) Hyper-V Platform (Type 2)
-- WHP sits above Hyper-V's hypervisor (Ring -1)
-- No need for custom drivers — Microsoft handles the ring transitions
-- Degraded mode (VEH + IAT only) works when Hyper-V is unavailable
+MinimalKernel owns all emulator instances (Process, Memory, File, Timing,
+Registry, Crypto, Thread, Section, Object, VirtualState) and dispatches
+syscalls via a static DispatchThunk.
 
-## 5. Future Research Directions
+## 5. MSR Shadowing & Stealth Model
 
-| Direction | Source | Benefit |
-|-----------|--------|---------|
-| Python bindings | sogen | Scriptable spoof profiles |
-| State serialization | sogen | Snapshot/restore emulated env |
-| Process cloning | research | Full process isolation |
-| GDB protocol | sogen | Debug emulated processes |
-| Multi-WHP partition | research | Sidecar + main process isolation |
-| ARM64 emulation | Unicorn (sogen) | Cross-arch emulation |
+- FEATURE_CONTROL returns 0x4 (locked, VMX=0, SMX=0, SGX=0)
+- CPUID leaf 1 ECX[31] (hypervisor) and ECX[6] (SMX) masked
+- IA32_VMX MSRs (0x480-0x493) cached at init; reads return real HW values
+- Hyper-V TLFS MSRs (0x40000000-0x40000FFF): reads/writes inject #GP
+- Timing jitter (0-200µs MSR, 0-500µs CPUID) masks VM exit side-channels
 
-## 6. Known Anti-Detection Patterns (Defensive)
+## 6. Anti-Detection Considerations (Defensive Research)
 
-| Detection | Symbiote Mitigation | Risk Level |
-|-----------|---------------------|------------|
-| CPUID 0x40000000 (hypervisor leaf) | MagicCpuid hides Hyper-V presence | Medium |
-| EPT hook timing | RDTSC spoofing + noise injection | Low |
-| WHP module enumeration | KuserHook hides WHP artifacts | Medium |
-| Driver enumeration | Empty module list in NtQuerySystemInformation | Low |
-| Debugger detection | ProcessDebugPort/Flags/Handle spoofing | Low |
-| VEH handler presence | Stack trace analysis not addressed | High |
-| Timing correlation attacks | TSC noise + offset (configurable) | Medium |
+| Detection Vector | Mitigation |
+|-----------------|------------|
+| CPUID hypervisor leaf | Zeroed (0x40000000 range) |
+| CPUID brand string | Config-driven via CpuidHandler + MagicCpuid enhanced mode |
+| CPUID per-process tracking | MagicCpuid PID registration limits spoofing to target only |
+| EPT hook timing | RDTSC spoofing + noise injection + TimingCoordinator delta normalization |
+| RDTSC→CPUID→RDTSC delta | TimingCoordinator cross-handler pattern detection + 3 jitter strategies |
+| WHP module presence | KuserHook hides artifacts |
+| Driver enumeration | Empty module list in syscalls |
+| Debugger detection | ProcessDebugPort/Flags/Handle clean |
+| Memory scan detection | Canary guard-page VEH callback logs scans |
+| VEH stack trace | Not addressed (high risk) |
+| Timing correlation | TSC noise + offset (configurable) |
+| Handshake protocol detection | Magic leaves only respond inside WHP partition; passthrough on bare metal |
+
+## 7. Future Research Directions
+
+- Python bindings for scriptable spoof profiles
+- State serialization for snapshot/restore of emulated environments
+- Process cloning for full execution isolation
+- GDB protocol stub for debugging under emulation
+- Multi-WHP partition for sidecar + main process isolation

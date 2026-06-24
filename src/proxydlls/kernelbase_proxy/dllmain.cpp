@@ -44,7 +44,7 @@ PROXY_EXPORT(GetNativeSystemInfo,       Proxy_GetNativeSystemInfo,        4) // 
 PROXY_EXPORT(QueryPerformanceCounter,   Proxy_QueryPerformanceCounter,    4) // 1
 PROXY_EXPORT(QueryPerformanceFrequency, Proxy_QueryPerformanceFrequency,  4) // 1
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {

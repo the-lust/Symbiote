@@ -100,7 +100,7 @@ void VcpuManager::Stop(uint32_t vcpuIndex)
     }
 }
 
-bool VcpuManager::LoadBootCode(uint32_t vcpuIndex)
+bool VcpuManager::LoadBootCode(uint32_t)
 {
     // allocate boot code buffer so VM doesnt crash on first fetch
     if (m_bootCodeLoaded) return true;
@@ -321,6 +321,15 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
             if (m_magicCpuid && m_magicCpuid->IsMagicCpuid((uint32_t)rax, (uint32_t)rcx, rax, rbx, rcx, rdx)) {
                 uint64_t rip = 0;
                 m_magicCpuid->HandleMagicCpuid((uint32_t)rax, (uint32_t)rcx, &rax, &rbx, &rcx, &rdx, &rip, nullptr);
+                if (m_magicCpuid->ShouldQuit()) {
+                    m_magicCpuid->ClearQuit();
+                    m_vcpus[vcpuIndex].running = false;
+                    cpuid.DefaultResultRax = rax;
+                    cpuid.DefaultResultRbx = rbx;
+                    cpuid.DefaultResultRcx = rcx;
+                    cpuid.DefaultResultRdx = rdx;
+                    return true;
+                }
             } else if (m_cpuidHandler) {
                 uint64_t rip = 0;
                 m_cpuidHandler->HandleCpuid(nullptr, &rax, &rbx, &rcx, &rdx, &rip);

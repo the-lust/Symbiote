@@ -5,10 +5,13 @@
 #include "Logger.h"
 
 class IKernelBackend;
+struct TimingCoordinator;
 
 class RdtscHandler {
 public:
     explicit RdtscHandler(Logger* logger, IKernelBackend* backend);
+
+    void SetTimingCoordinator(TimingCoordinator* tc) { m_timingCoordinator = tc; }
 
     bool HandleRdtsc(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t* rdx, uint64_t* rip);
     bool HandleRdtscp(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t* rdx, uint64_t* rcx, uint64_t* rip);
@@ -22,6 +25,7 @@ public:
 private:
     Logger* m_logger;
     IKernelBackend* m_backend;
+    TimingCoordinator* m_timingCoordinator;
     uint64_t m_tscOffset;
 
     std::atomic<uint64_t> m_lastTsc;

@@ -76,7 +76,7 @@ Real system vs spoofed comparison across all 20 fingerprint vectors.
 | NtQueryInformationProcess | `0x07` (DebugPort) | No debugger | No debugger |
 | NtQueryInformationProcess | `0x1E` (DebugObject) | No debug object | No debug object |
 
-**Result:** Syscall replies are fully controlled by SoGen emulator. Code integrity, kernel debugger, module list, and process debug flags are all spoofed.
+**Result:** Syscall replies are fully controlled by MinimalKernel. Code integrity, kernel debugger, module list, and process debug flags are all spoofed.
 
 ---
 
@@ -88,7 +88,7 @@ Real system vs spoofed comparison across all 20 fingerprint vectors.
 | `PEB+0x118` | ProcessParameters | Valid pointer | Valid pointer |
 | `PEB+0x130` | BeingDebugged | `0x0` | `0x0` |
 
-**Result:** PEB structure masked via SoGen.
+**Result:** PEB structure masked via MinimalKernel.
 
 ---
 

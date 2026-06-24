@@ -64,16 +64,6 @@ void SystemProfile::SetCpuid(uint32_t leaf, uint32_t subleaf,
     m_cpuidLeaves[key] = { eax, ebx, ecx, edx };
 }
 
-static void SetRegs(char* dest, const char* src)
-{
-    for (int i = 0; i < 4; i++) {
-        dest[i] = src[i * 4 + 0];
-        dest[i + 4] = src[i * 4 + 1];
-        dest[i + 8] = src[i * 4 + 2];
-        dest[i + 12] = src[i * 4 + 3];
-    }
-}
-
 void SystemProfile::LoadIntelI9_10900K()
 {
     m_tscFrequency = 3696000000ULL;

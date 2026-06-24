@@ -3,9 +3,10 @@
 #include <WinHvPlatform.h>
 #include "Logger.h"
 
+#include "CpuidHandler.h"
+
 class Partition;
 class ExitDispatcher;
-class CpuidHandler;
 class RdtscHandler;
 class MsrHandler;
 class MagicCpuid;
@@ -23,7 +24,12 @@ public:
     bool Run(uint32_t vcpuIndex);
     void Stop(uint32_t vcpuIndex);
 
-    void SetMagicCpuid(MagicCpuid* magic) { m_magicCpuid = magic; }
+    void SetMagicCpuid(MagicCpuid* magic) {
+        m_magicCpuid = magic;
+        if (m_cpuidHandler) {
+            m_cpuidHandler->SetMagicCpuid(magic);
+        }
+    }
     void SetSyscallHandler(SyscallHandler* handler) { m_syscallHandler = handler; }
     void SetExceptionHandler(ExceptionHandler* handler) { m_exceptionHandler = handler; }
 

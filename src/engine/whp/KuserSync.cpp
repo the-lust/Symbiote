@@ -69,14 +69,15 @@ void KuserSync::ApplyStaticSpoofs()
     // tick count multiplier + initial tick
     *(uint64_t*)(kuser + 0x000) = 0x0FA0000000000000ULL;
 
-    // NtMajorVersion (0x58 = Win 10 20H2), NtMinorVerion, BuildNumber, CSDverion (0x260-0x264)
-    kuser[0x260] = 0x58;
-    *(uint64_t*)(kuser + 0x261) = 0x0100000001000066ULL;
-    kuser[0x264] = 0x01;
-    // SuiteMask, ProductType, reserved
-    *(uint64_t*)(kuser + 0x268) = 0x0A00090001ULL;
-    kuser[0x26c] = 0x0A;
-    kuser[0x26e] = 0x00;
+    // NtMajorVersion (0x0A = Win 10), NtMinorVerion (0x00), BuildNumber (0x2328 = 9000), CSDverion (0x260-0x264)
+    kuser[0x260] = 0x0A;
+    kuser[0x261] = 0x00;
+    *(uint16_t*)(kuser + 0x262) = 0x2328; // BuildNumber
+    kuser[0x264] = 0x00;
+    // SuiteMask, ProductType (0x268-0x26E)
+    *(uint16_t*)(kuser + 0x268) = 0x0001; // SuiteMask low
+    *(uint16_t*)(kuser + 0x26A) = 0x0009; // SuiteMask high
+    *(uint16_t*)(kuser + 0x26C) = 0x000A; // ProductType + flags
     // ProcessorFeatures - broad feature set claim
     *(uint64_t*)(kuser + 0x270) = 0x00ULL;
     *(uint64_t*)(kuser + 0x272) = 0x010100000000ULL;
@@ -97,7 +98,7 @@ void KuserSync::ApplyStaticSpoofs()
     *(uint64_t*)(kuser + 0x2C0) = 0x0000000000000000ULL;
     *(uint64_t*)(kuser + 0x2C8) = 0x0000000000000000ULL;
 
-    // SuiteMask @ 0x2D0 (ULONG) — HyperKD token profile low 32 bits
+    // SuiteMask @ 0x2D0 (ULONG) — i9-10900K workstation token low 32 bits
     *(uint32_t*)(kuser + 0x2D0) = 0x00000110;
     // KdDebuggerEnabled @ 0x2D4 — bit 1 = KdDebuggerNotPresent
     kuser[0x2D4] = 0x02;

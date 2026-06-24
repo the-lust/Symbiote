@@ -251,7 +251,7 @@ PROXY_EXPORT(NtQueryInformationProcess,   Proxy_NtQueryInformationProcess,   20)
 PROXY_EXPORT(NtOpenKey,                   Proxy_NtOpenKey,                   12) // PHANDLE,ACCESS_MASK,POBJECT_ATTRIBUTES
 PROXY_EXPORT(NtQueryValueKey,             Proxy_NtQueryValueKey,             24) // HANDLE,PUNICODE_STRING,ULONG,PVOID,ULONG,PULONG
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {

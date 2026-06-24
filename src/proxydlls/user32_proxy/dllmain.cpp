@@ -65,7 +65,7 @@ PROXY_EXPORT(PeekMessageW,     Proxy_PeekMessageW,     20) // 5
 PROXY_EXPORT(TranslateMessage, Proxy_TranslateMessage,  4) // 1
 PROXY_EXPORT(DispatchMessageW, Proxy_DispatchMessageW,  4) // 1
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {

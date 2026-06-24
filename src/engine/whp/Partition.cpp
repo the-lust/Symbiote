@@ -18,7 +18,38 @@ bool Partition::Create()
         m_logger->Trace(LOG_ERROR, "WHvCreatePartition failed: 0x%08X", hr);
         return false;
     }
-    m_logger->Trace(LOG_WHP, "Partition creatd: handle=0x%p", m_handle);
+    m_logger->Trace(LOG_WHP, "Partition created: handle=0x%p", m_handle);
+
+    // Set MSR exit bitmap to intercept Hyper-V TLFS MSRs + standard MSRs
+    if (!SetupMsrBitmap()) {
+        m_logger->Trace(LOG_WARNING, "MSR bitmap setup failed - MSR interception may be limited");
+    }
+
+    return true;
+}
+
+bool Partition::SetupMsrBitmap()
+{
+    // Use WHV X64 MSR exit bitmap to intercept all unhandled MSRs
+    // (including Hyper-V TLFS MSRs) plus specific standard MSRs
+    WHV_X64_MSR_EXIT_BITMAP bitmap;
+    bitmap.AsUINT64 = 0;
+    bitmap.UnhandledMsrs = 1;        // All MSRs not natively handled by WHP (incl. Hyper-V TLFS)
+    bitmap.TscMsrRead = 1;           // Intercept RDTSC/RDTSCP
+    bitmap.TscMsrWrite = 1;          // Intercept WRMSR TSC
+    bitmap.ApicBaseMsrWrite = 1;     // Intercept APIC_BASE writes
+    bitmap.MiscEnableMsrRead = 1;    // Intercept MISC_ENABLE reads
+    bitmap.McUpdatePatchLevelMsrRead = 1; // Intercept BIOS_SIGN_ID reads
+
+    HRESULT hr = WHvSetPartitionProperty(m_handle,
+        WHvPartitionPropertyCodeX64MsrExitBitmap,
+        &bitmap, sizeof(bitmap));
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "WHvSetPartitionProperty(X64MsrExitBitmap) failed: 0x%08X", hr);
+        return false;
+    }
+
+    m_logger->Trace(LOG_WHP, "MSR exit bitmap configured: UnhandledMsrs=1 Tsc=1 ApicBase=1 MiscEnable=1");
     return true;
 }
 

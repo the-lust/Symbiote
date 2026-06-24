@@ -45,6 +45,9 @@ private:
         EptHookType type;
         void* originalVA;
     };
+
+    bool MapOnViolation(EptEntry& entry, bool fallback);
+
     std::vector<EptEntry> m_hooks;
-    std::unordered_map<uint64_t, EptEntry*> m_gpaIndex;
+    std::unordered_map<uint64_t, size_t> m_gpaIndex; // stores vector index, not pointer (safe across reallocation)
 };

@@ -165,6 +165,10 @@ void AllocTracker::OnAllocation(void* baseAddr, SIZE_T size, ULONG protect)
         tp.guardHits = 0;
         tp.hasCpuid = false;
         tp.isClean = false;
+        tp.modified = true;
+        tp.wasExecutable = false;
+        tp.allocAsRW = (protect == PAGE_READWRITE);
+        tp.reencryptCycle = 0;
         m_trackedPages.push_back(tp);
         guardPages[guardCount++] = page;
     }
@@ -196,10 +200,24 @@ void AllocTracker::OnProtect(void* baseAddr, SIZE_T size, ULONG newProtect)
         for (size_t i = 0; i < m_trackedPages.size(); ) {
             if (m_trackedPages[i].baseAddr == page) {
                 found = true;
+                TrackedPage& tp = m_trackedPages[i];
+
+                // Detect re-encrypt: transitioning from executable back to non-executable
+                if (tp.wasExecutable && !nowExecutable) {
+                    tp.reencryptCycle++;
+                    tp.allocAsRW = (newProtect == PAGE_READWRITE);
+                    m_logger->Trace(LOG_INFO,
+                        "AllocTracker: re-encrypt cycle %u at %llx",
+                        tp.reencryptCycle, page);
+                }
+
                 if (!nowExecutable) {
                     m_trackedPages.erase(m_trackedPages.begin() + i);
                     continue;
                 }
+
+                tp.wasExecutable = true;
+                tp.modified = true;
                 break;
             }
             i++;
@@ -212,6 +230,10 @@ void AllocTracker::OnProtect(void* baseAddr, SIZE_T size, ULONG newProtect)
             tp.guardHits = 0;
             tp.hasCpuid = false;
             tp.isClean = false;
+            tp.modified = true;
+            tp.wasExecutable = true;
+            tp.allocAsRW = false;
+            tp.reencryptCycle = 0;
             m_trackedPages.push_back(tp);
             guardPages[guardCount++] = page;
         }
@@ -247,7 +269,6 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
 {
     uint64_t faultAddr = ep->ExceptionRecord->ExceptionInformation[1];
     uint64_t rip = (uint64_t)ep->ContextRecord->Rip;
-    CONTEXT* ctx = ep->ContextRecord;
 
     EnterCriticalSection(&m_cs);
 
@@ -278,16 +299,38 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
 
         LeaveCriticalSection(&m_cs);
 
-        DWORD oldProtect;
-        int patchSize = isRdtscp ? 3 : 2;
-        if (VirtualProtect((void*)rip, patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            *(uint16_t*)rip = 0x0B0F;
-            if (patchSize == 3) *(uint8_t*)(rip + 2) = 0x0B;
-            VirtualProtect((void*)rip, patchSize, oldProtect, &oldProtect);
-            FlushInstructionCache(GetCurrentProcess(), (void*)rip, patchSize);
+        // Full register emulation: execute real instruction then spoof
+        if (isCpuid) {
+            int cpuInfo[4] = {0};
+            uint32_t leaf = (uint32_t)ep->ContextRecord->Rax;
+            uint32_t subleaf = (uint32_t)ep->ContextRecord->Rcx;
+            __cpuidex(cpuInfo, leaf, subleaf);
+            ep->ContextRecord->Rax = (uint64_t)(uint32_t)cpuInfo[0];
+            ep->ContextRecord->Rbx = (uint64_t)(uint32_t)cpuInfo[1];
+            ep->ContextRecord->Rcx = (uint64_t)(uint32_t)cpuInfo[2];
+            ep->ContextRecord->Rdx = (uint64_t)(uint32_t)cpuInfo[3];
+
+            // Mirror the WHP spoofing: clear hypervisor bit
+            if (leaf == 1) {
+                ep->ContextRecord->Rcx &= ~(1u << 31);
+                ep->ContextRecord->Rcx &= ~(1u << 6);
+            }
+        } else if (isRdtsc) {
+            ep->ContextRecord->Rax = (uint64_t)(uint32_t)__rdtsc();
+            ep->ContextRecord->Rdx = (uint64_t)(__rdtsc() >> 32);
+        } else if (isRdtscp) {
+            unsigned aux;
+            uint64_t tsc = __rdtscp(&aux);
+            ep->ContextRecord->Rax = (uint64_t)(uint32_t)tsc;
+            ep->ContextRecord->Rdx = (uint64_t)(tsc >> 32);
+            ep->ContextRecord->Rcx = 1;
         }
 
-        m_logger->Trace(LOG_INFO, "AllocTracker: patched %s at %p in tracked page %llx (hit %u)",
+        // Advance RIP past the instruction
+        ep->ContextRecord->Rip += (isRdtscp ? 3 : 2);
+
+        m_logger->Trace(LOG_INFO,
+            "AllocTracker: emulated %s at %p in tracked page %llx (hit %u)",
             isCpuid ? "CPUID" : isRdtsc ? "RDTSC" : "RDTSCP",
             (void*)rip, pageBase, hits);
 
@@ -309,40 +352,23 @@ void AllocTracker::RescanTrackedPages()
 
     for (size_t idx = 0; idx < m_trackedPages.size(); idx++) {
         TrackedPage& page = m_trackedPages[idx];
+
+        // Skip clean pages (not modified since last rescan)
+        if (!page.modified) continue;
+        page.modified = false;
+
         uint8_t* start = (uint8_t*)page.baseAddr;
 
         __try {
             for (uint32_t off = 0; off < 0x1000 - 3; off++) {
                 if (start[off] == 0x0F) {
                     if (start[off + 1] == 0xA2) {
-                        void* addr = start + off;
-                        DWORD oldProtect;
-                        if (VirtualProtect(addr, 2, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                            *(uint16_t*)addr = 0x0B0F;
-                            VirtualProtect(addr, 2, oldProtect, &oldProtect);
-                            FlushInstructionCache(GetCurrentProcess(), addr, 2);
-                        }
                         page.hasCpuid = true;
                         page.isClean = false;
                         off += 1;
                     } else if (start[off + 1] == 0x31) {
-                        void* addr = start + off;
-                        DWORD oldProtect;
-                        if (VirtualProtect(addr, 2, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                            *(uint16_t*)addr = 0x0B0F;
-                            VirtualProtect(addr, 2, oldProtect, &oldProtect);
-                            FlushInstructionCache(GetCurrentProcess(), addr, 2);
-                        }
                         off += 1;
                     } else if (start[off + 1] == 0x01 && start[off + 2] == 0xF9) {
-                        void* addr = start + off;
-                        DWORD oldProtect;
-                        if (VirtualProtect(addr, 3, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                            *(uint16_t*)addr = 0x0B0F;
-                            *(uint8_t*)((uint8_t*)addr + 2) = 0x0B;
-                            VirtualProtect(addr, 3, oldProtect, &oldProtect);
-                            FlushInstructionCache(GetCurrentProcess(), addr, 3);
-                        }
                         off += 2;
                     }
                 }
@@ -434,7 +460,10 @@ NTSTATUS NTAPI AllocTracker::HookedNtFreeVirtualMemory(
     NTSTATUS status = orig(ProcessHandle, BaseAddress, RegionSize, FreeType);
 
     if (NT_SUCCESS(status) && ProcessHandle == GetCurrentProcess() && BaseAddress && *BaseAddress) {
-        g_allocTracker->OnFree(*BaseAddress);
+        // Only remove tracked pages on MEM_RELEASE; MEM_DECOMMIT may still be in use
+        if (FreeType & MEM_RELEASE) {
+            g_allocTracker->OnFree(*BaseAddress);
+        }
     }
 
     return status;
