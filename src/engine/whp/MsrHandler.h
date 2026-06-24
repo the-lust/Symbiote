@@ -59,7 +59,27 @@ private:
     static const uint32_t MSR_IA32_FS_BASE       = 0xC0000100;
     static const uint32_t MSR_IA32_GS_BASE       = 0xC0000101;
     static const uint32_t MSR_IA32_KERNEL_GS_BASE = 0xC0000102;
-    static const uint32_t MSR_HV_X64_GUEST_IDLE  = 0x400000F0;
+    // Hyper-V TLFS MSRs (must all return 0/garbage to hide hypervisor)
+    static const uint32_t MSR_HV_GUEST_OS_ID     = 0x40000000;
+    static const uint32_t MSR_HV_HYPERCALL       = 0x40000001;
+    static const uint32_t MSR_HV_VP_INDEX        = 0x40000002;
+    static const uint32_t MSR_HV_RESET           = 0x40000003;
+    static const uint32_t MSR_HV_VP_RUNTIME      = 0x40000004;
+    static const uint32_t MSR_HV_TSC_FREQ        = 0x40000005;
+    static const uint32_t MSR_HV_APIC_FREQ       = 0x40000006;
+    static const uint32_t MSR_HV_EOI             = 0x40000010;
+    static const uint32_t MSR_HV_ICR             = 0x40000020;
+    static const uint32_t MSR_HV_TPR             = 0x40000021;
+    static const uint32_t MSR_HV_VP_ASSIST_PAGE  = 0x40000022;
+    static const uint32_t MSR_HV_REENLIGHTENMENT = 0x40000070;
+    static const uint32_t MSR_HV_TSC_DEADLINE    = 0x40000071;
+    static const uint32_t MSR_HV_REFERENCE_TSC   = 0x40000072;
+    static const uint32_t MSR_HV_GUEST_IDLE      = 0x400000F0;
+
+    // IA32_VMX capability MSRs (0x480-0x493, 20 MSRs)
+    static const uint32_t MSR_IA32_VMX_RANGE_START = 0x480;
+    static const uint32_t MSR_IA32_VMX_RANGE_END   = 0x493;
+    static const uint32_t MSR_IA32_VMX_COUNT       = 20;
 
     // Tracked MSR state
     uint64_t m_efer;
@@ -70,6 +90,7 @@ private:
     bool m_sceAlwaysTrue;
 
     std::unordered_map<uint32_t, uint64_t> m_trackedMsrs;
+    uint64_t m_vmxMsrs[MSR_IA32_VMX_COUNT]; // cached real HW values for 0x480-0x493
 
     bool IsValidMsr(uint32_t msr);
     uint64_t GetSpoofedMsr(uint32_t msr);

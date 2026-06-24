@@ -128,7 +128,7 @@ PROXY_EXPORT(GetUserNameW,       Proxy_GetUserNameW,        8) // 2
 PROXY_EXPORT(CreateFileW,        Proxy_CreateFileW,        28) // 7
 PROXY_EXPORT(CreateFileA,        Proxy_CreateFileA,        28) // 7
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {

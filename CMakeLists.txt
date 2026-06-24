@@ -5,6 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+if(MSVC)
+    add_compile_options(/W4 /WX)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+else()
+    add_compile_options(-Wall -Wextra -Werror)
+endif()
+
 option(SYMBIOTE_DEBUG "Enable debug logging in engine and launcher" OFF)
 option(SYMBIOTE_MINGW "Build with MinGW compatibility (disable WHP-dependent features)" OFF)
 
@@ -62,6 +69,7 @@ set(ENGINE_SOURCES
     src/engine/whp/CodePatcher.cpp
     src/engine/whp/KuserHook.cpp
     src/engine/whp/MsrPatcher.cpp
+    src/engine/whp/Canary.cpp
     # Syscall emulator
     src/engine/emu/CryptoEmu.cpp
     src/engine/emu/FileEmu.cpp
@@ -112,7 +120,7 @@ endif()
 add_library(engine SHARED ${ENGINE_SOURCES})
 target_include_directories(engine PRIVATE src/engine src/engine/log src/launcher)
 target_link_libraries(engine PRIVATE logger)
-if(NOT GENJUTSU_NO_WHP)
+if(NOT SYMBIOTE_NO_WHP)
     target_link_libraries(engine PRIVATE ${WHP_LIBRARY})
 endif()
 if(WIN32)
@@ -150,5 +158,8 @@ add_proxy_dll(ws2_32_proxy     src/proxydlls/ws2_32_proxy/dllmain.cpp)
 add_executable(verify src/verify/Main.cpp)
 target_include_directories(verify PRIVATE src/engine/log)
 target_link_libraries(verify PRIVATE logger)
+
+# ─── Handshake Test Tool ──────────────────────────────────────────────
+add_executable(handshake_test tools/handshake_test/Main.cpp)
 
 

@@ -36,7 +36,7 @@ static std::wstring BrowseForExe() {
     return L"";
 }
 
-int main(int argc, char** argv)
+int main(int, char**)
 {
     std::wstring targetExe;
     std::wstring targetArgs;

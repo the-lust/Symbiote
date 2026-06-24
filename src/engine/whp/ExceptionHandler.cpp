@@ -5,7 +5,7 @@ ExceptionHandler::ExceptionHandler(Logger* logger)
 {
 }
 
-bool ExceptionHandler::HandleException(WHV_VP_EXIT_CONTEXT* ctx, uint32_t exceptionCode,
+bool ExceptionHandler::HandleException(WHV_VP_EXIT_CONTEXT*, uint32_t exceptionCode,
                                         uint64_t** regs, uint64_t* rip)
 {
     switch (exceptionCode) {
@@ -20,7 +20,7 @@ bool ExceptionHandler::HandleException(WHV_VP_EXIT_CONTEXT* ctx, uint32_t except
     }
 }
 
-bool ExceptionHandler::HandleGpFault(uint64_t** regs, uint64_t* rip)
+bool ExceptionHandler::HandleGpFault(uint64_t**, uint64_t* rip)
 {
     if (!rip) return false;
     m_logger->Trace(LOG_WHP, "VM #GP fault at RIP 0x%llX - skipping instruction", *rip);
@@ -29,7 +29,7 @@ bool ExceptionHandler::HandleGpFault(uint64_t** regs, uint64_t* rip)
     return true;
 }
 
-bool ExceptionHandler::HandleUdFault(uint64_t** regs, uint64_t* rip)
+bool ExceptionHandler::HandleUdFault(uint64_t**, uint64_t* rip)
 {
     if (!rip) return false;
     m_logger->Trace(LOG_WHP, "VM #UD fault at RIP 0x%llX - skipping instruction", *rip);

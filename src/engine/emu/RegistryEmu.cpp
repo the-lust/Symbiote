@@ -77,15 +77,13 @@ static std::wstring GetKeyPathFromAttributes(uint64_t attrPtr)
 
 bool RegistryEmu::HandleNtOpenKey(uint64_t* args, uint64_t* result)
 {
-    uint64_t keyHandlePtr = args[0];
-    uint32_t access = (uint32_t)args[2];
     uint64_t attrPtr = args[3];
 
     std::wstring path = GetKeyPathFromAttributes(attrPtr);
     bool sensitive = IsSensitiveKey(path);
 
     if (sensitive) {
-        *result = STATUS_OBJECT_NAME_NOT_FOUND;
+        *result = (uint64_t)STATUS_OBJECT_NAME_NOT_FOUND;
         m_logger->Trace(LOG_EMU, "NtOpenKey BLOCKED: %s", path.c_str());
         return true;
     }
@@ -95,21 +93,21 @@ bool RegistryEmu::HandleNtOpenKey(uint64_t* args, uint64_t* result)
     return false;
 }
 
-bool RegistryEmu::HandleNtQueryValueKey(uint64_t* args, uint64_t* result)
+bool RegistryEmu::HandleNtQueryValueKey(uint64_t*, uint64_t*)
 {
     // fall through
     return false;
 }
 
-bool RegistryEmu::HandleNtEnumerateKey(uint64_t* args, uint64_t* result)
+bool RegistryEmu::HandleNtEnumerateKey(uint64_t*, uint64_t* result)
 {
-    *result = STATUS_NO_MORE_ENTRIES;
+    *result = (uint64_t)STATUS_NO_MORE_ENTRIES;
     return true;
 }
 
-bool RegistryEmu::HandleNtEnumerateValueKey(uint64_t* args, uint64_t* result)
+bool RegistryEmu::HandleNtEnumerateValueKey(uint64_t*, uint64_t* result)
 {
-    *result = STATUS_NO_MORE_ENTRIES;
+    *result = (uint64_t)STATUS_NO_MORE_ENTRIES;
     return true;
 }
 
@@ -123,13 +121,13 @@ bool RegistryEmu::HandleNtCreateKey(uint64_t* args, uint64_t* result)
         *(HANDLE*)(uintptr_t)keyHandlePtr = (HANDLE)(ULONG_PTR)handle;
     }
 
-    *result = STATUS_SUCCESS;
+    *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }
 
-bool RegistryEmu::HandleNtDeleteKey(uint64_t* args, uint64_t* result)
+bool RegistryEmu::HandleNtDeleteKey(uint64_t*, uint64_t* result)
 {
-    *result = STATUS_SUCCESS;
+    *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }
 
@@ -140,6 +138,6 @@ bool RegistryEmu::HandleNtClose(uint64_t* args, uint64_t* result)
         [handle](const VirtualKey& k) { return k.handle == handle; });
     m_virtualKeys.erase(it, m_virtualKeys.end());
 
-    *result = STATUS_SUCCESS;
+    *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }

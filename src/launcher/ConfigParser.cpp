@@ -92,7 +92,7 @@ bool ConfigParser::GetBool(const std::string& section, const std::string& key, b
     auto it = m_values.find(section + "." + key);
     if (it != m_values.end()) {
         std::string val = it->second;
-        std::transform(val.begin(), val.end(), val.begin(), ::tolower);
+        std::transform(val.begin(), val.end(), val.begin(), [](unsigned char c) { return (char)std::tolower(c); });
         if (val == "true" || val == "1" || val == "yes" || val == "on") return true;
         if (val == "false" || val == "0" || val == "no" || val == "off") return false;
         return defaultVal;

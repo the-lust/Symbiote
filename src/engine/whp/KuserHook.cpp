@@ -33,7 +33,7 @@ void KuserHook::CopyStaticSpoofs()
 
     uint8_t* kuser = (uint8_t*)m_spoofedKuser;
 
-    // override some fields to match HyperKD i9-10900K profile
+    // override some fields to match i9-10900K reference profile
 
     // NtMajorVersion=10, NtMinorVersion=0, NtBuildNumber=9000 (0x2328)
     kuser[0x260] = 0x0A; // MajorVersion = 10 (Win 10)
@@ -44,12 +44,12 @@ void KuserHook::CopyStaticSpoofs()
     kuser[0x264] = 0x00;
     kuser[0x265] = 0x00;
 
-    // SuiteMask, ProductType (0x268-0x26E) - HyperKD style
+    // SuiteMask, ProductType (0x268-0x26E) - i9-10900K workstation layout
     *(uint16_t*)(kuser + 0x268) = 0x0001; // SuiteMask low
     *(uint16_t*)(kuser + 0x26A) = 0x0009; // SuiteMask high
     *(uint16_t*)(kuser + 0x26C) = 0x000A; // ProductType + flags
 
-    // ProcessorFeatures — match HyperKD per-byte pattern (0x270-0x2C0)
+    // ProcessorFeatures — match i9-10900K per-byte pattern (0x270-0x2C0)
     *(uint64_t*)(kuser + 0x272) = 0x0001000100000000ULL;
     *(uint64_t*)(kuser + 0x273) = 0x0101000100010000ULL;
     *(uint64_t*)(kuser + 0x281) = 0x0100000100010101ULL;

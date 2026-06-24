@@ -75,7 +75,7 @@ bool FileEmu::HandleNtCreateFile(uint64_t* args, uint64_t* result)
     m_logger->Trace(LOG_EMU, "NtCreateFile: %ls", path.c_str());
 
     if (IsSensitiveFile(path)) {
-        *result = STATUS_OBJECT_NAME_NOT_FOUND;
+        *result = (uint64_t)STATUS_OBJECT_NAME_NOT_FOUND;
         return true;
     }
 
@@ -83,19 +83,19 @@ bool FileEmu::HandleNtCreateFile(uint64_t* args, uint64_t* result)
     return false;
 }
 
-bool FileEmu::HandleNtReadFile(uint64_t* args, uint64_t* result)
+bool FileEmu::HandleNtReadFile(uint64_t*, uint64_t*)
 {
     // fall through
     return false;
 }
 
-bool FileEmu::HandleNtWriteFile(uint64_t* args, uint64_t* result)
+bool FileEmu::HandleNtWriteFile(uint64_t*, uint64_t*)
 {
     // fall through
     return false;
 }
 
-bool FileEmu::HandleNtQueryInformationFile(uint64_t* args, uint64_t* result)
+bool FileEmu::HandleNtQueryInformationFile(uint64_t*, uint64_t*)
 {
     // fall through
     return false;
@@ -109,7 +109,7 @@ bool FileEmu::HandleNtQueryVolumeInformationFile(uint64_t* args, uint64_t* resul
 
     switch (infoClass) {
         case 5: { // FileFsSizeInformation
-            if (length < 24) { *result = STATUS_INFO_LENGTH_MISMATCH; return true; }
+            if (length < 24) { *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH; return true; }
             typedef struct _FILE_FS_SIZE_INFO {
                 LARGE_INTEGER TotalAllocationUnits;
                 LARGE_INTEGER AvailableAllocationUnits;
@@ -122,11 +122,11 @@ bool FileEmu::HandleNtQueryVolumeInformationFile(uint64_t* args, uint64_t* resul
             info.SectorsPerAllocationUnit = 8;
             info.BytesPerSector = 512;
             memcpy((void*)(uintptr_t)buffer, &info, sizeof(info));
-            *result = STATUS_SUCCESS;
+            *result = (uint64_t)STATUS_SUCCESS;
             return true;
         }
         default:
-            *result = STATUS_SUCCESS;
+            *result = (uint64_t)STATUS_SUCCESS;
             return true;
     }
 }
@@ -143,7 +143,7 @@ bool FileEmu::HandleNtDeviceIoControlFile(uint64_t* args, uint64_t* result)
             uint32_t outputLength = (uint32_t)args[8];
 
             if (outputLength < sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
-                *result = STATUS_BUFFER_TOO_SMALL;
+                *result = (uint64_t)STATUS_BUFFER_TOO_SMALL;
                 return true;
             }
 
@@ -166,7 +166,7 @@ bool FileEmu::HandleNtDeviceIoControlFile(uint64_t* args, uint64_t* result)
                 memset((void*)((uintptr_t)outputBuffer + sizeof(STORAGE_DEVICE_DESCRIPTOR)), 0,
                        outputLength - sizeof(STORAGE_DEVICE_DESCRIPTOR));
             }
-            *result = STATUS_SUCCESS;
+            *result = (uint64_t)STATUS_SUCCESS;
             return true;
         }
         default:

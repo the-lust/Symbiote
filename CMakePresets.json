@@ -10,7 +10,7 @@
             "binaryDir": "${sourceDir}/build/msvc/x64",
             "cacheVariables": {
                 "CMAKE_CONFIGURATION_TYPES": "Release",
-                "GENJUTSU_DEBUG": "OFF"
+                "SYMBIOTE_DEBUG": "OFF"
             }
         },
         {
@@ -22,7 +22,7 @@
             "binaryDir": "${sourceDir}/build/msvc/x64-debug",
             "cacheVariables": {
                 "CMAKE_CONFIGURATION_TYPES": "Debug",
-                "GENJUTSU_DEBUG": "ON"
+                "SYMBIOTE_DEBUG": "ON"
             }
         },
         {
@@ -34,7 +34,7 @@
             "binaryDir": "${sourceDir}/build/msvc/x86",
             "cacheVariables": {
                 "CMAKE_CONFIGURATION_TYPES": "Release",
-                "GENJUTSU_DEBUG": "OFF"
+                "SYMBIOTE_DEBUG": "OFF"
             }
         },
         {
@@ -46,7 +46,7 @@
             "binaryDir": "${sourceDir}/build/msvc/x86-debug",
             "cacheVariables": {
                 "CMAKE_CONFIGURATION_TYPES": "Debug",
-                "GENJUTSU_DEBUG": "ON"
+                "SYMBIOTE_DEBUG": "ON"
             }
         },
         {
@@ -57,7 +57,7 @@
             "binaryDir": "${sourceDir}/build/mingw/x64",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "GENJUTSU_MINGW": "ON"
+                "SYMBIOTE_MINGW": "ON"
             }
         },
         {
@@ -68,7 +68,7 @@
             "binaryDir": "${sourceDir}/build/mingw/x86",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "GENJUTSU_MINGW": "ON",
+                "SYMBIOTE_MINGW": "ON",
                 "CMAKE_CXX_FLAGS": "-m32"
             }
         }

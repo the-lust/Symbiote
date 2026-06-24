@@ -400,7 +400,7 @@ extern "C" HRESULT STDMETHODCALLTYPE Proxy_CoCreateInstance(REFCLSID rclsid, IUn
 // CoCreateInstance: 5 params (REFCLSID, IUnknown*, DWORD, REFIID, void**). STDMETHODCALLTYPE == __stdcall on x86.
 PROXY_EXPORT(CoCreateInstance, Proxy_CoCreateInstance, 20)
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
         g_logger.Init();

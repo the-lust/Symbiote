@@ -64,7 +64,7 @@ bool CryptoEmu::HandleNtOpenProcessToken(uint64_t* args, uint64_t* result)
     return true;
 }
 
-bool CryptoEmu::HandleCryptGetProvParam(uint64_t* args, uint64_t* result)
+bool CryptoEmu::HandleCryptGetProvParam(uint64_t*, uint64_t* result)
 {
     // CryptGetProvParam is used to get CryptoAPI container name
     // This is a Win32 API, not a syscall. Intercepted via IAT patch.
