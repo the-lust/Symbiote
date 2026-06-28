@@ -2,10 +2,10 @@
 #include "kernel/IKernelBackend.h"
 #include "MagicCpuid.h"
 #include "TimingCoordinator.h"
+#include "util/HwDetect.h"
 #include <cstring>
 #include <intrin.h>
 
-// Mask bits for leaf 1 ECX
 #define CPUID_ECX_HYPERVISOR_BIT  (1u << 31)
 #define CPUID_ECX_SMX_BIT        (1u << 6)
 
@@ -29,6 +29,9 @@ CpuidHandler::CpuidHandler(Logger* logger, IKernelBackend* backend)
     srand((unsigned int)GetCurrentProcessId() ^ (unsigned int)GetTickCount64());
     m_brandString[0] = 0;
     m_enhancedBrand[0] = 0;
+    m_cpuVendor[0] = 0;
+    const char* vendor = DetectCpuVendor();
+    strncpy_s(m_cpuVendor, sizeof(m_cpuVendor), vendor, _TRUNCATE);
 }
 
 CpuidHandler::~CpuidHandler()
@@ -49,14 +52,23 @@ void CpuidHandler::SetEnhancedBrandString(const char* brand)
     m_hasEnhancedBrand = (m_enhancedBrand[0] != 0);
 }
 
+void CpuidHandler::AutoGenerateBrandString(uint64_t tscFrequency)
+{
+    char autoBrand[49] = {0};
+    GenerateBrandString(m_cpuVendor, tscFrequency, autoBrand, sizeof(autoBrand));
+    if (!m_hasBrandString && autoBrand[0]) {
+        m_logger->Trace(LOG_INFO, "Auto-generated brand string: '%s' (vendor=%s freq=%llu)",
+            autoBrand, m_cpuVendor, tscFrequency);
+        SetBrandString(autoBrand);
+    }
+}
+
 bool CpuidHandler::HandleBrandStringLeaf(uint32_t leaf, uint64_t* rax, uint64_t* rbx,
                                           uint64_t* rcx, uint64_t* rdx)
 {
-    // Leaves 0x80000002-0x80000004: 48-byte processor brand string
     if (leaf < 0x80000002 || leaf > 0x80000004)
         return false;
 
-    // Determine active brand string (enhanced mode takes priority)
     const char* brand = m_brandString;
     if (m_magicCpuid && m_magicCpuid->IsEnhancedMode() && m_hasEnhancedBrand) {
         brand = m_enhancedBrand;
@@ -65,7 +77,6 @@ bool CpuidHandler::HandleBrandStringLeaf(uint32_t leaf, uint64_t* rax, uint64_t*
     if (!brand || brand[0] == 0)
         return false;
 
-    // Each leaf returns 16 bytes in EAX,EBX,ECX,EDX
     unsigned int offset = (leaf - 0x80000002) * 16;
     size_t len = strnlen_s(brand, 48);
 
@@ -154,9 +165,11 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
         *rdx = (uint32_t)cpuInfo[3];
     }
 
+    // Apply universal feature masking to hide host-specific CPU features
+    ApplyUniversalMask(leaf, subleaf, rax, rbx, rcx, rdx);
+
     // Clear hypervisor present bit + SMX/TXT bit in leaf 1 ECX
     if (leaf == 1) {
-        *rcx &= ~CPUID_ECX_HYPERVISOR_BIT;
         *rcx &= ~CPUID_ECX_SMX_BIT;
     }
 
@@ -164,4 +177,115 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
         leaf, subleaf, spoofed ? "SPOOFED" : "PASSTHROUGH", *rax, *rbx, *rcx, *rdx);
 
     return true;
+}
+
+void CpuidHandler::ApplyUniversalMask(uint32_t leaf, uint32_t subleaf,
+                                       uint64_t* rax, uint64_t* rbx,
+                                       uint64_t* rcx, uint64_t* rdx)
+{
+    uint32_t eax = (uint32_t)*rax;
+    uint32_t ebx = (uint32_t)*rbx;
+    uint32_t ecx = (uint32_t)*rcx;
+    uint32_t edx = (uint32_t)*rdx;
+    ApplyFeatureMask(leaf, subleaf, m_cpuVendor, &eax, &ebx, &ecx, &edx);
+    *rax = ((uint64_t)eax) | (*rax & 0xFFFFFFFF00000000ULL);
+    *rbx = ((uint64_t)ebx) | (*rbx & 0xFFFFFFFF00000000ULL);
+    *rcx = ((uint64_t)ecx) | (*rcx & 0xFFFFFFFF00000000ULL);
+    *rdx = ((uint64_t)edx) | (*rdx & 0xFFFFFFFF00000000ULL);
+}
+
+void CpuidHandler::GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount)
+{
+    int idx = 0;
+
+    // WHP CPUID result list pre-populates known spoof values so WHP
+    // doesn't need to VM-exit for these leaves (from libkrun pattern).
+    auto add = [&](uint32_t leaf, uint32_t, uint32_t eax,
+                   uint32_t ebx, uint32_t ecx, uint32_t edx) {
+        if (idx >= maxCount) return;
+        results[idx].Function = leaf;
+        results[idx].Reserved[0] = 0;
+        results[idx].Reserved[1] = 0;
+        results[idx].Reserved[2] = 0;
+        results[idx].Eax = eax;
+        results[idx].Ebx = ebx;
+        results[idx].Ecx = ecx;
+        results[idx].Edx = edx;
+        idx++;
+    };
+
+    // Leaf 0: Vendor string + max leaf
+    int cpuInfo[4] = {0};
+    __cpuidex(cpuInfo, 0, 0);
+    uint32_t maxLeaf = (uint32_t)cpuInfo[0];
+    add(0, 0, maxLeaf, 0x756E6547, 0x6C65746E, 0x49656E69); // "GenuineIntel"
+
+    // Leaf 1: Feature info — use spoofed from backend or generic Haswell-like
+    CpuidResult cr;
+    if (m_backend && m_backend->HandleCpuid(1, 0, cr)) {
+        uint32_t ecx1 = cr.ecx & ~CPUID_ECX_HYPERVISOR_BIT;
+        ApplyFeatureMask(1, 0, m_cpuVendor, &cr.eax, &cr.ebx, &ecx1, &cr.edx);
+        add(1, 0, cr.eax, cr.ebx, ecx1, cr.edx);
+    } else {
+        __cpuidex(cpuInfo, 1, 0);
+        uint32_t eax1 = (uint32_t)cpuInfo[0], ebx1 = (uint32_t)cpuInfo[1];
+        uint32_t ecx1 = (uint32_t)cpuInfo[2] & ~CPUID_ECX_HYPERVISOR_BIT;
+        uint32_t edx1 = (uint32_t)cpuInfo[3];
+        ApplyFeatureMask(1, 0, m_cpuVendor, &eax1, &ebx1, &ecx1, &edx1);
+        add(1, 0, eax1, ebx1, ecx1, edx1);
+    }
+
+    // Leaf 7 subleaf 0: Structured extended features — masked
+    CpuidResult cr7;
+    if (m_backend && m_backend->HandleCpuid(7, 0, cr7)) {
+        ApplyFeatureMask(7, 0, m_cpuVendor, &cr7.eax, &cr7.ebx, &cr7.ecx, &cr7.edx);
+        add(7, 0, cr7.eax, cr7.ebx, cr7.ecx, cr7.edx);
+    } else {
+        __cpuidex(cpuInfo, 7, 0);
+        uint32_t eax7 = (uint32_t)cpuInfo[0];
+        uint32_t ebx7 = (uint32_t)cpuInfo[1];
+        uint32_t ecx7 = (uint32_t)cpuInfo[2];
+        uint32_t edx7 = (uint32_t)cpuInfo[3];
+        ApplyFeatureMask(7, 0, m_cpuVendor, &eax7, &ebx7, &ecx7, &edx7);
+        add(7, 0, eax7, ebx7, ecx7, edx7);
+    }
+
+    // Leaf 0xA: PMU — zeroed
+    add(0xA, 0, 0, 0, 0, 0);
+
+    // Leaves 0x80000000-0x80000008 (extended): spoofed from backend or generic
+    if (m_backend && m_backend->HandleCpuid(0x80000000, 0, cr)) {
+        add(0x80000000, 0, cr.eax, cr.ebx, cr.ecx, cr.edx);
+    } else {
+        __cpuidex(cpuInfo, 0x80000000, 0);
+        add(0x80000000, 0, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1], (uint32_t)cpuInfo[2], (uint32_t)cpuInfo[3]);
+    }
+    if (m_backend && m_backend->HandleCpuid(0x80000001, 0, cr)) {
+        uint32_t ecxEx = cr.ecx, edxEx = cr.edx;
+        ApplyFeatureMask(0x80000001, 0, m_cpuVendor, &cr.eax, &cr.ebx, &ecxEx, &edxEx);
+        add(0x80000001, 0, cr.eax, cr.ebx, ecxEx, edxEx);
+    } else {
+        __cpuidex(cpuInfo, 0x80000001, 0);
+        uint32_t eaxEx = (uint32_t)cpuInfo[0], ebxEx = (uint32_t)cpuInfo[1];
+        uint32_t ecxEx = (uint32_t)cpuInfo[2], edxEx = (uint32_t)cpuInfo[3];
+        ApplyFeatureMask(0x80000001, 0, m_cpuVendor, &eaxEx, &ebxEx, &ecxEx, &edxEx);
+        add(0x80000001, 0, eaxEx, ebxEx, ecxEx, edxEx);
+    }
+
+    // Brand string leaves — populated from our brand string or auto-generated
+    if (m_hasBrandString) {
+        for (uint32_t lf = 0x80000002; lf <= 0x80000004; lf++) {
+            uint64_t ra, rb, rc, rd;
+            HandleBrandStringLeaf(lf, &ra, &rb, &rc, &rd);
+            add(lf, 0, (uint32_t)ra, (uint32_t)rb, (uint32_t)rc, (uint32_t)rd);
+        }
+    }
+
+    // Hypervisor leaves 0x40000000-0x40000006: hidden (all zeros)
+    for (uint32_t lf = 0x40000000; lf <= 0x40000006; lf++) {
+        add(lf, 0, 0, 0, 0, 0);
+    }
+
+    *count = idx;
+    m_logger->Trace(LOG_WHP, "CpuidResultList populated: %d leaves (WHP exits only for unlisted leaves)", idx);
 }

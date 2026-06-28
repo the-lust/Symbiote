@@ -22,6 +22,15 @@ public:
     void SetBrandString(const char* brand);
     const char* GetBrandString() const { return m_brandString; }
     void SetEnhancedBrandString(const char* brand);
+    void AutoGenerateBrandString(uint64_t tscFrequency);
+
+    // CPU vendor auto-detection + universal feature masking
+    const char* GetCpuVendor() const { return m_cpuVendor; }
+    void ApplyUniversalMask(uint32_t leaf, uint32_t subleaf,
+                            uint64_t* rax, uint64_t* rbx,
+                            uint64_t* rcx, uint64_t* rdx);
+    // Populate WHP CPUID result list with known spoofs so WHP doesn't exit
+    void GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount);
 
 private:
     bool HandleBrandStringLeaf(uint32_t leaf, uint64_t* rax, uint64_t* rbx,
@@ -37,4 +46,5 @@ private:
     char m_enhancedBrand[49];
     bool m_hasBrandString;
     bool m_hasEnhancedBrand;
+    char m_cpuVendor[16];
 };
