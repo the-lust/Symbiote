@@ -1,4 +1,5 @@
 #include "Partition.h"
+#include "CpuidHandler.h"
 #include <winerror.h>
 
 Partition::Partition(Logger* logger)
@@ -50,6 +51,33 @@ bool Partition::SetupMsrBitmap()
     }
 
     m_logger->Trace(LOG_WHP, "MSR exit bitmap configured: UnhandledMsrs=1 Tsc=1 ApicBase=1 MiscEnable=1");
+    return true;
+}
+
+bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
+{
+    if (!m_handle || !cpuidHandler) return false;
+
+    // Pre-populate known CPUID leaves so WHP doesn't VM-exit for them
+    // (from libkrun pattern — reduces overhead and detection surface)
+    WHV_X64_CPUID_RESULT results[32];
+    int count = 0;
+    cpuidHandler->GetCpuidResultList(results, &count, 32);
+
+    if (count == 0) {
+        m_logger->Trace(LOG_WHP, "CpuidResultList empty — all leaves will VM-exit");
+        return true;
+    }
+
+    HRESULT hr = WHvSetPartitionProperty(m_handle,
+        WHvPartitionPropertyCodeCpuidResultList,
+        results, (uint32_t)(count * sizeof(WHV_X64_CPUID_RESULT)));
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "WHvSetPartitionProperty(CpuidResultList) failed: 0x%08X", hr);
+        return false;
+    }
+
+    m_logger->Trace(LOG_WHP, "CPUID result list set: %d leaves pre-populated", count);
     return true;
 }
 

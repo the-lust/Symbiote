@@ -4,6 +4,8 @@
 #include "Logger.h"
 #include <vector>
 
+class CpuidHandler;
+
 class Partition {
 public:
     explicit Partition(Logger* logger);
@@ -13,6 +15,7 @@ public:
     bool SetupCpuCount(uint32_t count);
     bool SetupMemory(uint64_t sizeMB);
     bool SetupMsrBitmap();
+    bool SetupCpuidResultList(CpuidHandler* cpuidHandler);
     bool Init();
     void Destroy();
 

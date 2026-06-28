@@ -32,6 +32,7 @@
 #include "proxy/InlineHook.h"
 #include "kernel/SystemProfile.h"
 #include "kernel/KernelBackend.h"
+#include "util/HwDetect.h"
 
 static Logger g_logger;
 static TimingCoordinator g_timingCoordinator;
@@ -467,6 +468,19 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
     g_systemProfile->LoadFromConfig(&configParser);
 
+    // Auto-detect host TSC frequency (from libkrun: CPUID 0x15/0x16/QPC)
+    uint64_t detectedTsc = DetectTscFrequency();
+    uint64_t configTsc = configParser.GetUint64("timing", "tsc_frequency", 0);
+    if (configTsc == 0) {
+        // No config override — use detected value
+        g_systemProfile->SetTscFrequency(detectedTsc);
+        g_logger.Trace(LOG_INFO, "TSC frequency auto-detected: %llu Hz (%.2f GHz)",
+            detectedTsc, (double)detectedTsc / 1000000000.0);
+    } else {
+        g_logger.Trace(LOG_INFO, "TSC frequency from config: %llu Hz (detected: %llu Hz)",
+            configTsc, detectedTsc);
+    }
+
     // GPU bridge - always initialized so GPU calls never intercepted
     g_gpuBridge = new GpuBridge(&g_logger);
     g_gpuBridge->Initialize();
@@ -487,6 +501,11 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             g_cpuidHandler->SetEnhancedBrandString(enhancedBrand.c_str());
             g_logger.Trace(LOG_INFO, "CPUID enhanced brand string set: '%s'", enhancedBrand.c_str());
         }
+
+        // Auto-generate brand string from vendor + detected frequency if none configured
+        // (from libkrun's brand_string.rs: constructs "Intel(R) Core(TM) Processor @ X.XXGHz")
+        uint64_t tscFreq = g_systemProfile->GetTscFrequency();
+        g_cpuidHandler->AutoGenerateBrandString(tscFreq);
     } else {
         g_logger.Trace(LOG_INFO, "CPUID spoofing disabled by config");
     }
@@ -548,6 +567,11 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         uint32_t memoryMb = (uint32_t)configParser.GetUint64("vm", "memory_size_mb", 512);
         g_partition->SetupCpuCount(cpuCount);
         g_partition->SetupMemory(memoryMb);
+        // Pre-populate WHP CPUID result list for known spoof leaves
+        // (from libkrun: reduces VM exits and detection surface)
+        if (g_cpuidHandler) {
+            g_partition->SetupCpuidResultList(g_cpuidHandler);
+        }
         if (g_partition->Init()) {
             whpAvailable = true;
             g_logger.Trace(LOG_INFO, "WHP partition created - full virtualization mode (VCPUs=%u)", cpuCount);
