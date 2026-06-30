@@ -26,6 +26,11 @@ bool Partition::Create()
         m_logger->Trace(LOG_WARNING, "MSR bitmap setup failed - MSR interception may be limited");
     }
 
+    // Set exception exit bitmap for #BP (syscall intercept) and #DB (single-step trampoline)
+    if (!SetupExceptionBitmap()) {
+        m_logger->Trace(LOG_WARNING, "Exception bitmap setup failed - syscall intercept may be limited");
+    }
+
     return true;
 }
 
@@ -51,6 +56,30 @@ bool Partition::SetupMsrBitmap()
     }
 
     m_logger->Trace(LOG_WHP, "MSR exit bitmap configured: UnhandledMsrs=1 Tsc=1 ApicBase=1 MiscEnable=1");
+    return true;
+}
+
+bool Partition::SetupExceptionBitmap()
+{
+    if (!m_handle) return false;
+
+    // Enable VM exits on #BP (0x03 = INT3) for raw syscall interception
+    // and #DB (0x01 = single-step) for trampoline restore
+    // Bitmap layout: bit N corresponds to exception vector N, where the
+    // WHP-defined enum values map to exception vectors directly
+    uint64_t exceptionBitmap = 0;
+    exceptionBitmap |= (1ULL << 0x01); // #DB - single step (trampoline restore)
+    exceptionBitmap |= (1ULL << 0x03); // #BP - breakpoint (syscall/RDMSR intercept)
+
+    HRESULT hr = WHvSetPartitionProperty(m_handle,
+        WHvPartitionPropertyCodeExceptionExitBitmap,
+        &exceptionBitmap, sizeof(exceptionBitmap));
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "WHvSetPartitionProperty(ExceptionExitBitmap) failed: 0x%08X", hr);
+        return false;
+    }
+
+    m_logger->Trace(LOG_WHP, "Exception exit bitmap configured: #BP=1 #DB=1");
     return true;
 }
 

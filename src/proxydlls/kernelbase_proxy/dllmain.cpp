@@ -15,14 +15,25 @@ extern "C" void WINAPI Proxy_GetSystemInfo(LPSYSTEM_INFO lpInfo)
 {
     typedef void (WINAPI* Real_t)(LPSYSTEM_INFO);
     static Real_t real = (Real_t)GetRealProc("GetSystemInfo");
-    if (real) real(lpInfo);
+    g_logger.Trace(LOG_PROXY, "CAPTURE GetSystemInfo called");
+    if (real) {
+        real(lpInfo);
+        g_logger.Trace(LOG_PROXY, "CAPTURE GetSystemInfo: cores=%u page=0x%X min=%p max=%p",
+            lpInfo->dwNumberOfProcessors, lpInfo->dwPageSize,
+            lpInfo->lpMinimumApplicationAddress, lpInfo->lpMaximumApplicationAddress);
+    }
 }
 
 extern "C" void WINAPI Proxy_GetNativeSystemInfo(LPSYSTEM_INFO lpInfo)
 {
     typedef void (WINAPI* Real_t)(LPSYSTEM_INFO);
     static Real_t real = (Real_t)GetRealProc("GetNativeSystemInfo");
-    if (real) real(lpInfo);
+    g_logger.Trace(LOG_PROXY, "CAPTURE GetNativeSystemInfo called");
+    if (real) {
+        real(lpInfo);
+        g_logger.Trace(LOG_PROXY, "CAPTURE GetNativeSystemInfo: cores=%u page=0x%X",
+            lpInfo->dwNumberOfProcessors, lpInfo->dwPageSize);
+    }
 }
 
 extern "C" BOOL WINAPI Proxy_QueryPerformanceCounter(LARGE_INTEGER* lpQpc)

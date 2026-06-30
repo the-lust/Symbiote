@@ -29,6 +29,27 @@ VcpuManager::~VcpuManager()
     for (uint32_t i = 0; i < m_vcpuCount; i++) {
         Stop(i);
     }
+
+    // Restore any pending trampolines
+    for (auto& kv : m_trampolines) {
+        DWORD old;
+        VirtualProtect((LPVOID)kv.first, 1, PAGE_EXECUTE_READWRITE, &old);
+        *(uint8_t*)kv.first = kv.second.originalByte;
+        VirtualProtect((LPVOID)kv.first, 1, old, &old);
+    }
+    m_trampolines.clear();
+}
+
+bool VcpuManager::ReadVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count)
+{
+    HRESULT hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex, names, count, values);
+    return SUCCEEDED(hr);
+}
+
+bool VcpuManager::WriteVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count)
+{
+    HRESULT hr = WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex, names, count, values);
+    return SUCCEEDED(hr);
 }
 
 bool VcpuManager::CreateVcpu(uint32_t vcpuIndex)
@@ -49,6 +70,11 @@ bool VcpuManager::CreateVcpu(uint32_t vcpuIndex)
 
     if (vcpuIndex >= m_vcpuCount) m_vcpuCount = vcpuIndex + 1;
 
+    // Initialize syscall dispatch on first VCPU
+    if (vcpuIndex == 0) {
+        m_syscallDispatch.Initialize();
+    }
+
     m_logger->Trace(LOG_WHP, "VCPU %u created", vcpuIndex);
     return true;
 }
@@ -67,7 +93,7 @@ bool VcpuManager::Run(uint32_t vcpuIndex)
 
     m_vcpus[vcpuIndex].running = true;
 
-        m_logger->Trace(LOG_INFO, "VCPU %u starting execution", vcpuIndex);
+    m_logger->Trace(LOG_INFO, "VCPU %u starting execution", vcpuIndex);
 
     while (m_vcpus[vcpuIndex].running) {
         WHV_RUN_VP_EXIT_CONTEXT exitCtx;
@@ -80,6 +106,18 @@ bool VcpuManager::Run(uint32_t vcpuIndex)
         }
 
         m_vcpus[vcpuIndex].exitCtx = exitCtx;
+
+        // Process any pending trampoline re-patches before each exit
+        if (!m_trampolines.empty()) {
+            for (auto& kv : m_trampolines) {
+                DWORD old;
+                VirtualProtect((LPVOID)kv.first, 1, PAGE_EXECUTE_READWRITE, &old);
+                *(uint8_t*)kv.first = 0xCC;
+                VirtualProtect((LPVOID)kv.first, 1, old, &old);
+            }
+            m_logger->Trace(LOG_WHP, "VCPU %u: re-patched %zu trampolines", vcpuIndex, m_trampolines.size());
+            m_trampolines.clear();
+        }
 
         if (!HandleExit(vcpuIndex)) {
             m_logger->Trace(LOG_WHP, "VCPU %u unhandled exit at reason=%d",
@@ -102,7 +140,6 @@ void VcpuManager::Stop(uint32_t vcpuIndex)
 
 bool VcpuManager::LoadBootCode(uint32_t)
 {
-    // allocate boot code buffer so VM doesnt crash on first fetch
     if (m_bootCodeLoaded) return true;
     void* bootCode = m_partition->AllocateGuestMemory(0x10000);
     if (!bootCode) {
@@ -113,22 +150,14 @@ bool VcpuManager::LoadBootCode(uint32_t)
     uint8_t* code = (uint8_t*)bootCode;
     memset(code, 0, 0x10000);
 
-    // x64 boot code: test handlers then HLT loop
-    // 0x1000: B8 00 00 00 00  MOV EAX, 0x0      CPUID leaf 0
-    // 0x1005: 0F A2           CPUID
-    // 0x1007: 0F 31           RDTSC
-    // 0x1009: 0F 01 F9        RDTSCP
-    // 0x100C: F4              HLT
-    // 0x100D: EB FD           JMP $ (inf loop fallback)
     code[0x1000] = 0xB8; code[0x1001] = 0x00; code[0x1002] = 0x00;
-    code[0x1003] = 0x00; code[0x1004] = 0x00; // MOV EAX, 0
-    code[0x1005] = 0x0F; code[0x1006] = 0xA2; // CPUID
-    code[0x1007] = 0x0F; code[0x1008] = 0x31; // RDTSC
-    code[0x1009] = 0x0F; code[0x100A] = 0x01; code[0x100B] = 0xF9; // RDTSCP
-    code[0x100C] = 0xF4; // HLT
-    code[0x100D] = 0xEB; code[0x100E] = 0xFD; // JMP -1 back to HLT
+    code[0x1003] = 0x00; code[0x1004] = 0x00;
+    code[0x1005] = 0x0F; code[0x1006] = 0xA2;
+    code[0x1007] = 0x0F; code[0x1008] = 0x31;
+    code[0x1009] = 0x0F; code[0x100A] = 0x01; code[0x100B] = 0xF9;
+    code[0x100C] = 0xF4;
+    code[0x100D] = 0xEB; code[0x100E] = 0xFD;
 
-    // map GPA 0x0000 to boot buffer so 0x1000 works
     WHV_MAP_GPA_RANGE_FLAGS flags = (WHV_MAP_GPA_RANGE_FLAGS)(WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
     if (!m_partition->MapGpaRange(bootCode, 0x0000, 0x10000, flags)) {
         m_logger->Trace(LOG_ERROR, "Failed to map boot code at GPA 0x0000");
@@ -136,12 +165,10 @@ bool VcpuManager::LoadBootCode(uint32_t)
         return false;
     }
 
-    // minimal GDT at GPA 0x800
-    // 64-bit: null + code seg + data seg
     uint64_t* gdt = (uint64_t*)(code + 0x800);
-    gdt[0] = 0x0000000000000000ULL; // null
-    gdt[1] = 0x00AF9B000000FFFFULL; // 64-bit code segment
-    gdt[2] = 0x00CF93000000FFFFULL; // 64-bit data segment
+    gdt[0] = 0x0000000000000000ULL;
+    gdt[1] = 0x00AF9B000000FFFFULL;
+    gdt[2] = 0x00CF93000000FFFFULL;
 
     m_logger->Trace(LOG_INFO, "Boot code loaded at GPA 0x1000: HLT");
     m_bootCodeLoaded = true;
@@ -150,11 +177,7 @@ bool VcpuManager::LoadBootCode(uint32_t)
 
 bool VcpuManager::SetupRegisters(uint32_t vcpuIndex)
 {
-    if (!LoadBootCode(vcpuIndex)) {
-        m_logger->Trace(LOG_ERROR, "Failed to load boot code");
-        return false;
-    }
-
+    if (!LoadBootCode(vcpuIndex)) return false;
     if (!SetupSegmentRegisters(vcpuIndex)) return false;
     if (!SetupControlRegisters(vcpuIndex)) return false;
 
@@ -235,10 +258,7 @@ bool VcpuManager::SetupSegmentRegisters(uint32_t vcpuIndex)
     for (int i = 0; i < 5; i++) {
         hr = WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
             &segNames[i], 1, &segValue);
-        if (FAILED(hr)) {
-            m_logger->Trace(LOG_ERROR, "Failed to set segment register %d: 0x%08X", i, hr);
-            return false;
-        }
+        if (FAILED(hr)) return false;
     }
 
     WHV_X64_TABLE_REGISTER gdtr;
@@ -251,10 +271,7 @@ bool VcpuManager::SetupSegmentRegisters(uint32_t vcpuIndex)
     WHV_REGISTER_NAME gdtrReg = WHvX64RegisterGdtr;
     hr = WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
         &gdtrReg, 1, &gdtrValue);
-    if (FAILED(hr)) {
-        m_logger->Trace(LOG_ERROR, "Failed to set GDTR: 0x%08X", hr);
-        return false;
-    }
+    if (FAILED(hr)) return false;
 
     m_logger->Trace(LOG_WHP, "Segment registers set for VCPU %u", vcpuIndex);
     return true;
@@ -284,10 +301,7 @@ bool VcpuManager::SetupControlRegisters(uint32_t vcpuIndex)
 
     HRESULT hr = WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
         crNames, crCount, crValues);
-    if (FAILED(hr)) {
-        m_logger->Trace(LOG_ERROR, "Failed to set control registers: 0x%08X", hr);
-        return false;
-    }
+    if (FAILED(hr)) return false;
 
     WHV_REGISTER_NAME eferReg = WHvX64RegisterEfer;
     WHV_REGISTER_VALUE eferValue;
@@ -295,20 +309,201 @@ bool VcpuManager::SetupControlRegisters(uint32_t vcpuIndex)
 
     hr = WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
         &eferReg, 1, &eferValue);
-    if (FAILED(hr)) {
-        m_logger->Trace(LOG_ERROR, "Failed to set EFER: 0x%08X", hr);
-        return false;
-    }
+    if (FAILED(hr)) return false;
 
     m_logger->Trace(LOG_WHP, "Control registers set for VCPU %u", vcpuIndex);
     return true;
 }
+
+// ─── #BP / #DB exception handling ──────────────────────────────────────
+
+bool VcpuManager::HandleVpBreakpoint(uint32_t vcpuIndex, uint64_t rip)
+{
+    PatchEntryInfo patch;
+    if (!SystemSpoofer::LookupPatch(rip, patch)) {
+        // Not our patch — skip this #BP
+        WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
+        WHV_REGISTER_VALUE ripValue;
+        ripValue.Reg64 = rip + 1;
+        return WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1);
+    }
+
+    switch (patch.type) {
+        case PatchType::SYSCALL: {
+            // Read registers for syscall dispatch
+            WHV_REGISTER_NAME names[6] = {
+                WHvX64RegisterRax, WHvX64RegisterRcx, WHvX64RegisterRdx,
+                WHvX64RegisterR8,  WHvX64RegisterR9,  WHvX64RegisterRip
+            };
+            WHV_REGISTER_VALUE values[6];
+            if (!ReadVcpuRegs(vcpuIndex, names, values, 6))
+                return false;
+
+            uint32_t syscallNum = (uint32_t)values[0].Reg64;
+            uint64_t args[4] = {
+                values[1].Reg64, // RCX → arg1
+                values[2].Reg64, // RDX → arg2
+                values[3].Reg64, // R8  → arg3
+                values[4].Reg64  // R9  → arg4
+            };
+            uint64_t result = 0;
+
+            if (m_syscallDispatch.DispatchRawSyscall(syscallNum, args, result)) {
+                // Spoofed — advance RIP past syscall, set result in RAX
+                values[0].Reg64 = result;
+                values[5].Reg64 = rip + 2; // syscall = 2 bytes
+
+                // Clear RFLAGS.TF if somehow set
+                WHV_REGISTER_NAME rflName = WHvX64RegisterRflags;
+                WHV_REGISTER_VALUE rflValue;
+                if (ReadVcpuRegs(vcpuIndex, &rflName, &rflValue, 1)) {
+                    rflValue.Reg64 &= ~0x100; // Clear TF
+                    WriteVcpuRegs(vcpuIndex, &rflName, &rflValue, 1);
+                }
+
+                return WriteVcpuRegs(vcpuIndex, names, values, 6);
+            }
+
+            // Not spoofed — passthrough: restore byte, advance RIP, re-patch on next exit
+            DWORD old;
+            VirtualProtect((LPVOID)rip, 1, PAGE_EXECUTE_READWRITE, &old);
+            *(uint8_t*)rip = 0x0F; // Restore original first byte of syscall (0F 05)
+            VirtualProtect((LPVOID)rip, 1, old, &old);
+
+            TrampolineEntry te;
+            te.address = rip;
+            te.originalByte = 0x0F;
+            te.instrLen = 2;
+            m_trampolines[rip] = te;
+
+            // Advance RIP to execute the real syscall
+            values[5].Reg64 = rip;
+            return WriteVcpuRegs(vcpuIndex, &names[5], &values[5], 1);
+        }
+
+        case PatchType::RDMSR: {
+            // Read registers for RDMSR dispatch
+            WHV_REGISTER_NAME names[3] = { WHvX64RegisterRcx, WHvX64RegisterRax, WHvX64RegisterRdx };
+            WHV_REGISTER_VALUE values[3];
+            if (!ReadVcpuRegs(vcpuIndex, names, values, 3))
+                return false;
+
+            uint32_t msrIndex = (uint32_t)values[0].Reg64;
+            uint64_t msrValue = 0;
+
+            if (m_syscallDispatch.SpoofRdmsr(msrIndex, msrValue)) {
+                // Spoofed — return value in EAX:EDX
+                values[1].Reg64 = msrValue & 0xFFFFFFFF;
+                values[2].Reg64 = (msrValue >> 32) & 0xFFFFFFFF;
+
+                WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
+                WHV_REGISTER_VALUE ripValue;
+                ripValue.Reg64 = rip + 2; // RDMSR = 2 bytes
+                if (!WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1))
+                    return false;
+
+                return WriteVcpuRegs(vcpuIndex, names, values, 3);
+            }
+
+            // Not spoofed — passthrough
+            DWORD old;
+            VirtualProtect((LPVOID)rip, 1, PAGE_EXECUTE_READWRITE, &old);
+            *(uint8_t*)rip = 0x0F;
+            VirtualProtect((LPVOID)rip, 1, old, &old);
+
+            TrampolineEntry te;
+            te.address = rip;
+            te.originalByte = 0x0F;
+            te.instrLen = 2;
+            m_trampolines[rip] = te;
+
+            WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
+            WHV_REGISTER_VALUE ripValue;
+            ripValue.Reg64 = rip;
+            return WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1);
+        }
+
+        case PatchType::XGETBV: {
+            WHV_REGISTER_NAME names[3] = { WHvX64RegisterRcx, WHvX64RegisterRax, WHvX64RegisterRdx };
+            WHV_REGISTER_VALUE values[3];
+            if (!ReadVcpuRegs(vcpuIndex, names, values, 3)) return false;
+
+            uint32_t xcr = (uint32_t)values[0].Reg64;
+            if (xcr == 0) {
+                values[1].Reg64 = 0x07; // XCR0 low = x87|SSE|AVX
+                values[2].Reg64 = 0;    // XCR0 high
+            } else {
+                values[1].Reg64 = 0;
+                values[2].Reg64 = 0;
+            }
+            if (!WriteVcpuRegs(vcpuIndex, names, values, 3)) return false;
+
+            WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
+            WHV_REGISTER_VALUE ripValue;
+            ripValue.Reg64 = rip + 3; // XGETBV = 3 bytes
+            return WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1);
+        }
+
+        default: {
+            // SGDT, SIDT, SLDT, STR — handled by host VEH, just skip on guest
+            WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
+            WHV_REGISTER_VALUE ripValue;
+            ripValue.Reg64 = rip + patch.instrLen;
+            return WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1);
+        }
+    }
+}
+
+bool VcpuManager::HandleVpSingleStep(uint32_t, uint64_t)
+{
+    // #DB trap — currently unused since syscall clears TF.
+    // Reserved for future use with instructions that don't clear TF.
+    return false;
+}
+
+// ─── Exit handler ──────────────────────────────────────────────────────
 
 bool VcpuManager::HandleExit(uint32_t vcpuIndex)
 {
     WHV_RUN_VP_EXIT_CONTEXT& exitCtx = m_vcpus[vcpuIndex].exitCtx;
     WHV_RUN_VP_EXIT_REASON reason = exitCtx.ExitReason;
     HRESULT hr;
+
+    // Handle exceptions first — #BP and #DB are handled here
+    if (reason == WHvRunVpExitReasonException) {
+        WHV_VP_EXCEPTION_CONTEXT& exc = exitCtx.VpException;
+
+        uint64_t rip = 0;
+        WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
+        WHV_REGISTER_VALUE ripValue;
+        hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
+            &ripName, 1, &ripValue);
+        if (SUCCEEDED(hr)) rip = ripValue.Reg64;
+
+        // #BP (0x03) — breakpoint from patched syscall/RDMSR/SGDT/etc
+        if (exc.ExceptionType == 0x03) {
+            return HandleVpBreakpoint(vcpuIndex, rip);
+        }
+
+        // #DB (0x01) — single-step trampoline
+        if (exc.ExceptionType == 0x01) {
+            return HandleVpSingleStep(vcpuIndex, rip);
+        }
+
+        // Forward to ExceptionHandler for #GP, #UD, etc.
+        if (m_exceptionHandler) {
+            if (m_exceptionHandler->HandleException(nullptr, exc.ExceptionType, nullptr, &rip)) {
+                ripValue.Reg64 = rip;
+                WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
+                    &ripName, 1, &ripValue);
+                return true;
+            }
+        }
+
+        m_logger->Trace(LOG_WHP, "VCPU %u: unhandled exception type 0x%X at RIP 0x%llX",
+            vcpuIndex, exc.ExceptionType, rip);
+        return false;
+    }
 
     switch (reason) {
         case WHvRunVpExitReasonX64Cpuid: {
@@ -405,7 +600,6 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
                 WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex, regNames, 2, regValues);
             }
 
-            // RDMSR/WRMSR is 2 bytes, always advance RIP so we dont loop
             WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
             WHV_REGISTER_VALUE ripValue;
             hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
@@ -437,7 +631,6 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
             return true;
 
         case WHvRunVpExitReasonX64Halt: {
-            // HLT is 1 byte, skip it so we dont loop
             WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
             WHV_REGISTER_VALUE ripValue;
             hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
@@ -448,29 +641,6 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
                     &ripName, 1, &ripValue);
             }
             return true;
-        }
-
-        case WHvRunVpExitReasonException: {
-            if (m_exceptionHandler) {
-                WHV_VP_EXCEPTION_CONTEXT& exc = exitCtx.VpException;
-                uint64_t rip = 0;
-                WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
-                WHV_REGISTER_VALUE ripValue;
-                hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
-                    &ripName, 1, &ripValue);
-                if (SUCCEEDED(hr)) rip = ripValue.Reg64;
-
-                if (m_exceptionHandler->HandleException(nullptr, exc.ExceptionType, nullptr, &rip)) {
-                    WHV_REGISTER_VALUE newRip;
-                    newRip.Reg64 = rip;
-                    WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
-                        &ripName, 1, &newRip);
-                    return true;
-                }
-            }
-            m_logger->Trace(LOG_WHP, "VCPU %u: unhandled exception type 0x%X at RIP 0x%llX",
-                vcpuIndex, exitCtx.VpException.ExceptionType, exitCtx.VpException.ExceptionParameter);
-            return false;
         }
 
         default:

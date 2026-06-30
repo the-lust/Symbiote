@@ -93,6 +93,19 @@ struct NtQuerySystemInfoArgs {
 extern "C" NTSTATUS NTAPI Proxy_NtQuerySystemInformation(
     ULONG InfoClass, PVOID Info, ULONG Length, PULONG ReturnLength)
 {
+    // capture: log the call regardless of routing
+    static const char* sysInfoClasses[] = {
+        "SystemBasicInformation", "SystemProcessorInformation",
+        "SystemPerformanceInformation", "SystemTimeOfDayInformation",
+        "SystemNotImplemented1", "SystemProcessInformation",
+        "SystemProcessorPerformanceInformation", "SystemInterruptInformation",
+        "SystemExceptionInformation", "SystemNotImplemented2"
+    };
+    g_logger.Trace(LOG_PROXY, "CAPTURE NtQuerySystemInformation class=%u (%s) len=%u",
+        InfoClass,
+        InfoClass < 10 ? sysInfoClasses[InfoClass] : "unknown",
+        Length);
+
     RouteSyscall_t route = GetRouteSyscall();
     if (route) {
         uint64_t args[4] = { InfoClass, (uint64_t)Info, Length, (uint64_t)ReturnLength };
@@ -109,8 +122,12 @@ extern "C" NTSTATUS NTAPI Proxy_NtQuerySystemInformation(
         HMODULE realNtdll = GetRealNtdll();
         if (realNtdll) realFunc = (decltype(&Proxy_NtQuerySystemInformation))GetProcAddress(realNtdll, "NtQuerySystemInformation");
     }
-    if (realFunc) return realFunc(InfoClass, Info, Length, ReturnLength);
-    return STATUS_UNSUCCESSFUL;
+    NTSTATUS ret = realFunc ? realFunc(InfoClass, Info, Length, ReturnLength) : STATUS_UNSUCCESSFUL;
+    if (InfoClass == 0x8 && ReturnLength) {
+        g_logger.Trace(LOG_PROXY, "CAPTURE NtQuerySysInfo[SystemProcessorPerf] result=0x%X retLen=%u",
+            ret, ReturnLength ? *ReturnLength : 0);
+    }
+    return ret;
 }
 
 struct NtQueryInformationProcessArgs {

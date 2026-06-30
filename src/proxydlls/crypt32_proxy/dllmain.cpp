@@ -26,11 +26,41 @@ PROXY_EXPORT(CryptCreateHash,                  proxy_CryptCreateHash,           
 PROXY_EXPORT(CryptDestroyHash,                 proxy_CryptDestroyHash,                  4)  // 1
 PROXY_EXPORT(CertCreateCertificateContext,     proxy_CertCreateCertificateContext,     12)  // 3
 PROXY_EXPORT(CertGetCertificateContextProperty,proxy_CertGetCertificateContextProperty,16) // 4
+PROXY_EXPORT(CryptGetProvParam,                proxy_CryptGetProvParam,                20) // 5
+
+static Logger g_cryptLogger;
 
 static FARPROC GetRealProc(const char* name)
 {
     static HMODULE hReal = LoadLibraryW(L"crypt32.dll");
     return hReal ? GetProcAddress(hReal, name) : nullptr;
+}
+
+extern "C" BOOL WINAPI proxy_CryptGetProvParam(HCRYPTPROV hProv, DWORD dwParam, BYTE* pbData, DWORD* pdwDataLen, DWORD dwFlags)
+{
+    typedef BOOL (WINAPI* Real_t)(HCRYPTPROV, DWORD, BYTE*, DWORD*, DWORD);
+    static Real_t real = (Real_t)GetRealProc("CryptGetProvParam");
+    g_cryptLogger.Trace(LOG_PROXY, "CAPTURE CryptGetProvParam dwParam=0x%X", dwParam);
+
+    // PP_UNIQUE_CONTAINER (0x26): return a consistent spoofed container name
+    if (dwParam == 0x26 && pbData && pdwDataLen) {
+        static const wchar_t spoofedContainer[] = L"{00000000-0000-0000-0000-000000000000}";
+        DWORD needed = (DWORD)(wcslen(spoofedContainer) + 1);
+        if (*pdwDataLen >= needed) {
+            wcscpy_s((wchar_t*)pbData, *pdwDataLen / sizeof(wchar_t), spoofedContainer);
+            *pdwDataLen = needed;
+        } else {
+            *pdwDataLen = needed;
+            SetLastError(ERROR_MORE_DATA);
+            return FALSE;
+        }
+        return TRUE;
+    }
+
+    // PP_ENUMALGS (0x01): passthrough
+    // PP_KEYSPEC (0x27): passthrough
+
+    return real ? real(hProv, dwParam, pbData, pdwDataLen, dwFlags) : FALSE;
 }
 
 extern "C" HCERTSTORE WINAPI proxy_CertOpenSystemStoreW(HCRYPTPROV_LEGACY hProv, LPCWSTR szSubsystemProtocol) {

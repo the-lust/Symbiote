@@ -1,11 +1,12 @@
 #include "Canary.h"
+#include "capture/CaptureLogger.h"
 #include <cstring>
 
 Canary* g_canary = nullptr;
 Canary* Canary::s_instance = nullptr;
 
 Canary::Canary(Logger* logger)
-    : m_logger(logger), m_canaryPage(nullptr),
+    : m_logger(logger), m_captureLogger(nullptr), m_canaryPage(nullptr),
       m_vehHandle(nullptr), m_initialized(false)
 {
 }
@@ -96,6 +97,10 @@ LONG Canary::OnException(EXCEPTION_POINTERS* ep)
     m_logger->Trace(LOG_INFO, "Canary: access detected at offset 0x%llX (op=%llu)",
         faultAddr - pageBase,
         ep->ExceptionRecord->ExceptionInformation[0]);
+
+    if (m_captureLogger) {
+        m_captureLogger->CaptureCanaryHit(ep->ContextRecord->Rip, (void*)faultAddr);
+    }
 
     // Mark that a scan was detected
     CanaryHandshake* hs = (CanaryHandshake*)m_canaryPage;

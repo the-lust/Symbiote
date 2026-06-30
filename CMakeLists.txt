@@ -66,6 +66,8 @@ set(ENGINE_SOURCES
     src/engine/Main.cpp
     # WHP-free VEH components (always compiled)
     src/engine/whp/AllocTracker.cpp
+    src/engine/whp/SystemSpoofer.cpp
+    src/engine/whp/SyscallDispatch.cpp
     src/engine/whp/CodePatcher.cpp
     src/engine/whp/KuserHook.cpp
     src/engine/whp/MsrPatcher.cpp
@@ -91,6 +93,8 @@ set(ENGINE_SOURCES
     # Profiles
     src/engine/profile/GpuProfile.cpp
     src/engine/profile/StorageProfile.cpp
+    # Capture logger
+    src/engine/capture/CaptureLogger.cpp
     # Proxy/IAT support
     src/engine/proxy/Fallthrough.cpp
     src/engine/proxy/GpuBridge.cpp
@@ -161,5 +165,11 @@ target_link_libraries(verify PRIVATE logger)
 
 # ─── Handshake Test Tool ──────────────────────────────────────────────
 add_executable(handshake_test tools/handshake_test/Main.cpp)
+
+# ─── Capture Tool ──────────────────────────────────────────────────────
+add_executable(capture_tool tools/capture/Main.cpp)
+
+# ─── MSR Reader Tool (requires semav6msr64 driver) ─────────────────────
+add_executable(msr_reader tools/msr_reader/Main.cpp)
 
 

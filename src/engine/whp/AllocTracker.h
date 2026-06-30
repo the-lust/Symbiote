@@ -5,6 +5,8 @@
 #include "Logger.h"
 #include "proxy/InlineHook.h"
 
+class CaptureLogger;
+
 class AllocTracker {
 public:
     explicit AllocTracker(Logger* logger);
@@ -12,6 +14,7 @@ public:
 
     bool Initialize();
     void Shutdown();
+    void SetCaptureLogger(CaptureLogger* cap) { m_capLogger = cap; }
 
     LONG OnException(EXCEPTION_POINTERS* ep);
 
@@ -32,6 +35,7 @@ private:
     static const int TIMER_INTERVAL_MS = 50;
 
     Logger* m_logger;
+    CaptureLogger* m_capLogger;
     CRITICAL_SECTION m_cs;
     std::vector<TrackedPage> m_trackedPages;
     void* m_vehHandle;

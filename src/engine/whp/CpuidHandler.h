@@ -6,6 +6,7 @@
 class IKernelBackend;
 class MagicCpuid;
 struct TimingCoordinator;
+class CaptureLogger;
 
 class CpuidHandler {
 public:
@@ -14,6 +15,7 @@ public:
 
     void SetMagicCpuid(MagicCpuid* magic) { m_magicCpuid = magic; }
     void SetTimingCoordinator(TimingCoordinator* tc) { m_timingCoordinator = tc; }
+    void SetCaptureLogger(CaptureLogger* cap) { m_captureLogger = cap; }
 
     bool HandleCpuid(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t* rbx,
                      uint64_t* rcx, uint64_t* rdx, uint64_t* rip);
@@ -40,6 +42,7 @@ private:
     class IKernelBackend* m_backend;
     MagicCpuid* m_magicCpuid;
     TimingCoordinator* m_timingCoordinator;
+    CaptureLogger* m_captureLogger;
 
     // Brand string (48 bytes max, split across 3 CPUID leaves)
     char m_brandString[49];

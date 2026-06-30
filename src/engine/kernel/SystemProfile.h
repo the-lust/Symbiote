@@ -56,7 +56,7 @@ public:
     void LoadAmdRyzen9_5950X();
 
 private:
-    std::unordered_map<uint32_t, CpuidLeaf> m_cpuidLeaves;
+    std::unordered_map<uint64_t, CpuidLeaf> m_cpuidLeaves;
     uint64_t m_tscFrequency;
     uint64_t m_tscOffset;
     uint64_t m_apicFrequency;

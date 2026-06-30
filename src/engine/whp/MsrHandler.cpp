@@ -1,4 +1,5 @@
 #include "MsrHandler.h"
+#include "capture/CaptureLogger.h"
 #include <intrin.h>
 #include <string.h>
 
@@ -32,7 +33,7 @@ static void JitterDelay()
 }
 
 MsrHandler::MsrHandler(Logger* logger)
-    : m_logger(logger),
+    : m_logger(logger), m_captureLogger(nullptr),
       m_efer(1), m_star(0), m_lstar(0), m_cstar(0), m_sfMask(0),
       m_sceAlwaysTrue(true)
 {
@@ -120,11 +121,18 @@ bool MsrHandler::HandleMsrRead(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t* val
     auto it = m_trackedMsrs.find(msr);
     if (it != m_trackedMsrs.end()) {
         *value = it->second;
+        if (m_captureLogger) {
+            m_captureLogger->CaptureMsr("MSR_READ", 0, msr, *value);
+        }
         m_logger->Trace(LOG_WHP, "RDMSR 0x%X (tracked) => 0x%llX", msr, *value);
         return true;
     }
 
     *value = GetSpoofedMsr(msr);
+
+    if (m_captureLogger) {
+        m_captureLogger->CaptureMsr("MSR_READ", 0, msr, *value);
+    }
 
     m_logger->Trace(LOG_WHP, "RDMSR 0x%X => 0x%llX", msr, *value);
     return true;
@@ -263,6 +271,10 @@ bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t val
             }
             m_logger->Trace(LOG_WHP, "WRMSR 0x%X passthrough => 0x%llX", msr, value);
             return false; // Let WHP handle it
+    }
+
+    if (m_captureLogger) {
+        m_captureLogger->CaptureMsr("MSR_WRITE", 0, msr, value);
     }
 
     return true;

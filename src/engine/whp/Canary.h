@@ -2,6 +2,8 @@
 #include <windows.h>
 #include "Logger.h"
 
+class CaptureLogger;
+
 class Canary {
 public:
     explicit Canary(Logger* logger);
@@ -9,6 +11,7 @@ public:
 
     bool Initialize();
     void Shutdown();
+    void SetCaptureLogger(CaptureLogger* cap) { m_captureLogger = cap; }
 
     // Get canary page address for sharing with target
     void* GetCanaryPage() const { return m_canaryPage; }
@@ -30,6 +33,7 @@ public:
 
 private:
     Logger* m_logger;
+    CaptureLogger* m_captureLogger;
     void* m_canaryPage;
     void* m_vehHandle;
     bool m_initialized;

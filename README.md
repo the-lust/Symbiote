@@ -29,7 +29,8 @@ symbiote/
 ├── Makefile                 # MinGW fallback
 ├── config/
 │   ├── config.ini           # i9-10900K / RX 6800 XT spoof profile
-│   └── config.example.ini   # Example config
+│   ├── config.example.ini   # Example config
+│   └── capture.ini          # Capture mode configuration (logs all queries)
 ├── src/
 │   ├── launcher/            # launcher.exe - CLI, process creation, injection
 │   ├── engine/              # engine.dll - WHP + VEH + IAT + syscall emulation
@@ -41,7 +42,9 @@ symbiote/
 │   │   └── log/             # Logger subsystem
 │   └── proxydlls/           # 13 proxy DLL shims (ntdll to ws2_32)
 ├── tools/
-│   └── handshake_test/      # Magic CPUID handshake verification tool
+│   ├── handshake_test/      # Magic CPUID handshake verification tool
+│   ├── capture/             # Standalone capture tool (logs all fingerprint queries)
+│   └── msr_reader/          # MSR reader (requires semav6msr64 kernel driver)
 ├── scripts/
 │   └── build.bat            # Full build pipeline
 ├── docs/
@@ -97,6 +100,9 @@ Target Process (Ring 3)
 | **MagicCpuid** | Handshake protocol (15 leaves): PID registration, syscall handler exchange, enhanced mode toggle, shared memory GPA, quit, HELLO/ACK, GPA get/set |
 | **TimingCoordinator** | Cross-handler timing pattern detection (RDTSC→CPUID→RDTSC), three jitter strategies (uniform/constant/linear), monotonic TSC invariant |
 | **Canary** | Guard-page memory scanner detector with VEH callback; 4KB handshake page for engine-target coordination |
+| **SystemSpoofer** | INT3-based interception of SGDT/SIDT/SLDT/STR/XGETBV/RDMSR — VirtualQuery address walk with MEM_IMAGE exclusion to avoid self-corruption |
+| **SyscallDispatch** | Centralized syscall dispatch layer for capture/emulation coordination |
+| **CaptureLogger** | Records all fingerprinting queries (CPUID, MSR, RDTSC, syscalls) to disk for analysis |
 
 ---
 
@@ -130,6 +136,12 @@ Target Process (Ring 3)
 | HTTP connections | winhttp_proxy | Done |
 | Memory scanner detection | Canary guard-page + VEH callback | Done |
 | Target registration / handshake | MagicCpuid (15 leaves: PID, syscall handler, enhanced mode, SHM, GPA, quit) | Done |
+| SGDT / SIDT / SLDT / STR | SystemSpoofer INT3 patches via VirtualQuery address walk | Done |
+| XGETBV (XSAVE feature bits) | SystemSpoofer INT3 patches + config-driven result override | Done |
+| RDMSR (ring-3 accessible) | SystemSpoofer INT3 patches for non-WHP interception | Done |
+| PEB BeingDebugged / NtGlobalFlag | Inline write in engine init (ProcessHeap writes removed — offsets version-dependent) | Done |
+| CryptGetProvParam (container name) | crypt32_proxy — spoofed unique container UUID | Done |
+| All queries captured to disk | CaptureLogger — enabled via `capture.ini` for fingerprint collection without spoofing | Done |
 
 > See `docs/TECHNIQUES.md` for detailed explanations of each vector.
 > See `docs/RESULTS.md` for real vs spoofed comparison data.
@@ -184,6 +196,8 @@ engine.dll        - Core spoofing engine
 launcher.exe      - Process launcher + injector
 verify.exe        - Spoof verification tool (baseline only)
 handshake_test.exe - Magic CPUID handshake test tool
+capture_tool.exe  - Fingerprint query capture tool
+msr_reader.exe    - MSR register reader (requires kernel driver)
 *_proxy.dll       - 13 proxy DLL shims
 ```
 
@@ -210,20 +224,63 @@ launcher.exe target.exe arg1 arg2
 
 Default: `config/config.ini` (relative to launcher binary)
 
+Features can be toggled per-section (new format) or via the legacy `[spoof]` section:
+
 ```ini
 [cpuid]
+status = true
 vendor = intel
 brand_string = Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz
-enhanced_brand_string =
 
-[gpu]
-vendor = AMD
-name = AMD Radeon RX 6800 XT
+[rdtsc]
+status = true
+
+[msr]
+status = true
+
+[kuser]
+status = true
+
+[process]
+status = true
+
+[registry]
+status = true
+
+[file]
+status = true
 
 [timing]
 tsc_frequency = 3696000000
 tsc_offset = 0
 tsc_noise = 100
+
+[gpu]
+vendor = AMD
+name = AMD Radeon RX 6800 XT
+
+[system_spoofer]
+# SGDT/SIDT/SLDT/STR/XGETBV spoofing
+gdt_base = 0x807F900000
+gdt_limit = 0xFFFF
+idt_base = 0xFFFFF80000000000
+idt_limit = 0xFFF
+xgetbv_result = 0x0000000000000007
+
+[capture]
+# Capture mode: logs all fingerprint queries without spoofing
+# Use config/capture.ini to run in capture mode
+enabled = false
+```
+
+### Capture Mode
+
+To log all fingerprint queries (CPUID, MSR, RDTSC, syscalls) without spoofing:
+
+```bat
+copy config\capture.ini config\config.ini
+launcher.exe --target C:\Path\to\target.exe
+:: Output: capture.log in launcher directory
 ```
 
 ---
@@ -249,6 +306,8 @@ Tested with engine active (IAT + VEH mode):
 - GPU-intensive workloads pass through via GpuBridge (always fall through to real GPU)
 - LSTAR syscall entry interception requires EPT hook on kernel pages (future work; MagicCpuid exposes LSTAR tracking only)
 - AllocTracker VEH emulation uses full register spoofing but does not route through MinimalKernel dispatch
+- SystemSpoofer MEM_IMAGE exclusion skips all loaded DLLs — only non-image executable pages are patched for SGDT/SIDT/SLDT/STR/XGETBV
+- PEB ProcessHeap.Flags/ForceFlags writes removed (offsets differ per Windows version; BeingDebugged + NtGlobalFlag sufficient)
 
 ---
 
