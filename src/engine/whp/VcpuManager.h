@@ -2,8 +2,10 @@
 #include <windows.h>
 #include <WinHvPlatform.h>
 #include "Logger.h"
-
 #include "CpuidHandler.h"
+#include "SystemSpoofer.h"
+#include "SyscallDispatch.h"
+#include <unordered_map>
 
 class Partition;
 class ExitDispatcher;
@@ -40,6 +42,22 @@ private:
     bool SetupSegmentRegisters(uint32_t vcpuIndex);
     bool SetupControlRegisters(uint32_t vcpuIndex);
 
+    // WHP #BP/#DB exception handling for guest-side syscall/RDMSR intercept
+    bool HandleVpBreakpoint(uint32_t vcpuIndex, uint64_t rip);
+    bool HandleVpSingleStep(uint32_t vcpuIndex, uint64_t rip);
+
+    // Read/write VCPU registers from WHP
+    bool ReadVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count);
+    bool WriteVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count);
+
+    // Trampoline for non-spoofed patched instructions
+    struct TrampolineEntry {
+        uint64_t address;
+        uint8_t  originalByte;
+        uint8_t  instrLen;
+    };
+    std::unordered_map<uint64_t, TrampolineEntry> m_trampolines;
+
     Logger* m_logger;
     Partition* m_partition;
     ExitDispatcher* m_exitDispatcher;
@@ -49,6 +67,7 @@ private:
     MagicCpuid* m_magicCpuid;
     SyscallHandler* m_syscallHandler;
     ExceptionHandler* m_exceptionHandler;
+    SyscallDispatch m_syscallDispatch;
 
     struct VcpuContext {
         WHV_RUN_VP_EXIT_CONTEXT exitCtx;

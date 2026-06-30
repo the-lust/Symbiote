@@ -82,13 +82,19 @@ void MinimalKernel::LoadFromConfig(ConfigParser* config)
 {
     if (!config) return;
 
-    m_spoofProcess = config->GetBool("spoof", "process_info", true);
-    m_spoofRegistry = config->GetBool("spoof", "registry", true);
-    m_spoofFile = config->GetBool("spoof", "file", true);
-    m_spoofTiming = config->GetBool("spoof", "timing", true);
-    m_spoofToken = config->GetBool("spoof", "token", true);
-    m_spoofThread = config->GetBool("spoof", "thread", true);
-    m_cloakModule = config->GetBool("spoof", "module_cloak", true);
+    auto Check = [&](const char* section, const char* oldKey, bool def) -> bool {
+        std::string raw = config->GetString(section, "status", "");
+        if (!raw.empty()) return config->GetBool(section, "status", def);
+        return config->GetBool("spoof", oldKey, def);
+    };
+
+    m_spoofProcess  = Check("process", "process_info", true);
+    m_spoofRegistry = Check("registry", "registry", true);
+    m_spoofFile     = Check("file", "file", true);
+    m_spoofTiming   = Check("timing", "timing", true);
+    m_spoofToken    = Check("token", "token", true);
+    m_spoofThread   = Check("thread", "thread", true);
+    m_cloakModule   = Check("module_cloak", "module_cloak", true);
 
     if (m_processEmu) {
         m_processEmu->LoadFromConfig(config);

@@ -46,7 +46,7 @@ void SystemProfile::LoadFromConfig(ConfigParser* config)
 bool SystemProfile::GetCpuid(uint32_t leaf, uint32_t subleaf,
     uint32_t& eax, uint32_t& ebx, uint32_t& ecx, uint32_t& edx) const
 {
-    uint32_t key = (leaf << 8) | subleaf;
+    uint64_t key = ((uint64_t)leaf << 32) | subleaf;
     auto it = m_cpuidLeaves.find(key);
     if (it == m_cpuidLeaves.end()) return false;
 
@@ -60,7 +60,7 @@ bool SystemProfile::GetCpuid(uint32_t leaf, uint32_t subleaf,
 void SystemProfile::SetCpuid(uint32_t leaf, uint32_t subleaf,
     uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
 {
-    uint32_t key = (leaf << 8) | subleaf;
+    uint64_t key = ((uint64_t)leaf << 32) | subleaf;
     m_cpuidLeaves[key] = { eax, ebx, ecx, edx };
 }
 
@@ -99,6 +99,7 @@ void SystemProfile::LoadIntelI9_10900K()
 
     // Leaf 0x7: extended features
     SetCpuid(0x07, 0x00, 0x00000000, 0x029C6FBB, 0x00000000, 0x9C000400);
+    SetCpuid(0x07, 0x01, 0x00000000, 0x00000000, 0x00000000, 0x00000000);
 
     // Leaf 0x8: linear address sizes
     SetCpuid(0x08, 0x00, 0x00000000, 0x00000000, 0x00000000, 0x00000000);
@@ -125,12 +126,20 @@ void SystemProfile::LoadIntelI9_10900K()
 
     // Leaf 0x14: Intel PT
     SetCpuid(0x14, 0x00, 0x00000001, 0x0000004F, 0x00000000, 0x00000000);
+    SetCpuid(0x14, 0x01, 0x0000004F, 0x00000000, 0x00000000, 0x00000000);
 
     // Leaf 0x15: TSC frequency
     SetCpuid(0x15, 0x00, 0x00000000, 0x00000000, 0x00000000, 0x00000000);
 
     // Leaf 0x16: processor frequency
     SetCpuid(0x16, 0x00, 0x00000E74, 0x00000E74, 0x00000064, 0x00000000);
+
+    // Leaf 0x19: SGX resource enum — masked (SGX disabled in leaf 0x12)
+    SetCpuid(0x19, 0x00, 0x00000000, 0x00000000, 0x00000000, 0x00000000);
+
+    // Leaf 0x1F: VMD topology — all zeros (not supported on i9-10900K)
+    // Real max leaf is 0x16, so 0x1F should return zeros
+    SetCpuid(0x1F, 0x00, 0x00000000, 0x00000000, 0x00000000, 0x00000000);
 
     // Hypervisor leafs - hidden
     SetCpuid(0x40000000, 0x00, 0x00000000, 0x00000000, 0x00000000, 0x00000000);

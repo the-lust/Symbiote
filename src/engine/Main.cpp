@@ -23,6 +23,7 @@
 #include "whp/ThreadScheduler.h"
 #include "whp/TimingCoordinator.h"
 #include "whp/Canary.h"
+#include "whp/SystemSpoofer.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
 #include "kernel/MinimalKernel.h"
@@ -33,6 +34,7 @@
 #include "kernel/SystemProfile.h"
 #include "kernel/KernelBackend.h"
 #include "util/HwDetect.h"
+#include "capture/CaptureLogger.h"
 
 static Logger g_logger;
 static TimingCoordinator g_timingCoordinator;
@@ -56,11 +58,14 @@ static MsrPatcher* g_msrPatcher = nullptr;
 static ExceptionHandler* g_exceptionHandler = nullptr;
 static SystemProfile* g_systemProfile = nullptr;
 static KernelBackend* g_kernelBackend = nullptr;
+static SystemSpoofer* g_systemSpoofer = nullptr;
 extern GpuBridge* g_gpuBridge;
 static ThreadScheduler* g_threadScheduler = nullptr;
 
 static HANDLE g_engineReadyEvent = nullptr;
 static HANDLE g_engineActiveEvent = nullptr;
+
+CaptureLogger* g_captureLogger = nullptr;
 
 // inline hooks for ntdll functions (catch calls via GetProcAddress)
 static InlineHook g_ntqiHook; // NtQueryInformationProcess
@@ -315,6 +320,7 @@ static void CleanupAll()
     delete g_iatPatch; g_iatPatch = nullptr;
     delete g_codePatcher; g_codePatcher = nullptr;
     delete g_kuserHook; g_kuserHook = nullptr;
+    delete g_systemSpoofer; g_systemSpoofer = nullptr;
     delete g_msrPatcher; g_msrPatcher = nullptr;
     delete g_exceptionHandler; g_exceptionHandler = nullptr;
     delete g_allocTracker; g_allocTracker = nullptr;
@@ -323,6 +329,7 @@ static void CleanupAll()
     g_ntqsiHook.Remove();
     delete g_gpuBridge; g_gpuBridge = nullptr;
     delete g_canary; g_canary = nullptr;
+    delete g_captureLogger; g_captureLogger = nullptr;
 }
 
 static wchar_t g_engineDir[MAX_PATH] = {0};
@@ -348,14 +355,14 @@ static void SetupIatHooks()
 
     ProxyDll dlls[] = {
         { L"ntdll_proxy.dll",        {{"ntdll.dll", "NtCreateFile"}, {"ntdll.dll", "NtQuerySystemInformation"}, {"ntdll.dll", "NtQueryInformationProcess"}, {"ntdll.dll", "NtOpenKey"}, {"ntdll.dll", "NtQueryValueKey"}}, 5 },
-        { L"kernel32_proxy.dll",     {{"kernel32.dll", "CreateProcessW"}, {"kernel32.dll", "VirtualAllocEx"}, {"kernel32.dll", "GetComputerNameW"}, {"kernel32.dll", "GetUserNameW"}, {"kernel32.dll", "CreateFileW"}, {"kernel32.dll", "CreateFileA"}}, 6 },
+        { L"kernel32_proxy.dll",     {{"kernel32.dll", "CreateProcessW"}, {"kernel32.dll", "VirtualAllocEx"}, {"kernel32.dll", "GetComputerNameW"}, {"kernel32.dll", "GetUserNameW"}, {"kernel32.dll", "CreateFileW"}, {"kernel32.dll", "CreateFileA"}, {"kernel32.dll", "GetVolumeInformationW"}, {"kernel32.dll", "GetWindowsDirectoryW"}}, 8 },
         { L"kernelbase_proxy.dll",   {{"kernelbase.dll", "GetSystemInfo"}, {"kernelbase.dll", "GetNativeSystemInfo"}}, 2 },
         { L"advapi32_proxy.dll",     {{"advapi32.dll", "RegOpenKeyExW"}, {"advapi32.dll", "RegQueryValueExW"}}, 2 },
         { L"user32_proxy.dll",       {{"user32.dll", "CreateWindowExW"}}, 1 },
         { L"wbem_proxy.dll",         {{"ole32.dll", "CoCreateInstance"}}, 1 },
         { L"wtsapi32_proxy.dll",     {{"wtsapi32.dll", "WTSQuerySessionInformationW"}, {"wtsapi32.dll", "WTSEnumerateSessionsW"}, {"wtsapi32.dll", "WTSGetActiveConsoleSessionId"}}, 3 },
         { L"secur32_proxy.dll",      {{"secur32.dll", "InitializeSecurityContextW"}, {"secur32.dll", "AcquireCredentialsHandleW"}, {"secur32.dll", "GetUserNameExW"}}, 3 },
-        { L"crypt32_proxy.dll",      {{"crypt32.dll", "CertOpenSystemStoreW"}, {"crypt32.dll", "CertCloseStore"}, {"crypt32.dll", "CryptAcquireContextW"}, {"crypt32.dll", "CryptReleaseContext"}, {"crypt32.dll", "CryptGenKey"}, {"crypt32.dll", "CryptDestroyKey"}}, 6 },
+        { L"crypt32_proxy.dll",      {{"crypt32.dll", "CertOpenSystemStoreW"}, {"crypt32.dll", "CertCloseStore"}, {"crypt32.dll", "CryptAcquireContextW"}, {"crypt32.dll", "CryptReleaseContext"}, {"crypt32.dll", "CryptGenKey"}, {"crypt32.dll", "CryptDestroyKey"}, {"crypt32.dll", "CryptGetProvParam"}}, 7 },
         { L"winhttp_proxy.dll",      {{"winhttp.dll", "WinHttpOpen"}, {"winhttp.dll", "WinHttpCloseHandle"}, {"winhttp.dll", "WinHttpConnect"}, {"winhttp.dll", "WinHttpOpenRequest"}, {"winhttp.dll", "WinHttpSendRequest"}, {"winhttp.dll", "WinHttpReceiveResponse"}, {"winhttp.dll", "WinHttpReadData"}}, 7 },
         { L"dnsapi_proxy.dll",       {{"dnsapi.dll", "DnsQuery_W"}, {"dnsapi.dll", "DnsRecordListFree"}}, 2 },
         { L"iphlpapi_proxy.dll",     {{"iphlpapi.dll", "GetAdaptersInfo"}, {"iphlpapi.dll", "GetAdaptersAddresses"}, {"iphlpapi.dll", "GetNetworkParams"}}, 3 },
@@ -436,16 +443,21 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "Config loaded from %s", configPathA.c_str());
     }
 
-    // check spoof toggles from config
-    bool spoofCpuid   = configParser.GetBool("spoof", "cpuid", true);
-    bool spoofRdtsc   = configParser.GetBool("spoof", "rdtsc", true);
-    bool spoofMsr     = configParser.GetBool("spoof", "msr", true);
-    bool spoofKuser   = configParser.GetBool("spoof", "kuser", true);
-    bool spoofProcess = configParser.GetBool("spoof", "process_info", true);
-    bool spoofRegistry = configParser.GetBool("spoof", "registry", true);
-    bool spoofFile    = configParser.GetBool("spoof", "file", true);
-    bool spoofTiming  = configParser.GetBool("spoof", "timing", true);
-    bool spoofThread  = configParser.GetBool("spoof", "thread", true);
+    // check spoof toggles from config (supports both new [feature].status and old [spoof].feature format)
+    auto CheckSpoof = [&](const char* section, bool defaultVal) -> bool {
+        std::string raw = configParser.GetString(section, "status", "");
+        if (!raw.empty()) return configParser.GetBool(section, "status", defaultVal);
+        return configParser.GetBool("spoof", section, defaultVal);
+    };
+    bool spoofCpuid   = CheckSpoof("cpuid", true);
+    bool spoofRdtsc   = CheckSpoof("rdtsc", true);
+    bool spoofMsr     = CheckSpoof("msr", true);
+    bool spoofKuser   = CheckSpoof("kuser", true);
+    bool spoofProcess = CheckSpoof("process", true);
+    bool spoofRegistry = CheckSpoof("registry", true);
+    bool spoofFile    = CheckSpoof("file", true);
+    bool spoofTiming  = CheckSpoof("timing", true);
+    bool spoofThread  = CheckSpoof("thread", true);
 
     g_gpuProfile = new GpuProfile();
     g_storageProfile = new StorageProfile();
@@ -481,14 +493,34 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             configTsc, detectedTsc);
     }
 
+    // Capture mode: log all queries without spoofing (for fingerprint collection)
+    bool captureMode = configParser.GetBool("capture", "enabled", false);
+    if (captureMode) {
+        wchar_t capturePath[MAX_PATH];
+        GetModuleFileNameW(hModule, capturePath, MAX_PATH);
+        std::wstring capPath = capturePath;
+        size_t pos = capPath.find_last_of(L"\\/");
+        if (pos != std::wstring::npos) capPath = capPath.substr(0, pos);
+        capPath += L"\\capture.log";
+        g_captureLogger = new CaptureLogger();
+        if (g_captureLogger->Open(capPath.c_str())) {
+            g_logger.Trace(LOG_INFO, "Capture mode enabled — logging all queries to %ls", capPath.c_str());
+        } else {
+            g_logger.Trace(LOG_WARNING, "Capture mode: failed to open %ls", capPath.c_str());
+            delete g_captureLogger;
+            g_captureLogger = nullptr;
+        }
+    }
+
     // GPU bridge - always initialized so GPU calls never intercepted
     g_gpuBridge = new GpuBridge(&g_logger);
     g_gpuBridge->Initialize();
 
     // exit handlers for CPUID, RDTSC, MSR, memory
-    if (spoofCpuid) {
+    if (spoofCpuid || captureMode) {
         g_cpuidHandler = new CpuidHandler(&g_logger, g_kernelBackend);
         g_cpuidHandler->SetTimingCoordinator(&g_timingCoordinator);
+        if (g_captureLogger) g_cpuidHandler->SetCaptureLogger(g_captureLogger);
 
         // Load brand string from config (leaves 0x80000002-0x80000004)
         std::string brandStr = configParser.GetString("cpuid", "brand_string", "");
@@ -512,9 +544,10 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
     g_magicCpuid = new MagicCpuid(&g_logger);
 
-    if (spoofRdtsc) {
+    if (spoofRdtsc || captureMode) {
         g_rdtscHandler = new RdtscHandler(&g_logger, g_kernelBackend);
         g_rdtscHandler->SetTimingCoordinator(&g_timingCoordinator);
+        if (g_captureLogger) g_rdtscHandler->SetCaptureLogger(g_captureLogger);
         uint32_t tscNoise = (uint32_t)configParser.GetUint64("timing", "tsc_noise", 100);
         g_rdtscHandler->SetNoiseEnabled(tscNoise > 0);
         g_rdtscHandler->SetNoiseAmplitude(tscNoise);
@@ -522,8 +555,9 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "RDTSC spoofing disabled by config");
     }
 
-    if (spoofMsr) {
+    if (spoofMsr || captureMode) {
         g_msrHandler = new MsrHandler(&g_logger);
+        if (g_captureLogger) g_msrHandler->SetCaptureLogger(g_captureLogger);
     } else {
         g_logger.Trace(LOG_INFO, "MSR spoofing disabled by config");
     }
@@ -616,8 +650,8 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
     }
 
-    // IAT hooks for proxy DLLs
-    if (spoofProcess || spoofRegistry || spoofFile || spoofTiming) {
+    // IAT hooks for proxy DLLs (always in capture mode to intercept game calls)
+    if (captureMode || spoofProcess || spoofRegistry || spoofFile || spoofTiming) {
         SetupIatHooks();
     } else {
         g_logger.Trace(LOG_INFO, "Proxy hooks disabled by config");
@@ -651,6 +685,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
     // Init AllocTracker for allocated-memory CPUID interception
     g_allocTracker = new AllocTracker(&g_logger);
+    if (g_captureLogger) g_allocTracker->SetCaptureLogger(g_captureLogger);
     if (g_allocTracker->Initialize()) {
         g_logger.Trace(LOG_INFO, "AllocTracker initialized - tracking executable allocations");
     } else {
@@ -661,12 +696,41 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
     // Init Canary for memory scanner detection and handshake page
     Canary* canary = new Canary(&g_logger);
+    if (g_captureLogger) canary->SetCaptureLogger(g_captureLogger);
     if (canary->Initialize()) {
         g_logger.Trace(LOG_INFO, "Canary initialized at %p", canary->GetCanaryPage());
     } else {
         g_logger.Trace(LOG_WARNING, "Canary failed to initialize");
         delete canary;
         canary = nullptr;
+    }
+
+    // Spoof PEB anti-debug fields (BeingDebugged, NtGlobalFlag)
+    // NOTE: ProcessHeap.Flags/ForceFlags offsets differ per Windows version.
+    // On Win10 22H2+ the classic offsets (0x1C/0x20) collide with critical
+    // heap metadata. Skip them — BeingDebugged + NtGlobalFlag is sufficient.
+    if (spoofProcess) {
+        uint8_t* peb = (uint8_t*)__readgsqword(0x60);
+        if (peb) {
+            peb[0x02] = 0; // BeingDebugged = FALSE
+            *(uint32_t*)(peb + 0xBC) = 0; // NtGlobalFlag = 0
+            g_logger.Trace(LOG_INFO, "PEB: BeingDebugged=0, NtGlobalFlag=0 set");
+        }
+    }
+
+    // Init SystemSpoofer for SGDT/SIDT/SLDT/STR/XGETBV interception
+    g_logger.Trace(LOG_INFO, "SystemSpoofer: creating instance...");
+    g_systemSpoofer = new SystemSpoofer(&g_logger);
+    g_systemSpoofer->SetGdtBase(0x807F900000ULL);
+    g_systemSpoofer->SetGdtLimit(0xFFFF);
+    g_systemSpoofer->SetIdtBase(0xFFFFF80000000000ULL);
+    g_systemSpoofer->SetIdtLimit(0xFFF);
+    g_systemSpoofer->SetXgetbvResult(0x0000000000000007ULL);
+    g_logger.Trace(LOG_INFO, "SystemSpoofer: calling Initialize...");
+    if (g_systemSpoofer->Initialize()) {
+        g_logger.Trace(LOG_INFO, "SystemSpoofer initialized");
+    } else {
+        g_logger.Trace(LOG_WARNING, "SystemSpoofer failed to initialize");
     }
 
     // Signal launcher / target that hooks, patches, and shared KUSER are ready

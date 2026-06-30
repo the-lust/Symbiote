@@ -1,5 +1,6 @@
 #define WIN32_NO_STATUS
 #include "AllocTracker.h"
+#include "capture/CaptureLogger.h"
 #include <windows.h>
 #ifndef NTSTATUS
 typedef LONG NTSTATUS;
@@ -15,7 +16,7 @@ typedef LONG NTSTATUS;
 AllocTracker* g_allocTracker = nullptr;
 
 AllocTracker::AllocTracker(Logger* logger)
-    : m_logger(logger), m_vehHandle(nullptr), m_timerStopEvent(nullptr),
+    : m_logger(logger), m_capLogger(nullptr), m_vehHandle(nullptr), m_timerStopEvent(nullptr),
       m_timerThread(nullptr), m_initialized(false),
       m_ntAllocTrampoline(nullptr), m_ntProtTrampoline(nullptr),
       m_ntFreeTrampoline(nullptr), m_ntMapViewTrampoline(nullptr)
@@ -175,6 +176,10 @@ void AllocTracker::OnAllocation(void* baseAddr, SIZE_T size, ULONG protect)
 
     LeaveCriticalSection(&m_cs);
 
+    if (m_capLogger && guardCount > 0) {
+        m_capLogger->CaptureAlloc(0, baseAddr, size, protect);
+    }
+
     for (int i = 0; i < guardCount; i++) {
         DWORD oldProtect;
         VirtualProtect((LPVOID)guardPages[i], 0x1000,
@@ -206,6 +211,9 @@ void AllocTracker::OnProtect(void* baseAddr, SIZE_T size, ULONG newProtect)
                 if (tp.wasExecutable && !nowExecutable) {
                     tp.reencryptCycle++;
                     tp.allocAsRW = (newProtect == PAGE_READWRITE);
+                    if (m_capLogger) {
+                        m_capLogger->CaptureReencrypt(0, (void*)page, tp.wasExecutable ? 0x20 : 0, newProtect);
+                    }
                     m_logger->Trace(LOG_INFO,
                         "AllocTracker: re-encrypt cycle %u at %llx",
                         tp.reencryptCycle, page);
@@ -328,6 +336,23 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
 
         // Advance RIP past the instruction
         ep->ContextRecord->Rip += (isRdtscp ? 3 : 2);
+
+        if (m_capLogger) {
+            if (isCpuid) {
+                uint32_t leaf = (uint32_t)ep->ContextRecord->Rax;
+                uint32_t subleaf = (uint32_t)ep->ContextRecord->Rcx;
+                m_capLogger->CaptureGuardPageCpuid(rip, leaf, subleaf,
+                    (uint32_t)ep->ContextRecord->Rax,
+                    (uint32_t)ep->ContextRecord->Rbx,
+                    (uint32_t)ep->ContextRecord->Rcx,
+                    (uint32_t)ep->ContextRecord->Rdx,
+                    (void*)pageBase);
+            } else if (isRdtsc) {
+                m_capLogger->CaptureRdtsc("RDTSC", rip, __rdtsc());
+            } else if (isRdtscp) {
+                unsigned aux; m_capLogger->CaptureRdtsc("RDTSCP", rip, __rdtscp(&aux));
+            }
+        }
 
         m_logger->Trace(LOG_INFO,
             "AllocTracker: emulated %s at %p in tracked page %llx (hit %u)",

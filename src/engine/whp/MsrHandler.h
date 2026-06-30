@@ -4,15 +4,20 @@
 #include <unordered_map>
 #include "Logger.h"
 
+class CaptureLogger;
+
 class MsrHandler {
 public:
     explicit MsrHandler(Logger* logger);
+
+    void SetCaptureLogger(CaptureLogger* cap) { m_captureLogger = cap; }
 
     bool HandleMsrRead(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t* value);
     bool HandleMsrWrite(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t value);
 
 private:
     Logger* m_logger;
+    CaptureLogger* m_captureLogger;
 
     // Standard MSR adresses
     static const uint32_t MSR_IA32_TSC           = 0x10;

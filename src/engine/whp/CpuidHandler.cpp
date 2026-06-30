@@ -2,6 +2,7 @@
 #include "kernel/IKernelBackend.h"
 #include "MagicCpuid.h"
 #include "TimingCoordinator.h"
+#include "capture/CaptureLogger.h"
 #include "util/HwDetect.h"
 #include <cstring>
 #include <intrin.h>
@@ -23,7 +24,7 @@ static void JitterDelay()
 
 CpuidHandler::CpuidHandler(Logger* logger, IKernelBackend* backend)
     : m_logger(logger), m_backend(backend), m_magicCpuid(nullptr),
-      m_timingCoordinator(nullptr),
+      m_timingCoordinator(nullptr), m_captureLogger(nullptr),
       m_hasBrandString(false), m_hasEnhancedBrand(false)
 {
     srand((unsigned int)GetCurrentProcessId() ^ (unsigned int)GetTickCount64());
@@ -171,6 +172,12 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
     // Clear hypervisor present bit + SMX/TXT bit in leaf 1 ECX
     if (leaf == 1) {
         *rcx &= ~CPUID_ECX_SMX_BIT;
+    }
+
+    // Capture to fingerprint log
+    if (m_captureLogger) {
+        m_captureLogger->CaptureCpuid(leaf, subleaf, 0,
+            (uint32_t)*rax, (uint32_t)*rbx, (uint32_t)*rcx, (uint32_t)*rdx);
     }
 
     m_logger->Trace(LOG_CPUID, "CPUID leaf=0x%X subleaf=0x%X => %s: RAX=0x%08llX RBX=0x%08llX RCX=0x%08llX RDX=0x%08llX",

@@ -1,6 +1,7 @@
 #include "RdtscHandler.h"
 #include "kernel/IKernelBackend.h"
 #include "TimingCoordinator.h"
+#include "capture/CaptureLogger.h"
 
 static inline uint64_t ReadTSC() {
     return __rdtsc();
@@ -8,6 +9,7 @@ static inline uint64_t ReadTSC() {
 
 RdtscHandler::RdtscHandler(Logger* logger, IKernelBackend* backend)
     : m_logger(logger), m_backend(backend), m_timingCoordinator(nullptr),
+      m_captureLogger(nullptr),
       m_tscOffset(0), m_lastTsc(0), m_noiseEnabled(true), m_noiseAmplitude(100)
 {
     if (m_backend) {
@@ -59,6 +61,10 @@ bool RdtscHandler::HandleRdtsc(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rd
     *rax = spoofedTsc & 0xFFFFFFFF;
     *rdx = (spoofedTsc >> 32) & 0xFFFFFFFF;
 
+    if (m_captureLogger) {
+        m_captureLogger->CaptureRdtsc("RDTSC", 0, realTsc);
+    }
+
     m_logger->Trace(LOG_TIMING, "RDTSC: real=0x%llX spoofed=0x%llX", realTsc, spoofedTsc);
     return true;
 }
@@ -80,6 +86,10 @@ bool RdtscHandler::HandleRdtscp(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* r
     *rax = spoofedTsc & 0xFFFFFFFF;
     *rdx = (spoofedTsc >> 32) & 0xFFFFFFFF;
     *rcx = 0x00000001;
+
+    if (m_captureLogger) {
+        m_captureLogger->CaptureRdtsc("RDTSCP", 0, realTsc);
+    }
 
     m_logger->Trace(LOG_TIMING, "RDTSCP: real=0x%llX spoofed=0x%llX", realTsc, spoofedTsc);
     return true;
