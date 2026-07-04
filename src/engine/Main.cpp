@@ -15,8 +15,6 @@
 #include "whp/EptHook.h"
 #include "whp/KuserSync.h"
 #include "whp/KuserHook.h"
-#include "whp/CodePatcher.h"
-#include "whp/MsrPatcher.h"
 #include "whp/MagicCpuid.h"
 #include "whp/AllocTracker.h"
 #include "whp/ExceptionHandler.h"
@@ -30,7 +28,6 @@
 #include "proxy/IatPatch.h"
 #include "proxy/SyscallBridge.h"
 #include "proxy/GpuBridge.h"
-#include "proxy/InlineHook.h"
 #include "kernel/SystemProfile.h"
 #include "kernel/KernelBackend.h"
 #include "util/HwDetect.h"
@@ -52,9 +49,7 @@ static StorageProfile* g_storageProfile = nullptr;
 static MinimalKernel* g_minimalKernel = nullptr;
 static HMODULE g_engineModule = nullptr;
 static IatPatch* g_iatPatch = nullptr;
-static CodePatcher* g_codePatcher = nullptr;
 static KuserHook* g_kuserHook = nullptr;
-static MsrPatcher* g_msrPatcher = nullptr;
 static ExceptionHandler* g_exceptionHandler = nullptr;
 static SystemProfile* g_systemProfile = nullptr;
 static KernelBackend* g_kernelBackend = nullptr;
@@ -67,241 +62,80 @@ static HANDLE g_engineActiveEvent = nullptr;
 
 CaptureLogger* g_captureLogger = nullptr;
 
-// inline hooks for ntdll functions (catch calls via GetProcAddress)
-static InlineHook g_ntqiHook; // NtQueryInformationProcess
-static void* g_ntqiTrampoline = nullptr;
-static InlineHook g_ntqsiHook; // NtQuerySystemInformation
-static void* g_ntqsiTrampoline = nullptr;
-
-typedef NTSTATUS (NTAPI* NtQuerySysInfoFunc)(ULONG, PVOID, ULONG, PULONG);
-typedef NTSTATUS (NTAPI* NtQueryInfoProcessFunc)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-
-#pragma pack(push, 1)
-typedef struct _SYSTEM_FIRMWARE_TABLE_INFORMATION {
-    ULONG ProviderSignature;
-    BOOLEAN ProviderSpecific;
-    BOOLEAN ACPIBufferTooSmall;
-    UCHAR Reserved[2];
-    ULONG FirmwareTableID;
-    PVOID FirmwareTableBuffer;
-    ULONG FirmwareTableBufferLength;
-} SYSTEM_FIRMWARE_TABLE_INFORMATION;
-#pragma pack(pop)
-
-static void SpoofAcpiMadt(void* tableData, ULONG* tableLen)
+static void CleanupDenuvoState()
 {
-    // Verify its the MADT ('APIC') table
-    char* sig = (char*)tableData;
-    if (sig[0] != 'A' || sig[1] != 'P' || sig[2] != 'I' || sig[3] != 'C')
-        return;
+    // Clean up common Denuvo persistence vectors that may store blacklist state
+    wchar_t gameDir[MAX_PATH];
+    GetModuleFileNameW(NULL, gameDir, MAX_PATH);
+    wchar_t* lastSlash = wcsrchr(gameDir, L'\\');
+    if (lastSlash) *lastSlash = 0;
 
-    ULONG originalLen = *(ULONG*)(sig + 4);
-    if (originalLen < 44 || *tableLen < 44)
-        return;
-
-    // Count existing processor entries (Type 0) and save non-processor entries
-    struct SavedEntry { uint8_t data[256]; uint8_t type; uint8_t length; };
-    SavedEntry saved[32];
-    int savedCount = 0;
-    int origProcCount = 0;
-
-    uint8_t* pos = (uint8_t*)tableData + 44;
-    uint8_t* end = (uint8_t*)tableData + originalLen;
-
-    while (pos + 2 <= end) {
-        uint8_t type = pos[0];
-        uint8_t len = pos[1];
-        if (len < 2 || pos + len > end) break;
-        if (type == 0) {
-            origProcCount++;
-        } else if (savedCount < 32) {
-            memcpy(saved[savedCount].data, pos, len);
-            saved[savedCount].type = type;
-            saved[savedCount].length = len;
-            savedCount++;
+    // Denuvo cache files in game directory
+    const wchar_t* patterns[] = {
+        L"\\Denuvo*.bin", L"\\Denuvo*.dat", L"\\Denuvo*.lic",
+        L"\\*.dvl", L"\\Steam*_Denuvo*"
+    };
+    for (auto pattern : patterns) {
+        wchar_t search[MAX_PATH];
+        swprintf_s(search, L"%s%s", gameDir, pattern);
+        WIN32_FIND_DATAW fd;
+        HANDLE hFind = FindFirstFileW(search, &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                wchar_t fullPath[MAX_PATH];
+                swprintf_s(fullPath, L"%s\\%s", gameDir, fd.cFileName);
+                DeleteFileW(fullPath);
+            } while (FindNextFileW(hFind, &fd));
+            FindClose(hFind);
         }
-        pos += len;
     }
 
-    // Build new MADT with 20 proccessor entries
-    const int targetCount = 20;
-    uint8_t newTable[4096];
-
-    // Copy ACPI header (36 bytes) + LAPIC addr (4 bytes) + flags (4 bytes)
-    memcpy(newTable, tableData, 44);
-    uint8_t* wp = newTable + 44;
-
-    // Write 20 processor entries (Type 0, Length 8)
-    for (int i = 0; i < targetCount; i++) {
-        wp[0] = 0;                     // Type = Processor Local APIC
-        wp[1] = 8;                     // Length
-        wp[2] = (uint8_t)i;            // ACPI Processor ID
-        wp[3] = (uint8_t)i;            // APIC ID
-        *(uint32_t*)(wp + 4) = 1;      // Flags = enabled
-        wp += 8;
-    }
-
-    // Copy saved non-processor entrys (IO APIC, interrupt overrides, etc.)
-    for (int i = 0; i < savedCount; i++) {
-        memcpy(wp, saved[i].data, saved[i].length);
-        wp += saved[i].length;
-    }
-
-    ULONG newLen = (ULONG)(wp - newTable);
-
-    // Update length field in header
-    *(ULONG*)(newTable + 4) = newLen;
-
-    // Fix checkcum: sum of all bytes must be 0
-    uint8_t sum = 0;
-    for (ULONG i = 0; i < newLen; i++) sum += newTable[i];
-    newTable[9] = (uint8_t)((uint8_t)newTable[9] - sum); // Adjust checksum byte
-
-    if (*tableLen >= newLen) {
-        memcpy(tableData, newTable, newLen);
-        *tableLen = newLen;
-    } else {
-        *tableLen = newLen; // Indicate required size
-    }
-}
-
-static NTSTATUS NTAPI HookedNtQueryInformationProcess(
-    HANDLE ProcessHandle, ULONG InfoClass, PVOID Info, ULONG InfoLen, PULONG RetLen)
-{
-    // Intercept ProcessDebugPort (class 7) - return -1 = no debuger
-    if (InfoClass == 7) {
-        if (Info && InfoLen >= sizeof(int32_t)) {
-            *(int32_t*)Info = -1; // 0xFFFFFFFF
-            if (RetLen) *RetLen = sizeof(int32_t);
-        }
-        return 0; // STATUS_SUCCESS
-    }
-
-    // Intercept ProcessDebugFlags (class 31) - return 1 = no debugger
-    if (InfoClass == 31) {
-        if (Info && InfoLen >= sizeof(uint32_t)) {
-            *(uint32_t*)Info = 1;
-            if (RetLen) *RetLen = sizeof(uint32_t);
-        }
-        return 0;
-    }
-
-    // Intercept ProcessDebugObjectHandle (class 30 = 0x1E) - return NULL lol
-    if (InfoClass == 30) {
-        if (Info && InfoLen >= sizeof(HANDLE)) {
-            *(HANDLE*)Info = nullptr;
-            if (RetLen) *RetLen = sizeof(HANDLE);
-        }
-        return 0;
-    }
-
-    // Intercept ProcessBasicInformation (class 0) - return proper struct
-    // NOTE: trampoline bypassed here because InlineHook copies 16 raw bytes
-    // which can split a multi-byte instruction and corrupt the stack.
-    // This avoids the broken trampoline entirely.
-    if (InfoClass == 0) {
-        if (Info && InfoLen >= sizeof(uintptr_t) * 6) {
-            memset(Info, 0, InfoLen);
-            uint64_t peb = (uint64_t)__readgsqword(0x60);
-            uint64_t pid = (uint64_t)GetCurrentProcessId();
-            *(uintptr_t*)((uint8_t*)Info + 0) = 0;                     // ExitStatus
-            *(uintptr_t*)((uint8_t*)Info + 8) = peb;                   // PebBaseAddress
-            *(uintptr_t*)((uint8_t*)Info + 16) = 0;                    // AffinityMask
-            *(uintptr_t*)((uint8_t*)Info + 24) = 0;                    // BasePriority
-            *(uintptr_t*)((uint8_t*)Info + 32) = pid;                  // UniqueProcessId
-            *(uintptr_t*)((uint8_t*)Info + 40) = 0;                    // InheritedFromUniqueProcessId
-            if (RetLen) *RetLen = sizeof(uintptr_t) * 6;
-        } else if (RetLen) {
-            *RetLen = sizeof(uintptr_t) * 6;
-        }
-        return 0;
-    }
-
-    // fall through to original via trampoline
-    auto realFunc = (NtQueryInfoProcessFunc)g_ntqiTrampoline;
-    if (realFunc) return realFunc(ProcessHandle, InfoClass, Info, InfoLen, RetLen);
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-static NTSTATUS NTAPI HookedNtQuerySystemInformation(
-    ULONG InfoClass, PVOID Info, ULONG InfoLen, PULONG RetLen)
-{
-    uint64_t args[4] = { InfoClass, (uint64_t)Info, InfoLen, (uint64_t)RetLen };
-    uint64_t result = 0;
-    if (RouteSyscall(0x0001, args, &result)) {
-        return (NTSTATUS)result;
-    }
-
-    // SystemKernelDebuggerInformation (35 / 0x23)
-    if (InfoClass == 35 || InfoClass == 0x23) {
-        if (Info && InfoLen >= 2) {
-            uint8_t* kd = (uint8_t*)Info;
-            kd[0] = 0; // KernelDebuggerEnabled = FALSE
-            kd[1] = 1; // KernelDebuggerNotPresent = TRUE
-            if (RetLen) *RetLen = 2;
-        } else if (RetLen) {
-            *RetLen = 2;
-        }
-        return STATUS_SUCCESS;
-    }
-
-    // SystemCodeIntegrityInformation (103 / 0x67)
-    if (InfoClass == 103 || InfoClass == 0x67) {
-        if (Info && InfoLen >= 8) {
-            *(ULONG*)Info = 8;
-            *(ULONG*)((uint8_t*)Info + 4) = 0; // CodeIntegrityOptions = 0 (clean)
-            if (RetLen) *RetLen = 8;
-        }
-        return STATUS_SUCCESS;
-    }
-
-    // SystemModuleInformation (11 / 0x0B) — empty list hides unsigned drivers
-    if (InfoClass == 11 || InfoClass == 0x0B) {
-        if (InfoLen >= sizeof(ULONG)) {
-            if (Info) *(ULONG*)Info = 0;
-            if (RetLen) *RetLen = sizeof(ULONG);
-        }
-        return STATUS_SUCCESS;
-    }
-
-    auto realFunc = (NtQuerySysInfoFunc)g_ntqsiTrampoline;
-    if (realFunc) {
-        NTSTATUS status = realFunc(InfoClass, Info, InfoLen, RetLen);
-
-        // ACPI MADT spoofing: modify processor entries to match 10C/20T
-        if (InfoClass == 75 && Info && InfoLen >= sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION)) {
-            SYSTEM_FIRMWARE_TABLE_INFORMATION* fti = (SYSTEM_FIRMWARE_TABLE_INFORMATION*)Info;
-            if (fti->ProviderSignature == 0x49435041 &&       // 'ACPI'
-                fti->FirmwareTableID == 0x43495041 &&          // 'APIC'
-                fti->FirmwareTableBuffer && fti->FirmwareTableBufferLength >= 44) {
-                g_logger.Trace(LOG_EMU, "ACPI MADT table detected - spoofing to %d processor entries", 20);
-                SpoofAcpiMadt(fti->FirmwareTableBuffer, &fti->FirmwareTableBufferLength);
+    // Check %appdata% for Denuvo state
+    wchar_t appData[MAX_PATH];
+    if (GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH)) {
+        wchar_t denuvoDir[MAX_PATH];
+        swprintf_s(denuvoDir, L"%s\\Denuvo", appData);
+        DWORD attr = GetFileAttributesW(denuvoDir);
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            // Delete known Denuvo state files
+            WIN32_FIND_DATAW fd;
+            wchar_t search[MAX_PATH];
+            swprintf_s(search, L"%s\\*", denuvoDir);
+            HANDLE hFind = FindFirstFileW(search, &fd);
+            if (hFind != INVALID_HANDLE_VALUE) {
+                do {
+                    if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+                    wchar_t fullPath[MAX_PATH];
+                    swprintf_s(fullPath, L"%s\\%s", denuvoDir, fd.cFileName);
+                    DeleteFileW(fullPath);
+                } while (FindNextFileW(hFind, &fd));
+                FindClose(hFind);
             }
         }
-
-        // Also handle size-query case for ACPI MADT (buffer was NULL)
-        if (InfoClass == 75 && Info && RetLen &&
-            status == STATUS_BUFFER_TOO_SMALL) {
-            SYSTEM_FIRMWARE_TABLE_INFORMATION* fti = (SYSTEM_FIRMWARE_TABLE_INFORMATION*)Info;
-            if (fti->ProviderSignature == 0x49435041 &&
-                fti->FirmwareTableID == 0x43495041 &&
-                fti->ACPIBufferTooSmall) {
-                // Bump required size to accommodate 20 APIC entries (vs real 4)
-                ULONG needed = fti->FirmwareTableBufferLength + (20 * 8);
-                if (needed > fti->FirmwareTableBufferLength) {
-                    fti->FirmwareTableBufferLength = needed;
-                    g_logger.Trace(LOG_EMU, "ACPI MADT size-query: bumped to %u bytes", needed);
-                }
-            }
-        }
-
-        return status;
     }
-    return STATUS_NOT_IMPLEMENTED;
+
+    // Clear temp directory files matching Denuvo patterns
+    wchar_t tempDir[MAX_PATH];
+    if (GetEnvironmentVariableW(L"TEMP", tempDir, MAX_PATH)) {
+        wchar_t search[MAX_PATH];
+        swprintf_s(search, L"%s\\dns*", tempDir);
+        WIN32_FIND_DATAW fd;
+        HANDLE hFind = FindFirstFileW(search, &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+                wchar_t fullPath[MAX_PATH];
+                swprintf_s(fullPath, L"%s\\%s", tempDir, fd.cFileName);
+                DeleteFileW(fullPath);
+            } while (FindNextFileW(hFind, &fd));
+            FindClose(hFind);
+        }
+    }
 }
 
 static void CleanupAll()
 {
+    CleanupDenuvoState();
     delete g_vcpuManager; g_vcpuManager = nullptr;
     delete g_minimalKernel; g_minimalKernel = nullptr;
     delete g_kuserSync; g_kuserSync = nullptr;
@@ -318,15 +152,11 @@ static void CleanupAll()
     delete g_systemProfile; g_systemProfile = nullptr;
     delete g_partition; g_partition = nullptr;
     delete g_iatPatch; g_iatPatch = nullptr;
-    delete g_codePatcher; g_codePatcher = nullptr;
     delete g_kuserHook; g_kuserHook = nullptr;
     delete g_systemSpoofer; g_systemSpoofer = nullptr;
-    delete g_msrPatcher; g_msrPatcher = nullptr;
     delete g_exceptionHandler; g_exceptionHandler = nullptr;
     delete g_allocTracker; g_allocTracker = nullptr;
     delete g_threadScheduler; g_threadScheduler = nullptr;
-    g_ntqiHook.Remove();
-    g_ntqsiHook.Remove();
     delete g_gpuBridge; g_gpuBridge = nullptr;
     delete g_canary; g_canary = nullptr;
     delete g_captureLogger; g_captureLogger = nullptr;
@@ -354,20 +184,22 @@ static void SetupIatHooks()
     };
 
     ProxyDll dlls[] = {
-        { L"ntdll_proxy.dll",        {{"ntdll.dll", "NtCreateFile"}, {"ntdll.dll", "NtQuerySystemInformation"}, {"ntdll.dll", "NtQueryInformationProcess"}, {"ntdll.dll", "NtOpenKey"}, {"ntdll.dll", "NtQueryValueKey"}}, 5 },
-        { L"kernel32_proxy.dll",     {{"kernel32.dll", "CreateProcessW"}, {"kernel32.dll", "VirtualAllocEx"}, {"kernel32.dll", "GetComputerNameW"}, {"kernel32.dll", "GetUserNameW"}, {"kernel32.dll", "CreateFileW"}, {"kernel32.dll", "CreateFileA"}, {"kernel32.dll", "GetVolumeInformationW"}, {"kernel32.dll", "GetWindowsDirectoryW"}}, 8 },
-        { L"kernelbase_proxy.dll",   {{"kernelbase.dll", "GetSystemInfo"}, {"kernelbase.dll", "GetNativeSystemInfo"}}, 2 },
-        { L"advapi32_proxy.dll",     {{"advapi32.dll", "RegOpenKeyExW"}, {"advapi32.dll", "RegQueryValueExW"}}, 2 },
-        { L"user32_proxy.dll",       {{"user32.dll", "CreateWindowExW"}}, 1 },
-        { L"wbem_proxy.dll",         {{"ole32.dll", "CoCreateInstance"}}, 1 },
-        { L"wtsapi32_proxy.dll",     {{"wtsapi32.dll", "WTSQuerySessionInformationW"}, {"wtsapi32.dll", "WTSEnumerateSessionsW"}, {"wtsapi32.dll", "WTSGetActiveConsoleSessionId"}}, 3 },
-        { L"secur32_proxy.dll",      {{"secur32.dll", "InitializeSecurityContextW"}, {"secur32.dll", "AcquireCredentialsHandleW"}, {"secur32.dll", "GetUserNameExW"}}, 3 },
-        { L"crypt32_proxy.dll",      {{"crypt32.dll", "CertOpenSystemStoreW"}, {"crypt32.dll", "CertCloseStore"}, {"crypt32.dll", "CryptAcquireContextW"}, {"crypt32.dll", "CryptReleaseContext"}, {"crypt32.dll", "CryptGenKey"}, {"crypt32.dll", "CryptDestroyKey"}, {"crypt32.dll", "CryptGetProvParam"}}, 7 },
-        { L"winhttp_proxy.dll",      {{"winhttp.dll", "WinHttpOpen"}, {"winhttp.dll", "WinHttpCloseHandle"}, {"winhttp.dll", "WinHttpConnect"}, {"winhttp.dll", "WinHttpOpenRequest"}, {"winhttp.dll", "WinHttpSendRequest"}, {"winhttp.dll", "WinHttpReceiveResponse"}, {"winhttp.dll", "WinHttpReadData"}}, 7 },
-        { L"dnsapi_proxy.dll",       {{"dnsapi.dll", "DnsQuery_W"}, {"dnsapi.dll", "DnsRecordListFree"}}, 2 },
-        { L"iphlpapi_proxy.dll",     {{"iphlpapi.dll", "GetAdaptersInfo"}, {"iphlpapi.dll", "GetAdaptersAddresses"}, {"iphlpapi.dll", "GetNetworkParams"}}, 3 },
-        { L"ws2_32_proxy.dll",       {{"ws2_32.dll", "socket"}, {"ws2_32.dll", "connect"}, {"ws2_32.dll", "send"}, {"ws2_32.dll", "recv"}, {"ws2_32.dll", "closesocket"}, {"ws2_32.dll", "gethostbyname"}, {"ws2_32.dll", "getaddrinfo"}, {"ws2_32.dll", "WSAStartup"}, {"ws2_32.dll", "WSACleanup"}}, 9 },
+        { L"ntdll.dll",        {{"ntdll.dll", "NtCreateFile"}, {"ntdll.dll", "NtQuerySystemInformation"}, {"ntdll.dll", "NtQueryInformationProcess"}, {"ntdll.dll", "NtOpenKey"}, {"ntdll.dll", "NtQueryValueKey"}}, 5 },
+        { L"kernel32.dll",     {{"kernel32.dll", "CreateProcessW"}, {"kernel32.dll", "VirtualAllocEx"}, {"kernel32.dll", "GetComputerNameW"}, {"kernel32.dll", "GetUserNameW"}, {"kernel32.dll", "CreateFileW"}, {"kernel32.dll", "CreateFileA"}, {"kernel32.dll", "GetVolumeInformationW"}, {"kernel32.dll", "GetWindowsDirectoryW"}}, 8 },
+        { L"kernelbase.dll",   {{"kernelbase.dll", "GetSystemInfo"}, {"kernelbase.dll", "GetNativeSystemInfo"}}, 2 },
+        { L"advapi32.dll",     {{"advapi32.dll", "RegOpenKeyExW"}, {"advapi32.dll", "RegQueryValueExW"}}, 2 },
+        { L"user32.dll",       {{"user32.dll", "CreateWindowExW"}}, 1 },
+        { L"wbem.dll",        {{"ole32.dll", "CoCreateInstance"}}, 1 },
+        { L"wtsapi32.dll",     {{"wtsapi32.dll", "WTSQuerySessionInformationW"}, {"wtsapi32.dll", "WTSEnumerateSessionsW"}, {"wtsapi32.dll", "WTSGetActiveConsoleSessionId"}}, 3 },
+        { L"secur32.dll",      {{"secur32.dll", "InitializeSecurityContextW"}, {"secur32.dll", "AcquireCredentialsHandleW"}, {"secur32.dll", "GetUserNameExW"}}, 3 },
+        { L"crypt32.dll",      {{"crypt32.dll", "CertOpenSystemStoreW"}, {"crypt32.dll", "CertCloseStore"}, {"crypt32.dll", "CryptAcquireContextW"}, {"crypt32.dll", "CryptReleaseContext"}, {"crypt32.dll", "CryptGenKey"}, {"crypt32.dll", "CryptDestroyKey"}, {"crypt32.dll", "CryptGetProvParam"}}, 7 },
+        { L"winhttp.dll",      {{"winhttp.dll", "WinHttpOpen"}, {"winhttp.dll", "WinHttpCloseHandle"}, {"winhttp.dll", "WinHttpConnect"}, {"winhttp.dll", "WinHttpOpenRequest"}, {"winhttp.dll", "WinHttpSendRequest"}, {"winhttp.dll", "WinHttpReceiveResponse"}, {"winhttp.dll", "WinHttpReadData"}}, 7 },
+        { L"dnsapi.dll",       {{"dnsapi.dll", "DnsQuery_W"}, {"dnsapi.dll", "DnsRecordListFree"}}, 2 },
+        { L"iphlpapi.dll",     {{"iphlpapi.dll", "GetAdaptersInfo"}, {"iphlpapi.dll", "GetAdaptersAddresses"}, {"iphlpapi.dll", "GetNetworkParams"}}, 3 },
+        { L"ws2_32.dll",       {{"ws2_32.dll", "socket"}, {"ws2_32.dll", "connect"}, {"ws2_32.dll", "send"}, {"ws2_32.dll", "recv"}, {"ws2_32.dll", "closesocket"}, {"ws2_32.dll", "gethostbyname"}, {"ws2_32.dll", "getaddrinfo"}, {"ws2_32.dll", "WSAStartup"}, {"ws2_32.dll", "WSACleanup"}}, 9 },
     };
+
+    HMODULE hNtdllProxy = NULL, hKernel32Proxy = NULL;
 
     for (auto& dll : dlls) {
         wchar_t fullPath[MAX_PATH];
@@ -389,6 +221,36 @@ static void SetupIatHooks()
             if (proc) {
                 g_iatPatch->PatchIAT(dll.exports[i][0], dll.exports[i][1], (void*)proc);
             }
+        }
+        if (wcscmp(dll.name, L"ntdll.dll") == 0) hNtdllProxy = hProxy;
+        if (wcscmp(dll.name, L"kernel32.dll") == 0) hKernel32Proxy = hProxy;
+    }
+
+    // Register proxy function addresses with kernel32_proxy's GetProcAddress hook
+    // so dynamic lookups (e.g., GetProcAddress("kernel32.dll", "GetComputerNameW"))
+    // return our proxy addresses without needing name-based module lookup.
+    if (hKernel32Proxy) {
+        typedef void (WINAPI* RegFunc_t)(const char*, const char**, FARPROC*, int);
+        RegFunc_t regFunc = (RegFunc_t)GetProcAddress(hKernel32Proxy, "RegisterProxyFunctions");
+        if (regFunc) {
+            auto registerProxy = [&](HMODULE hProxy, const char* dllName, const char** funcs, int count) {
+                FARPROC addrs[32];
+                for (int i = 0; i < count; i++) {
+                    addrs[i] = GetProcAddress(hProxy, funcs[i]);
+                }
+                regFunc(dllName, funcs, addrs, count);
+            };
+
+            // Register ntdll proxy functions
+            const char* ntdlFuncs[] = {"NtCreateFile", "NtQuerySystemInformation",
+                "NtQueryInformationProcess", "NtOpenKey", "NtQueryValueKey"};
+            if (hNtdllProxy)
+                registerProxy(hNtdllProxy, "ntdll.dll", ntdlFuncs, 5);
+
+            // Register kernel32 proxy functions
+            const char* k32Funcs[] = {"GetComputerNameW", "GetUserNameW",
+                "GetVolumeInformationW", "GetWindowsDirectoryW", "CreateFileW", "CreateFileA"};
+            registerProxy(hKernel32Proxy, "kernel32.dll", k32Funcs, 6);
         }
     }
 }
@@ -457,7 +319,6 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     bool spoofRegistry = CheckSpoof("registry", true);
     bool spoofFile    = CheckSpoof("file", true);
     bool spoofTiming  = CheckSpoof("timing", true);
-    bool spoofThread  = CheckSpoof("thread", true);
 
     g_gpuProfile = new GpuProfile();
     g_storageProfile = new StorageProfile();
@@ -542,7 +403,13 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "CPUID spoofing disabled by config");
     }
 
-    g_magicCpuid = new MagicCpuid(&g_logger);
+    bool spoofMagicCpuid = CheckSpoof("magic", false);
+    if (spoofMagicCpuid) {
+        g_magicCpuid = new MagicCpuid(&g_logger);
+        g_logger.Trace(LOG_INFO, "MagicCpuid enabled by config");
+    } else {
+        g_logger.Trace(LOG_INFO, "MagicCpuid disabled by config");
+    }
 
     if (spoofRdtsc || captureMode) {
         g_rdtscHandler = new RdtscHandler(&g_logger, g_kernelBackend);
@@ -568,21 +435,6 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     g_minimalKernel->LoadFromConfig(&configParser);
     g_minimalKernel->BuildVirtualProcessList();
     SetSyscallHandler(MinimalKernel::DispatchThunk);
-
-    // Phase 2: patching native code w/ VEH
-    if (spoofCpuid || spoofRdtsc) {
-        g_codePatcher = new CodePatcher(&g_logger, g_kernelBackend);
-        if (g_codePatcher->Initialize()) {
-            g_logger.Trace(LOG_INFO, "CodePatcher initialized");
-        }
-    }
-
-    if (spoofMsr) {
-        g_msrPatcher = new MsrPatcher(&g_logger, g_kernelBackend);
-        if (g_msrPatcher->Initialize()) {
-            g_logger.Trace(LOG_INFO, "MsrPatcher initialized");
-        }
-    }
 
     if (spoofKuser) {
         g_kuserHook = new KuserHook(&g_logger);
@@ -657,31 +509,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "Proxy hooks disabled by config");
     }
 
-    // Inline hooks for ntdll functions (catches calls via GetProcAddress)
-    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-    if (spoofProcess || spoofThread) {
-        if (hNtdll) {
-        void* ntqiAddr = GetProcAddress(hNtdll, "NtQueryInformationProcess");
-        if (ntqiAddr) {
-            g_ntqiHook.Install(ntqiAddr, (void*)HookedNtQueryInformationProcess);
-            g_ntqiTrampoline = g_ntqiHook.GetTrampoline();
-            if (g_ntqiTrampoline) {
-                g_logger.Trace(LOG_INFO, "InlineHook: NtQueryInformationProcess hooked at %p", ntqiAddr);
-            }
-        }
 
-        void* ntqsiAddr = GetProcAddress(hNtdll, "NtQuerySystemInformation");
-        if (ntqsiAddr) {
-            g_ntqsiHook.Install(ntqsiAddr, (void*)HookedNtQuerySystemInformation);
-            g_ntqsiTrampoline = g_ntqsiHook.GetTrampoline();
-            if (g_ntqsiTrampoline) {
-                g_logger.Trace(LOG_INFO, "InlineHook: NtQuerySystemInformation hooked at %p", ntqsiAddr);
-            }
-        }
-        }
-    } else {
-        g_logger.Trace(LOG_INFO, "Inline hooks disabled by config");
-    }
 
     // Init AllocTracker for allocated-memory CPUID interception
     g_allocTracker = new AllocTracker(&g_logger);

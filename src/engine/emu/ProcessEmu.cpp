@@ -11,6 +11,7 @@ typedef LONG NTSTATUS;
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 #endif
 #include <algorithm>
+#include <cstdlib>
 #include <sstream>
 #include <iomanip>
 
@@ -337,7 +338,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
                 BOOLEAN ProviderSpecific;
                 BOOLEAN ACPIBufferTooSmall;
                 UCHAR Reserved[2];
-                ULONG Reserved2;
+                ULONG FirmwareTableID;
                 PVOID FirmwareTableBuffer;
                 ULONG FirmwareTableBufferLength;
             } SYSTEM_FIRMWARE_TABLE_INFORMATION, *PSYSTEM_FIRMWARE_TABLE_INFORMATION;
@@ -353,10 +354,114 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             void* tableBuffer = fti->FirmwareTableBuffer;
             uint32_t tableBufLen = fti->FirmwareTableBufferLength;
 
+            // Handle ACPI provider — spoof MADT to show 20 processors
+            if (providerSig == 0x49435041) {
+                // Call real NtQuerySystemInformation to get ACPI data
+                HMODULE nt = GetModuleHandleA("ntdll.dll");
+                if (!nt) { *result = (uint64_t)(ULONG)STATUS_NOT_IMPLEMENTED; return true; }
+                typedef NTSTATUS (NTAPI* NtQsiFunc)(ULONG, PVOID, ULONG, PULONG);
+                auto realNtQsi = (NtQsiFunc)GetProcAddress(nt, "NtQuerySystemInformation");
+                if (!realNtQsi) { *result = (uint64_t)(ULONG)STATUS_NOT_IMPLEMENTED; return true; }
+
+                // If this is a size query (buffer is null / too small), let real syscall handle it
+                if (fti->ACPIBufferTooSmall || !tableBuffer) {
+                    NTSTATUS status = realNtQsi(infoClass, (PVOID)infoBuffer, infoLength, (PULONG)returnLengthPtr);
+                    *result = (uint64_t)(ULONG)status;
+                    return true;
+                }
+
+                // Get real ACPI data into a temporary buffer
+                ULONG realLen = 0;
+                NTSTATUS status = realNtQsi(infoClass, (PVOID)infoBuffer, infoLength, &realLen);
+                if (!NT_SUCCESS(status) && status != STATUS_BUFFER_TOO_SMALL) {
+                    *result = (uint64_t)status;
+                    return true;
+                }
+
+                // Allocate temp buffer for real data
+                ULONG bufSize = max(tableBufLen, realLen);
+                uint8_t* tempBuf = (uint8_t*)malloc(bufSize);
+                if (!tempBuf) { *result = (uint64_t)(ULONG)STATUS_NO_MEMORY; return true; }
+
+                fti->FirmwareTableBuffer = tempBuf;
+                fti->FirmwareTableBufferLength = bufSize;
+                status = realNtQsi(infoClass, (PVOID)infoBuffer, infoLength, &realLen);
+                fti->FirmwareTableBuffer = tableBuffer;
+                fti->FirmwareTableBufferLength = bufSize;
+
+                if (!NT_SUCCESS(status)) {
+                    free(tempBuf);
+                    *result = (uint64_t)(ULONG)status;
+                    return true;
+                }
+
+                // Spoof MADT (APIC) if this is the right table
+                void* acpiData = tempBuf;
+                ULONG acpiLen = bufSize;
+                if (fti->FirmwareTableID == 0x43495041 && acpiData && acpiLen >= 44) {
+                    // Count existing processor entries (Type 0) and save non-processor entries
+                    struct SavedEntry { uint8_t data[256]; uint8_t type; uint8_t length; };
+                    SavedEntry saved[32]; int savedCount = 0; int origProcCount = 0;
+
+                    uint8_t* pos = (uint8_t*)acpiData + 44;
+                    uint8_t* end = (uint8_t*)acpiData + acpiLen;
+                    while (pos + 2 <= end) {
+                        uint8_t type = pos[0];
+                        uint8_t len = pos[1];
+                        if (len < 2 || pos + len > end) break;
+                        if (type == 0) origProcCount++;
+                        else if (savedCount < 32) { memcpy(saved[savedCount].data, pos, len); saved[savedCount].type = type; saved[savedCount].length = len; savedCount++; }
+                        pos += len;
+                    }
+
+                    // Build new MADT with 20 processor entries
+                    const int targetCount = 20;
+                    uint8_t newTable[4096];
+                    memcpy(newTable, acpiData, 44);
+                    uint8_t* wp = newTable + 44;
+                    for (int i = 0; i < targetCount; i++) {
+                        wp[0] = 0; wp[1] = 8;
+                        wp[2] = (uint8_t)i; wp[3] = (uint8_t)i;
+                        *(uint32_t*)(wp + 4) = 1;
+                        wp += 8;
+                    }
+                    for (int i = 0; i < savedCount; i++) {
+                        memcpy(wp, saved[i].data, saved[i].length);
+                        wp += saved[i].length;
+                    }
+
+                    ULONG newLen = (ULONG)(wp - newTable);
+                    *(ULONG*)(newTable + 4) = newLen;
+
+                    uint8_t sum = 0;
+                    for (ULONG i = 0; i < newLen; i++) sum += newTable[i];
+                    newTable[9] = (uint8_t)((uint8_t)newTable[9] - sum);
+
+                    if (tableBufLen >= newLen) {
+                        memcpy(tableBuffer, newTable, newLen);
+                        fti->FirmwareTableBufferLength = newLen;
+                    } else {
+                        fti->FirmwareTableBufferLength = newLen;
+                        free(tempBuf);
+                        *result = (uint64_t)STATUS_BUFFER_TOO_SMALL;
+                        return true;
+                    }
+                    m_logger->Trace(LOG_EMU, "ACPI MADT spoofed: %d -> %d processors", origProcCount, targetCount);
+                } else {
+                    // Not MADT — copy original data
+                    if (tableBuffer && tableBufLen >= acpiLen) {
+                        memcpy(tableBuffer, acpiData, acpiLen);
+                        fti->FirmwareTableBufferLength = acpiLen;
+                    }
+                }
+                free(tempBuf);
+                if (returnLengthPtr) *(uint32_t*)returnLengthPtr = fti->FirmwareTableBufferLength;
+                *result = (uint64_t)STATUS_SUCCESS;
+                return true;
+            }
+
             // Only handle SMBIOS provider ('RSMB' = 0x52534D42)
             if (providerSig != 0x52534D42) {
-                // For ACPI ('ACPI' = 0x49435041) or any other provider,
-                // fall through to real OS so tools can read real ACPI tables
                 *result = (uint64_t)STATUS_NOT_SUPPORTED;
                 return false;
             }
