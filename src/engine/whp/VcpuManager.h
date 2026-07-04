@@ -42,6 +42,12 @@ private:
     bool SetupSegmentRegisters(uint32_t vcpuIndex);
     bool SetupControlRegisters(uint32_t vcpuIndex);
 
+    // LSTAR->HLT syscall interception
+    bool LoadHltPage();          // Allocate HLT page at known GPA
+    bool SetupLstarMsrs(uint32_t vcpuIndex);  // Set STAR/LSTAR/SF_MASK MSRs
+    bool HandleSyscallExit(uint32_t vcpuIndex);  // HLT at HLT page = syscall
+    uint64_t m_hltPageGpa = 0;   // GPA of HLT page (0x12000)
+
     // WHP #BP/#DB exception handling for guest-side syscall/RDMSR intercept
     bool HandleVpBreakpoint(uint32_t vcpuIndex, uint64_t rip);
     bool HandleVpSingleStep(uint32_t vcpuIndex, uint64_t rip);

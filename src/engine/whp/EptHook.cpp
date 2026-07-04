@@ -106,14 +106,10 @@ bool EptHook::InstallKernelMemoryHooks()
         InstallHook(0x1000, gdtShadow, 0x1000, EPT_HOOK_GDT);
     }
 
-    // BDA (BIOS Data Area) region
-    uint8_t* bdaShadow = (uint8_t*)VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (bdaShadow) {
-        memset(bdaShadow, 0, 0x1000);
-        InstallHook(0x400, bdaShadow, 0x1000, EPT_HOOK_KERNEL_PAGE);
-    }
+    // BDA (BIOS Data Area) at GPA 0x400 is within the same 4KB page as the
+    // IDT hook (GPA 0x0-0xFFF). No separate hook needed — IDT page covers it.
 
-    m_logger->Trace(LOG_EPT, "Kernel memory hooks installed (IDT, GDT, BDA)");
+    m_logger->Trace(LOG_EPT, "Kernel memory hooks installed (IDT, GDT)");
     return true;
 }
 

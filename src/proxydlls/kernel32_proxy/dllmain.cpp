@@ -183,6 +183,70 @@ extern "C" HANDLE WINAPI Proxy_CreateRemoteThread(
     return real ? real(hProc, attr, stack, start, param, flags, tid) : nullptr;
 }
 
+// Hook GetProcAddress to catch dynamic lookups that bypass IAT patching.
+// When caller looks up a function we proxy, return our proxy address instead.
+struct ProxyLookup {
+    const char* dllName;
+    const char* funcName;
+    FARPROC proxyAddr;
+};
+static ProxyLookup s_proxyLookups[32];
+static int s_lookupCount = 0;
+
+// Called by engine.dll to register proxy function addresses (avoids name-based
+// module lookup which would break since we share names with system DLLs).
+extern "C" __declspec(dllexport) void WINAPI RegisterProxyFunctions(
+    const char* dllName, const char** funcNames, FARPROC* funcAddrs, int count)
+{
+    for (int i = 0; i < count && s_lookupCount < 32; i++) {
+        s_proxyLookups[s_lookupCount++] = {dllName, funcNames[i], funcAddrs[i]};
+    }
+}
+
+extern "C" FARPROC WINAPI Proxy_GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
+{
+    static decltype(&Proxy_GetProcAddress) realFunc = nullptr;
+    static bool init = false;
+    if (!init) {
+        init = true;
+        // Must call LoadLibraryW so kernel32 refcount stays >0
+        HMODULE hKernel32 = LoadLibraryW(L"kernel32.dll");
+        if (hKernel32) realFunc = (decltype(&Proxy_GetProcAddress))GetProcAddress(hKernel32, "GetProcAddress");
+    }
+
+    // Only redirect named lookups (not ordinal lookups)
+    if (realFunc && lpProcName && ((ULONG_PTR)lpProcName & ~0xFFFF) != 0) {
+        // Get the DLL name from the module
+        wchar_t modulePath[MAX_PATH];
+        if (GetModuleFileNameW(hModule, modulePath, MAX_PATH)) {
+            wchar_t* name = wcsrchr(modulePath, L'\\');
+            if (name) name++; else name = modulePath;
+            _wcslwr(name);
+
+            char dllNameA[64];
+            size_t converted;
+            wcstombs_s(&converted, dllNameA, name, sizeof(dllNameA) - 1);
+            dllNameA[sizeof(dllNameA) - 1] = 0;
+
+            // Strip .dll extension
+            char* dot = strrchr(dllNameA, '.');
+            if (dot) *dot = 0;
+            strcat_s(dllNameA, ".dll");
+
+            for (int i = 0; i < s_lookupCount; i++) {
+                if (_stricmp(dllNameA, s_proxyLookups[i].dllName) == 0 &&
+                    strcmp(lpProcName, s_proxyLookups[i].funcName) == 0) {
+                    g_logger.Trace(LOG_PROXY, "GetProcAddress: redirecting %s!%s to proxy",
+                        dllNameA, lpProcName);
+                    return s_proxyLookups[i].proxyAddr;
+                }
+            }
+        }
+    }
+
+    return realFunc ? realFunc(hModule, lpProcName) : nullptr;
+}
+
 // argbytes = paramCount * 4
 PROXY_EXPORT(CreateProcessW,     Proxy_CreateProcessW,     40) // 10 params
 PROXY_EXPORT(GetModuleHandleW,   Proxy_GetModuleHandleW,    4) // 1
@@ -195,13 +259,14 @@ PROXY_EXPORT(CreateFileW,        Proxy_CreateFileW,        28) // 7
 PROXY_EXPORT(CreateFileA,        Proxy_CreateFileA,        28) // 7
 PROXY_EXPORT(GetVolumeInformationW, Proxy_GetVolumeInformationW, 32) // 8
 PROXY_EXPORT(GetWindowsDirectoryW,  Proxy_GetWindowsDirectoryW,   8) // 2
+PROXY_EXPORT(GetProcAddress,        Proxy_GetProcAddress,         8) // 2
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {
             g_logger.Init();
-            g_logger.Trace(LOG_PROXY, "kernel32_proxy loaded");
+            g_logger.Trace(LOG_PROXY, "kernel32 proxy loaded");
             DisableThreadLibraryCalls(hModule);
             break;
         }

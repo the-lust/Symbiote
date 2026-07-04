@@ -64,13 +64,10 @@ endif()
 set(ENGINE_SOURCES
     src/launcher/ConfigParser.cpp
     src/engine/Main.cpp
-    # WHP-free VEH components (always compiled)
     src/engine/whp/AllocTracker.cpp
     src/engine/whp/SystemSpoofer.cpp
     src/engine/whp/SyscallDispatch.cpp
-    src/engine/whp/CodePatcher.cpp
     src/engine/whp/KuserHook.cpp
-    src/engine/whp/MsrPatcher.cpp
     src/engine/whp/Canary.cpp
     # Syscall emulator
     src/engine/emu/CryptoEmu.cpp
@@ -133,11 +130,13 @@ endif()
 
 # ─── Proxy DLL helper ────────────────────────────────────────────────
 function(add_proxy_dll name source)
+    string(REPLACE "_proxy" "" output_name "${name}")
     add_library("${name}" SHARED "${source}")
     target_include_directories("${name}" PRIVATE src/proxydlls/shared src/engine/log)
     target_link_libraries("${name}" PRIVATE logger)
     set_target_properties("${name}" PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+        OUTPUT_NAME "${output_name}"
     )
 endfunction()
 
