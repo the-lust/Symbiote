@@ -22,6 +22,7 @@
 #include "whp/TimingCoordinator.h"
 #include "whp/Canary.h"
 #include "whp/SystemSpoofer.h"
+#include "whp/GuestPageTable.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
 #include "kernel/MinimalKernel.h"
@@ -61,6 +62,10 @@ static HANDLE g_engineReadyEvent = nullptr;
 static HANDLE g_engineActiveEvent = nullptr;
 
 CaptureLogger* g_captureLogger = nullptr;
+
+// Ghost Sandbox: original game entry point (saved before trampoline)
+static uint64_t g_originalEntryRip = 0;
+static bool g_guestPageTableBuilt = false;
 
 static void CleanupDenuvoState()
 {
@@ -164,7 +169,7 @@ static void CleanupAll()
 
 static wchar_t g_engineDir[MAX_PATH] = {0};
 
-static void SetupIatHooks()
+static void SetupIatHooks(bool enableEat = false)
 {
     g_iatPatch = new IatPatch(&g_logger);
 
@@ -224,6 +229,23 @@ static void SetupIatHooks()
         }
         if (wcscmp(dll.name, L"ntdll.dll") == 0) hNtdllProxy = hProxy;
         if (wcscmp(dll.name, L"kernel32.dll") == 0) hKernel32Proxy = hProxy;
+    }
+
+    // EAT (Export Address Table) patching
+    if (enableEat) {
+        g_logger.Trace(LOG_PROXY, "EAT patching enabled");
+        for (auto& dll : dlls) {
+            HMODULE hProxy = GetModuleHandleW(dll.name);
+            if (!hProxy) continue;
+            for (int i = 0; i < dll.exportCount; i++) {
+                FARPROC proc = GetProcAddress(hProxy, dll.exports[i][1]);
+                if (proc) {
+                    g_iatPatch->PatchEAT(dll.exports[i][0], dll.exports[i][1], (void*)proc);
+                }
+            }
+        }
+    } else {
+        g_logger.Trace(LOG_PROXY, "EAT patching disabled by config");
     }
 
     // Register proxy function addresses with kernel32_proxy's GetProcAddress hook
@@ -496,15 +518,30 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_vcpuManager->SetSyscallHandler(MinimalKernel::DispatchThunk);
         g_vcpuManager->SetExceptionHandler(g_exceptionHandler);
 
+        // Build guest page tables for identity-mapped WHP execution (Ghost Sandbox)
+        bool forwardingEnabled = configParser.GetBool("forwarding", "enabled", true);
+        if (forwardingEnabled) {
+            g_logger.Trace(LOG_INFO, "Building guest page tables...");
+            if (g_partition->MapProcessMemory(GetCurrentProcess())) {
+                g_guestPageTableBuilt = true;
+                g_logger.Trace(LOG_INFO, "Guest page tables built: CR3=0x%llX",
+                    g_partition->GetPageTable()->GetPml4Gpa());
+            } else {
+                g_logger.Trace(LOG_WARNING, "Failed to build guest page tables — running IAT-only mode");
+            }
+        }
+
         // start kuser sync (1ms update)
         if (g_kuserSync) {
             g_kuserSync->StartSyncThread();
         }
     }
 
+    bool spoofEat = configParser.GetBool("eat", "enabled", false);
+
     // IAT hooks for proxy DLLs (always in capture mode to intercept game calls)
     if (captureMode || spoofProcess || spoofRegistry || spoofFile || spoofTiming) {
-        SetupIatHooks();
+        SetupIatHooks(spoofEat);
     } else {
         g_logger.Trace(LOG_INFO, "Proxy hooks disabled by config");
     }
@@ -546,19 +583,24 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
     }
 
-    // Init SystemSpoofer for SGDT/SIDT/SLDT/STR/XGETBV interception
-    g_logger.Trace(LOG_INFO, "SystemSpoofer: creating instance...");
-    g_systemSpoofer = new SystemSpoofer(&g_logger);
-    g_systemSpoofer->SetGdtBase(0x807F900000ULL);
-    g_systemSpoofer->SetGdtLimit(0xFFFF);
-    g_systemSpoofer->SetIdtBase(0xFFFFF80000000000ULL);
-    g_systemSpoofer->SetIdtLimit(0xFFF);
-    g_systemSpoofer->SetXgetbvResult(0x0000000000000007ULL);
-    g_logger.Trace(LOG_INFO, "SystemSpoofer: calling Initialize...");
-    if (g_systemSpoofer->Initialize()) {
-        g_logger.Trace(LOG_INFO, "SystemSpoofer initialized");
+    // Init SystemSpoofer for SGDT/SIDT/SLDT/STR/XGETBV interception (gated by config)
+    bool spoofSystemSpoofer = configParser.GetBool("system_spoofer", "enabled", false);
+    if (spoofSystemSpoofer) {
+        g_logger.Trace(LOG_INFO, "SystemSpoofer: creating instance...");
+        g_systemSpoofer = new SystemSpoofer(&g_logger);
+        g_systemSpoofer->SetGdtBase(0x807F900000ULL);
+        g_systemSpoofer->SetGdtLimit(0xFFFF);
+        g_systemSpoofer->SetIdtBase(0xFFFFF80000000000ULL);
+        g_systemSpoofer->SetIdtLimit(0xFFF);
+        g_systemSpoofer->SetXgetbvResult(0x0000000000000007ULL);
+        g_logger.Trace(LOG_INFO, "SystemSpoofer: calling Initialize...");
+        if (g_systemSpoofer->Initialize()) {
+            g_logger.Trace(LOG_INFO, "SystemSpoofer initialized");
+        } else {
+            g_logger.Trace(LOG_WARNING, "SystemSpoofer failed to initialize");
+        }
     } else {
-        g_logger.Trace(LOG_WARNING, "SystemSpoofer failed to initialize");
+        g_logger.Trace(LOG_INFO, "SystemSpoofer disabled by config");
     }
 
     // Signal launcher / target that hooks, patches, and shared KUSER are ready
@@ -578,7 +620,6 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     }
 
     if (g_vcpuManager) {
-        // create all VCPUs specified in config
         uint32_t cpuCount = (uint32_t)configParser.GetUint64("vm", "cpu_count", 1);
         if (cpuCount > 4) cpuCount = 4;
         if (cpuCount < 1) cpuCount = 1;
@@ -589,19 +630,146 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             }
         }
 
-        // sync all VCPUs at barrier before starting
-        if (g_threadScheduler && g_threadScheduler->GetBarrier()) {
-            g_threadScheduler->GetBarrier()->Wait(5000);
+        if (g_guestPageTableBuilt) {
+            // Ghost Sandbox mode: engine thread does NOT enter VCPU.
+            // The game thread enters VCPU via BootstrapFromContext when
+            // it hits the entry point trampoline (Engine_VcpuEntry).
+            g_logger.Trace(LOG_INFO, "Ghost Sandbox mode: engine waiting (game thread enters VCPU)");
+            // Engine thread stays alive but idle
+            while (g_vcpuManager) {
+                Sleep(1000);
+            }
+        } else {
+            // Legacy mode: enter VCPU with boot code
+            if (g_threadScheduler && g_threadScheduler->GetBarrier()) {
+                g_threadScheduler->GetBarrier()->Wait(5000);
+            }
+            g_logger.Trace(LOG_INFO, "Starting VM execution loop (%u VCPUs)", cpuCount);
+            g_vcpuManager->Run(0);
         }
-
-        g_logger.Trace(LOG_INFO, "Starting VM execution loop (%u VCPUs)", cpuCount);
-        g_vcpuManager->Run(0);
     } else {
         g_logger.Trace(LOG_INFO, "IAT-only mode: engine running without WHP virtualization");
     }
 
     g_logger.Trace(LOG_INFO, "Engine thread finished");
     return 0;
+}
+
+// ─── Ghost Sandbox: Entry point interception ──────────────────────────
+
+// Called by launcher AFTER Engine_Init, BEFORE ResumeThread.
+// Modifies the game's PE entry point to jump to Engine_VcpuEntry,
+// which captures the thread context and enters the WHP VCPU.
+ENGINE_DLL_EXPORT void Engine_InterceptEntryPoint()
+{
+    uint8_t* base = (uint8_t*)GetModuleHandleW(NULL);
+    if (!base) {
+        g_logger.Trace(LOG_ERROR, "InterceptEntryPoint: cannot get module base");
+        return;
+    }
+
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)base;
+    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(base + dos->e_lfanew);
+    uint32_t entryRva = nt->OptionalHeader.AddressOfEntryPoint;
+    uint8_t* entryPoint = base + entryRva;
+
+    g_originalEntryRip = (uint64_t)entryPoint;
+    g_logger.Trace(LOG_INFO, "InterceptEntryPoint: original entry at %p (RVA=0x%X)", entryPoint, entryRva);
+
+    // Write trampoline:
+    //   mov rax, Engine_VcpuEntry  ; 48 B8 <8-byte addr>
+    //   jmp rax                    ; FF E0
+    DWORD oldProtect;
+    if (!VirtualProtect(entryPoint, 12, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        g_logger.Trace(LOG_ERROR, "InterceptEntryPoint: VirtualProtect failed");
+        return;
+    }
+
+    entryPoint[0] = 0x48; entryPoint[1] = 0xB8;
+    *(uint64_t*)(entryPoint + 2) = (uint64_t)&Engine_VcpuEntry;
+    entryPoint[10] = 0xFF; entryPoint[11] = 0xE0;
+
+    VirtualProtect(entryPoint, 12, oldProtect, &oldProtect);
+    g_logger.Trace(LOG_INFO, "InterceptEntryPoint: trampoline written at %p → Engine_VcpuEntry", entryPoint);
+}
+
+// Called when the game's main thread starts execution.
+// The entry point trampoline jumps here. We capture the current thread
+// context and enter the WHP VCPU with identity-mapped guest page tables.
+ENGINE_DLL_EXPORT void Engine_VcpuEntry()
+{
+    g_logger.Trace(LOG_INFO, "Engine_VcpuEntry: game thread entered VCPU bootstrap");
+
+    // Capture thread context (all GP registers via intrinsics)
+    ThreadContext ctx;
+    ctx.rax = __readgsqword(0);   // placeholder — actual capture happens via context
+    ctx.rbx = 0;
+    ctx.rcx = 0;
+    ctx.rdx = 0;
+    ctx.rsi = 0;
+    ctx.rdi = 0;
+    ctx.rbp = 0;
+    ctx.rsp = 0;
+    ctx.r8  = 0;
+    ctx.r9  = 0;
+    ctx.r10 = 0;
+    ctx.r11 = 0;
+    ctx.r12 = 0;
+    ctx.r13 = 0;
+    ctx.r14 = 0;
+    ctx.r15 = 0;
+    ctx.rip = g_originalEntryRip;
+    ctx.rflags = 0x202; // IF enabled
+    ctx.cs = 0x33;
+    ctx.ds = 0x2B;
+    ctx.es = 0x2B;
+    ctx.fs = 0x2B;
+    ctx.gs = 0x2B;
+    ctx.ss = 0x2B;
+
+    // Capture actual registers using inline assembly via wrapper call
+    // RAX, RCX, RDX, R8, R9 contain the loader's entry point arguments
+    // RSP/RBP point to the initial thread stack
+    CONTEXT captureCtx;
+    captureCtx.ContextFlags = CONTEXT_FULL;
+    RtlCaptureContext(&captureCtx);
+
+    ctx.rax = captureCtx.Rax;
+    ctx.rbx = captureCtx.Rbx;
+    ctx.rcx = captureCtx.Rcx;
+    ctx.rdx = captureCtx.Rdx;
+    ctx.rsi = captureCtx.Rsi;
+    ctx.rdi = captureCtx.Rdi;
+    ctx.rbp = captureCtx.Rbp;
+    ctx.rsp = captureCtx.Rsp;
+    ctx.r8  = captureCtx.R8;
+    ctx.r9  = captureCtx.R9;
+    ctx.r10 = captureCtx.R10;
+    ctx.r11 = captureCtx.R11;
+    ctx.r12 = captureCtx.R12;
+    ctx.r13 = captureCtx.R13;
+    ctx.r14 = captureCtx.R14;
+    ctx.r15 = captureCtx.R15;
+    ctx.rflags = captureCtx.EFlags;
+
+    g_logger.Trace(LOG_INFO, "VCPU entry: RIP=0x%llX RSP=0x%llX RAX=0x%llX RCX=0x%llX",
+        ctx.rip, ctx.rsp, ctx.rax, ctx.rcx);
+
+    if (!g_vcpuManager || !g_partition || !g_partition->GetPageTable()) {
+        g_logger.Trace(LOG_ERROR, "VCPU entry: not ready (no VCPU manager or page tables)");
+        // Fall through to original entry point
+        typedef void (*EntryPoint_t)();
+        ((EntryPoint_t)g_originalEntryRip)();
+        return;
+    }
+
+    g_logger.Trace(LOG_INFO, "VCPU entry: entering bootstrap with CR3=0x%llX",
+        g_partition->GetPageTable()->GetPml4Gpa());
+
+    // Enter the WHP VCPU — this function blocks until the VCPU stops
+    g_vcpuManager->BootstrapFromContext(0, ctx, g_partition->GetPageTable());
+
+    g_logger.Trace(LOG_INFO, "VCPU entry: VCPU stopped, game thread exiting");
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)

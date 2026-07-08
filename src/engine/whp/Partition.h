@@ -5,6 +5,7 @@
 #include <vector>
 
 class CpuidHandler;
+class GuestPageTable;
 
 class Partition {
 public:
@@ -24,6 +25,8 @@ public:
 
     bool MapGpaRange(void* hostVa, WHV_GUEST_PHYSICAL_ADDRESS guestPa, uint64_t sizeInBytes, WHV_MAP_GPA_RANGE_FLAGS flags);
     bool UnmapGpaRange(WHV_GUEST_PHYSICAL_ADDRESS guestPa, uint64_t sizeInBytes);
+    bool MapProcessMemory(HANDLE hProcess);
+    GuestPageTable* GetPageTable() const { return m_guestPageTable; }
 
     void* AllocateGuestMemory(uint64_t sizeInBytes);
     void FreeGuestMemory(void* ptr);
@@ -38,4 +41,5 @@ private:
         uint64_t size;
     };
     std::vector<GuestMemBlock> m_guestMemory;
+    GuestPageTable* m_guestPageTable;
 };

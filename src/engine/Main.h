@@ -7,6 +7,8 @@ extern "C" {
 ENGINE_DLL_EXPORT BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved);
 ENGINE_DLL_EXPORT void Engine_SetDebug();
 ENGINE_DLL_EXPORT void Engine_Init();
+ENGINE_DLL_EXPORT void Engine_VcpuEntry();
+ENGINE_DLL_EXPORT void Engine_InterceptEntryPoint();
 }
 
 BOOL InstallHooks();

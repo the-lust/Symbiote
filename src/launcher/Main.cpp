@@ -156,6 +156,11 @@ int main(int, char**)
         Sleep(750);
     }
 
+    // Intercept game entry point (Ghost Sandbox) — must happen before ResumeThread
+    LogMessage("Calling Engine_InterceptEntryPoint...\n");
+    CallRemoteFunction(pi.hProcess, dllPath, "Engine_InterceptEntryPoint");
+    LogMessage("Engine_InterceptEntryPoint done\n");
+
     DWORD exitCode = 0;
     ResumeAndWait(pi.hProcess, pi.hThread, &exitCode);
     LogMessage("Process exited\n");

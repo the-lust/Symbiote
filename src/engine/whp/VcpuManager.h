@@ -13,7 +13,15 @@ class RdtscHandler;
 class MsrHandler;
 class MagicCpuid;
 class ExceptionHandler;
+class GuestPageTable;
 using SyscallHandler = bool(uint64_t syscallNumber, uint64_t* args, uint64_t* result);
+
+struct ThreadContext {
+    uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp;
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rip, rflags;
+    uint16_t cs, ds, es, fs, gs, ss;
+};
 
 class VcpuManager {
 public:
@@ -25,6 +33,9 @@ public:
     bool CreateVcpu(uint32_t vcpuIndex);
     bool Run(uint32_t vcpuIndex);
     void Stop(uint32_t vcpuIndex);
+
+    // Ghost Sandbox: bootstrap VCPU from captured thread context
+    bool BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& ctx, GuestPageTable* pageTable);
 
     void SetMagicCpuid(MagicCpuid* magic) {
         m_magicCpuid = magic;
@@ -42,21 +53,21 @@ private:
     bool SetupSegmentRegisters(uint32_t vcpuIndex);
     bool SetupControlRegisters(uint32_t vcpuIndex);
 
-    // LSTAR->HLT syscall interception
-    bool LoadHltPage();          // Allocate HLT page at known GPA
-    bool SetupLstarMsrs(uint32_t vcpuIndex);  // Set STAR/LSTAR/SF_MASK MSRs
-    bool HandleSyscallExit(uint32_t vcpuIndex);  // HLT at HLT page = syscall
-    uint64_t m_hltPageGpa = 0;   // GPA of HLT page (0x12000)
+    void SetContextRegisters(uint32_t vcpuIndex, const ThreadContext& ctx, GuestPageTable* pageTable);
 
-    // WHP #BP/#DB exception handling for guest-side syscall/RDMSR intercept
+    // LSTAR->HLT syscall interception
+    bool LoadHltPage();
+    bool SetupLstarMsrs(uint32_t vcpuIndex);
+    bool HandleSyscallExit(uint32_t vcpuIndex);
+    uint64_t m_hltPageGpa = 0;
+
+    // WHP #BP/#DB exception handling
     bool HandleVpBreakpoint(uint32_t vcpuIndex, uint64_t rip);
     bool HandleVpSingleStep(uint32_t vcpuIndex, uint64_t rip);
 
-    // Read/write VCPU registers from WHP
     bool ReadVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count);
     bool WriteVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count);
 
-    // Trampoline for non-spoofed patched instructions
     struct TrampolineEntry {
         uint64_t address;
         uint8_t  originalByte;

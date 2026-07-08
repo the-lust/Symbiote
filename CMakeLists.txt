@@ -115,6 +115,7 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/Partition.cpp
         src/engine/whp/RdtscHandler.cpp
         src/engine/whp/ThreadScheduler.cpp
+        src/engine/whp/GuestPageTable.cpp
         src/engine/whp/VcpuManager.cpp
     )
 endif()

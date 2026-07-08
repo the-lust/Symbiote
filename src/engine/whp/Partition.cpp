@@ -1,9 +1,10 @@
 #include "Partition.h"
 #include "CpuidHandler.h"
+#include "GuestPageTable.h"
 #include <winerror.h>
 
 Partition::Partition(Logger* logger)
-    : m_logger(logger), m_handle(nullptr), m_initialized(false)
+    : m_logger(logger), m_handle(nullptr), m_initialized(false), m_guestPageTable(nullptr)
 {
 }
 
@@ -144,8 +145,29 @@ bool Partition::Init()
     return true;
 }
 
+bool Partition::MapProcessMemory(HANDLE hProcess)
+{
+    if (m_guestPageTable) {
+        delete m_guestPageTable;
+        m_guestPageTable = nullptr;
+    }
+    m_guestPageTable = new GuestPageTable(m_logger, this);
+    if (!m_guestPageTable->Build(hProcess)) {
+        m_logger->Trace(LOG_ERROR, "MapProcessMemory: GuestPageTable::Build failed");
+        delete m_guestPageTable;
+        m_guestPageTable = nullptr;
+        return false;
+    }
+    m_logger->Trace(LOG_INFO, "MapProcessMemory: PML4 GPA=0x%llX, total=%llu pages",
+        m_guestPageTable->GetPml4Gpa(), m_guestPageTable->GetTotalPages());
+    return true;
+}
+
 void Partition::Destroy()
 {
+    delete m_guestPageTable;
+    m_guestPageTable = nullptr;
+
     for (auto& block : m_guestMemory) {
         if (block.hostVa) {
             VirtualFree(block.hostVa, 0, MEM_RELEASE);
