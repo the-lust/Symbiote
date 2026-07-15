@@ -12,6 +12,9 @@
 
 #pragma comment(lib, "WinHvPlatform.lib")
 
+VcpuManager* VcpuManager::s_instance = nullptr;
+thread_local uint32_t VcpuManager::t_currentVcpuIndex = UINT32_MAX;
+
 VcpuManager::VcpuManager(Logger* logger, Partition* partition, ExitDispatcher* exitDispatcher,
                          CpuidHandler* cpuidHandler, RdtscHandler* rdtscHandler,
                          MsrHandler* msrHandler)
@@ -20,15 +23,21 @@ VcpuManager::VcpuManager(Logger* logger, Partition* partition, ExitDispatcher* e
       m_msrHandler(msrHandler),
       m_magicCpuid(nullptr), m_syscallHandler(nullptr),
       m_exceptionHandler(nullptr),
-      m_vcpuCount(0), m_bootCodeLoaded(false)
+      m_vcpuCount(0), m_bootCodeLoaded(false),
+      m_childThreadMigrationEnabled(false)
 {
     memset(m_vcpus, 0, sizeof(m_vcpus));
+    InitializeCriticalSection(&m_vcpuAllocLock);
+    s_instance = this;
 }
 
 VcpuManager::~VcpuManager()
 {
     for (uint32_t i = 0; i < m_vcpuCount; i++) {
         Stop(i);
+        if (m_vcpus[i].allocatedStack) {
+            VirtualFree(m_vcpus[i].allocatedStack, 0, MEM_RELEASE);
+        }
     }
     for (auto& kv : m_trampolines) {
         DWORD old;
@@ -37,6 +46,9 @@ VcpuManager::~VcpuManager()
         VirtualProtect((LPVOID)kv.first, 1, old, &old);
     }
     m_trampolines.clear();
+    m_threadHandleToVcpu.clear();
+    DeleteCriticalSection(&m_vcpuAllocLock);
+    s_instance = nullptr;
 }
 
 bool VcpuManager::ReadVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count)
@@ -74,6 +86,8 @@ bool VcpuManager::CreateVcpu(uint32_t vcpuIndex)
 
     m_vcpus[vcpuIndex].running = false;
     m_vcpus[vcpuIndex].stack = nullptr;
+    m_vcpus[vcpuIndex].allocatedStack = nullptr;
+    m_vcpus[vcpuIndex].hostThread = nullptr;
 
     if (vcpuIndex >= m_vcpuCount) m_vcpuCount = vcpuIndex + 1;
 
@@ -133,6 +147,8 @@ bool VcpuManager::Run(uint32_t vcpuIndex)
     return true;
 }
 
+// ─── Ghost Sandbox: Bootstrap VCPU from captured thread context ────────
+
 bool VcpuManager::BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& ctx, GuestPageTable* pageTable)
 {
     if (vcpuIndex >= m_vcpuCount) {
@@ -153,6 +169,7 @@ bool VcpuManager::BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& 
     SetContextRegisters(vcpuIndex, ctx, pageTable);
 
     m_vcpus[vcpuIndex].running = true;
+    t_currentVcpuIndex = vcpuIndex;
     m_logger->Trace(LOG_INFO, "Bootstrap: VCPU %u entered with CR3=0x%llX, RIP=0x%llX",
         vcpuIndex, pageTable ? pageTable->GetPml4Gpa() : 0, ctx.rip);
 
@@ -183,6 +200,7 @@ bool VcpuManager::BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& 
         }
     }
 
+    t_currentVcpuIndex = UINT32_MAX;
     m_logger->Trace(LOG_INFO, "Bootstrap: VCPU %u stopped", vcpuIndex);
     return true;
 }
@@ -260,6 +278,236 @@ void VcpuManager::SetContextRegisters(uint32_t vcpuIndex, const ThreadContext& c
 
     m_logger->Trace(LOG_WHP, "Context set: RIP=0x%llX RSP=0x%llX CR3=0x%llX",
         ctx.rip, ctx.rsp, cr3);
+}
+
+// ─── Multi-VCPU: Child thread support ──────────────────────────────────
+
+uint32_t VcpuManager::AllocateVcpuIndex()
+{
+    // VCPU 0 is reserved for main game thread
+    for (uint32_t i = 1; i < MAX_VCPU; i++) {
+        if (!m_vcpus[i].running && m_vcpus[i].hostThread == nullptr) {
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+
+void VcpuManager::FreeVcpuIndex(uint32_t index)
+{
+    if (index >= MAX_VCPU || index == 0) return;
+
+    m_vcpus[index].running = false;
+
+    if (m_vcpus[index].hostThread) {
+        CloseHandle(m_vcpus[index].hostThread);
+        m_vcpus[index].hostThread = nullptr;
+    }
+
+    if (m_vcpus[index].allocatedStack) {
+        VirtualFree(m_vcpus[index].allocatedStack, 0, MEM_RELEASE);
+        m_vcpus[index].allocatedStack = nullptr;
+    }
+
+    for (auto it = m_threadHandleToVcpu.begin(); it != m_threadHandleToVcpu.end(); ) {
+        if (it->second == index) {
+            it = m_threadHandleToVcpu.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    m_logger->Trace(LOG_WHP, "VCPU %u freed", index);
+}
+
+bool VcpuManager::SetupChildVcpuContext(uint32_t vcpuIndex, const ThreadContext& ctx)
+{
+    if (!SetupLstarMsrs(vcpuIndex)) {
+        m_logger->Trace(LOG_ERROR, "ChildVCPU %u: LSTAR MSR setup failed", vcpuIndex);
+        return false;
+    }
+
+    // Set up context registers with the child thread's initial state
+    SetContextRegisters(vcpuIndex, ctx, m_partition->GetPageTable());
+    return true;
+}
+
+DWORD WINAPI VcpuManager::ThreadBootstrapEntry(LPVOID param)
+{
+    uint32_t vcpuIndex = (uint32_t)(uintptr_t)param;
+    VcpuManager* self = s_instance;
+    if (!self || vcpuIndex >= MAX_VCPU) return 1;
+
+    self->EnterVcpuFromBootstrap(vcpuIndex);
+    return 0;
+}
+
+void VcpuManager::EnterVcpuFromBootstrap(uint32_t vcpuIndex)
+{
+    m_vcpus[vcpuIndex].running = true;
+    t_currentVcpuIndex = vcpuIndex;
+
+    m_logger->Trace(LOG_INFO, "ChildVCPU %u entering run loop", vcpuIndex);
+
+    while (m_vcpus[vcpuIndex].running) {
+        WHV_RUN_VP_EXIT_CONTEXT exitCtx;
+        HRESULT hr = WHvRunVirtualProcessor(m_partition->GetHandle(), vcpuIndex,
+            &exitCtx, sizeof(exitCtx));
+
+        if (FAILED(hr)) {
+            m_logger->Trace(LOG_ERROR, "ChildVCPU %u: WHvRunVirtualProcessor failed: 0x%08X", vcpuIndex, hr);
+            break;
+        }
+
+        m_vcpus[vcpuIndex].exitCtx = exitCtx;
+
+        if (!HandleExit(vcpuIndex)) {
+            m_logger->Trace(LOG_WHP, "ChildVCPU %u: unhandled exit reason=%d", vcpuIndex, exitCtx.ExitReason);
+            break;
+        }
+    }
+
+    t_currentVcpuIndex = UINT32_MAX;
+    FreeVcpuIndex(vcpuIndex);
+    m_logger->Trace(LOG_INFO, "ChildVCPU %u exited", vcpuIndex);
+}
+
+bool VcpuManager::HandleCreateThreadSyscall(uint32_t vcpuIndex, uint32_t syscallNum,
+                                             uint64_t* regArgs, uint64_t guestRsp,
+                                             uint64_t& result)
+{
+    if (!m_childThreadMigrationEnabled) {
+        return false; // Fall through to host ntdll forwarding
+    }
+
+    // Read all 11 args from guest stack (NtCreateThreadEx has up to 11)
+    uint64_t allArgs[16] = {regArgs[0], regArgs[1], regArgs[2], regArgs[3]};
+    int argCount = (syscallNum == m_syscallDispatch.NtCreateThreadEx) ? 11 : 8;
+    for (int i = 4; i < argCount && i < 16; i++) {
+        uint64_t* stackPtr = (uint64_t*)(guestRsp + 8 + (i - 4) * 8);
+        allArgs[i] = *stackPtr;
+    }
+
+    // Extract thread entry information
+    uint64_t startRip = 0, startParam = 0;
+    HANDLE* threadHandleOut = nullptr;
+    bool createSuspended = false;
+
+    if (syscallNum == m_syscallDispatch.NtCreateThreadEx) {
+        // NtCreateThreadEx(ThreadHandle, DesiredAccess, ObjAttr, ProcessHandle,
+        //                   StartRoutine, Argument, CreateFlags, ...)
+        startRip = allArgs[4];
+        startParam = allArgs[5];
+        createSuspended = (allArgs[6] & 1) != 0;
+        threadHandleOut = (HANDLE*)(uintptr_t)allArgs[0];
+    } else {
+        // NtCreateThread(ThreadHandle, DesiredAccess, ObjAttr, ProcessHandle,
+        //                 ClientId, Context, InitialTeb, CreateSuspended)
+        CONTEXT* guestCtx = (CONTEXT*)(uintptr_t)allArgs[5];
+        if (guestCtx) {
+            startRip = guestCtx->Rip;
+            startParam = guestCtx->Rcx;
+        }
+        createSuspended = allArgs[7] != 0;
+        threadHandleOut = (HANDLE*)(uintptr_t)allArgs[0];
+    }
+
+    if (!startRip) {
+        m_logger->Trace(LOG_WHP, "CreateThread: no start address, forwarding to host");
+        return false;
+    }
+
+    // Allocate VCPU index for child thread
+    EnterCriticalSection(&m_vcpuAllocLock);
+    uint32_t childVcpuIndex = AllocateVcpuIndex();
+    LeaveCriticalSection(&m_vcpuAllocLock);
+
+    if (childVcpuIndex == UINT32_MAX) {
+        m_logger->Trace(LOG_WARNING, "CreateThread: no free VCPU slots (max %u)", MAX_VCPU);
+        return false;
+    }
+
+    // Create VCPU on partition
+    if (!CreateVcpu(childVcpuIndex)) {
+        m_logger->Trace(LOG_ERROR, "CreateThread: failed to create VCPU %u", childVcpuIndex);
+        return false;
+    }
+
+    // Allocate stack for child thread (1MB default)
+    const uint32_t stackSize = 0x100000;
+    void* stack = VirtualAlloc(nullptr, stackSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!stack) {
+        m_logger->Trace(LOG_ERROR, "CreateThread: failed to allocate child stack");
+        return false;
+    }
+
+    // Build ThreadContext for child VCPU
+    ThreadContext childCtx;
+    memset(&childCtx, 0, sizeof(childCtx));
+    childCtx.rip = startRip;
+    childCtx.rcx = startParam;
+    childCtx.rsp = (uint64_t)stack + stackSize - 0x100;
+    childCtx.rflags = 0x202; // IF enabled
+    childCtx.cs = 0x33;
+    childCtx.ds = 0x2B;
+    childCtx.es = 0x2B;
+    childCtx.fs = 0x2B;
+    childCtx.gs = 0x2B;
+    childCtx.ss = 0x2B;
+
+    // Set up VCPU context
+    if (!SetupChildVcpuContext(childVcpuIndex, childCtx)) {
+        m_logger->Trace(LOG_ERROR, "CreateThread: failed to setup VCPU %u context", childVcpuIndex);
+        VirtualFree(stack, 0, MEM_RELEASE);
+        return false;
+    }
+
+    m_vcpus[childVcpuIndex].allocatedStack = (uint8_t*)stack;
+
+    // Create host thread that enters VCPU N
+    DWORD createFlags = createSuspended ? CREATE_SUSPENDED : 0;
+    HANDLE hThread = CreateThread(nullptr, 0, ThreadBootstrapEntry,
+        (LPVOID)(uintptr_t)childVcpuIndex, createFlags, nullptr);
+
+    if (!hThread) {
+        m_logger->Trace(LOG_ERROR, "CreateThread: failed to create host thread (GLE=%u)", GetLastError());
+        VirtualFree(stack, 0, MEM_RELEASE);
+        return false;
+    }
+
+    m_vcpus[childVcpuIndex].hostThread = hThread;
+
+    // Output thread handle to guest
+    if (threadHandleOut) {
+        *threadHandleOut = hThread;
+    }
+
+    // Map handle to VCPU index
+    m_threadHandleToVcpu[hThread] = childVcpuIndex;
+
+    m_logger->Trace(LOG_INFO, "CreateThread: VCPU %u created for thread RIP=0x%llX handle=0x%p%s",
+        childVcpuIndex, startRip, hThread, createSuspended ? " (suspended)" : "");
+
+    result = 0; // STATUS_SUCCESS
+    return true;
+}
+
+bool VcpuManager::HandleTerminateThreadSyscall(uint32_t vcpuIndex, uint64_t* args, uint64_t& result)
+{
+    // Only intercept for child VCPUs (not VCPU 0 — main game thread)
+    uint32_t currentVcpu = t_currentVcpuIndex;
+
+    if (currentVcpu != UINT32_MAX && currentVcpu > 0 && currentVcpu < MAX_VCPU
+        && m_vcpus[currentVcpu].running) {
+        // Child VCPU thread exiting — stop VCPU instead of killing host thread
+        m_vcpus[currentVcpu].running = false;
+        result = 0; // STATUS_SUCCESS
+        m_logger->Trace(LOG_INFO, "TerminateThread: VCPU %u stopped (child thread exit)", currentVcpu);
+        return true;
+    }
+
+    // VCPU 0 or unknown — let normal forwarding handle it
+    return false;
 }
 
 // ─── Boot code setup ──────────────────────────────────────────────────
@@ -396,7 +644,22 @@ bool VcpuManager::HandleSyscallExit(uint32_t vcpuIndex)
         vcpuIndex, syscallNum, returnAddr, guestRsp);
 
     uint64_t result = 0;
-    bool handled = m_syscallDispatch.DispatchRawSyscall(syscallNum, args, result);
+    bool handled = false;
+
+    // Multi-VCPU: intercept thread management syscalls first
+    if (syscallNum == m_syscallDispatch.NtCreateThread ||
+        syscallNum == m_syscallDispatch.NtCreateThreadEx) {
+        handled = HandleCreateThreadSyscall(vcpuIndex, syscallNum, args, guestRsp, result);
+    }
+
+    if (!handled && syscallNum == m_syscallDispatch.NtTerminateThread) {
+        handled = HandleTerminateThreadSyscall(vcpuIndex, args, result);
+    }
+
+    if (!handled) {
+        // Try DispatchRawSyscall (spoofed syscalls)
+        handled = m_syscallDispatch.DispatchRawSyscall(syscallNum, args, result);
+    }
 
     if (!handled) {
         // Try forwarding to host ntdll
@@ -849,7 +1112,6 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
             if (m_partition->GetPageTable()) {
                 bool isWrite = mem.AccessInfo.AccessType == WHvMemoryAccessWrite;
                 if (m_partition->GetPageTable()->MapDynamicPage(faultGpa, isWrite)) {
-                    // Retry the instruction that caused the fault
                     return true;
                 }
             }

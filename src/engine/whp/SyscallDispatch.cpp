@@ -127,10 +127,14 @@ bool SyscallDispatch::Initialize()
     NtClose = GetSyscallNumber("NtClose");
     NtCreateFile = GetSyscallNumber("NtCreateFile");
     NtQueryObject = GetSyscallNumber("NtQueryObject");
+    NtCreateThread = GetSyscallNumber("NtCreateThread");
+    NtCreateThreadEx = GetSyscallNumber("NtCreateThreadEx");
+    NtTerminateThread = GetSyscallNumber("NtTerminateThread");
 
-    SYSLOG("NtQSI=0x%X NtQIP=0x%X NtOpenKey=0x%X NtQueryValueKey=0x%X NtClose=0x%X NtCreateFile=0x%X NtQueryObject=0x%X",
+    SYSLOG("NtQSI=0x%X NtQIP=0x%X NtOpenKey=0x%X NtQueryValueKey=0x%X NtClose=0x%X NtCreateFile=0x%X NtQueryObject=0x%X NtCreateThread=0x%X NtCreateThreadEx=0x%X NtTerminateThread=0x%X",
         NtQuerySystemInformation, NtQueryInformationProcess, NtOpenKey,
-        NtQueryValueKey, NtClose, NtCreateFile, NtQueryObject);
+        NtQueryValueKey, NtClose, NtCreateFile, NtQueryObject,
+        NtCreateThread, NtCreateThreadEx, NtTerminateThread);
 
     if (!NtQuerySystemInformation || !NtQueryInformationProcess) {
         SYSERR("failed to detect critical syscall numbers");
@@ -210,7 +214,10 @@ bool SyscallDispatch::BuildForwardTable()
             syscallNum == NtQueryValueKey ||
             syscallNum == NtClose ||
             syscallNum == NtCreateFile ||
-            syscallNum == NtQueryObject) {
+            syscallNum == NtQueryObject ||
+            syscallNum == NtCreateThread ||
+            syscallNum == NtCreateThreadEx ||
+            syscallNum == NtTerminateThread) {
             continue;
         }
 
