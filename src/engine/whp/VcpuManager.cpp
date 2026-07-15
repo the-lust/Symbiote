@@ -266,7 +266,7 @@ void VcpuManager::SetContextRegisters(uint32_t vcpuIndex, const ThreadContext& c
     WHV_REGISTER_VALUE crValues[4];
     crValues[0].Reg64 = 0x80000001; // PE | MP | ET
     crValues[1].Reg64 = cr3;
-    crValues[2].Reg64 = 0x1706F8;   // PAE | PGE | OSFXSR | OSXMMEXCPT | VMXE | SMXE | OSXSAVE
+    crValues[2].Reg64 = 0x1706F8 & ~0x6000;   // PAE | PGE | OSFXSR | OSXMMEXCPT | OSXSAVE (VMXE+SMXE masked to hide hypervisor)
     crValues[3].Reg64 = 0;
     WriteVcpuRegs(vcpuIndex, crNames, crValues, 4);
 
@@ -376,6 +376,7 @@ bool VcpuManager::HandleCreateThreadSyscall(uint32_t vcpuIndex, uint32_t syscall
                                              uint64_t* regArgs, uint64_t guestRsp,
                                              uint64_t& result)
 {
+    (void)vcpuIndex;
     if (!m_childThreadMigrationEnabled) {
         return false; // Fall through to host ntdll forwarding
     }
@@ -494,6 +495,7 @@ bool VcpuManager::HandleCreateThreadSyscall(uint32_t vcpuIndex, uint32_t syscall
 
 bool VcpuManager::HandleTerminateThreadSyscall(uint32_t vcpuIndex, uint64_t* args, uint64_t& result)
 {
+    (void)vcpuIndex; (void)args;
     // Only intercept for child VCPUs (not VCPU 0 — main game thread)
     uint32_t currentVcpu = t_currentVcpuIndex;
 

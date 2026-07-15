@@ -38,12 +38,14 @@ struct TimingCoordinator {
         return pattern;
     }
 
-    void DetectRdtscAfterCpuid(uint64_t rdtscTime) {
-        if (lastCpuidTime != 0 && (rdtscTime - lastCpuidTime) < 10000) {
+    bool DetectRdtscAfterCpuid(uint64_t rdtscTime) {
+        bool found = (lastCpuidTime != 0 && (rdtscTime - lastCpuidTime) < 10000);
+        if (found) {
             rdtscCpuidRdtscCount++;
         }
         lastRdtscTime = rdtscTime;
         lastCpuidTime = 0;
+        return found;
     }
 
     uint64_t AddJitter(uint64_t tsc, uint64_t tscFrequency) {
