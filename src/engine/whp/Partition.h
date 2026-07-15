@@ -17,6 +17,7 @@ public:
     bool SetupMemory(uint64_t sizeMB);
     bool SetupMsrBitmap();
     bool SetupCpuidResultList(CpuidHandler* cpuidHandler);
+    bool SetupAntiDetectionCpuidResultList();
     bool SetupExceptionBitmap();
     bool Init();
     void Destroy();

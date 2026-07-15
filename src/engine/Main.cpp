@@ -475,10 +475,12 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         uint32_t memoryMb = (uint32_t)configParser.GetUint64("vm", "memory_size_mb", 512);
         g_partition->SetupCpuCount(cpuCount);
         g_partition->SetupMemory(memoryMb);
-        // Pre-populate WHP CPUID result list for known spoof leaves
-        // (from libkrun: reduces VM exits and detection surface)
-        if (g_cpuidHandler) {
-            g_partition->SetupCpuidResultList(g_cpuidHandler);
+        // Pre-populate WHP CPUID result list — ALWAYS creates anti-detection
+        // entries (leaf 1 ECX[31]=0, hypervisor range zeroed) even when CPUID
+        // spoofing is disabled. This prevents trivial hypervisor detection via
+        // CPUID leaf 0x40000000 ("Microsoft Hv") or leaf 1 ECX[31] (hypervisor bit).
+        if (!g_partition->SetupCpuidResultList(g_cpuidHandler)) {
+            g_logger->Trace(LOG_WARNING, "CPUID result list setup failed — hypervisor may be detectable via CPUID");
         }
         if (g_partition->Init()) {
             whpAvailable = true;

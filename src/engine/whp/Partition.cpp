@@ -37,11 +37,13 @@ bool Partition::Create()
 
 bool Partition::SetupMsrBitmap()
 {
-    // Use WHV X64 MSR exit bitmap to intercept all unhandled MSRs
-    // (including Hyper-V TLFS MSRs) plus specific standard MSRs
+    // Explicit MSR whitelist — only intercept MSRs we need to spoof.
+    // Do NOT set UnhandledMsrs=1 (that causes ALL MSRs to VM-exit, including
+    // reserved/invalid ones, where our handler returns 0 instead of injecting #GP).
+    // WHP's native MSR handling injects #GP correctly for invalid/reserved MSRs,
+    // which matches real hardware behavior and avoids hypervisor detection.
     WHV_X64_MSR_EXIT_BITMAP bitmap;
     bitmap.AsUINT64 = 0;
-    bitmap.UnhandledMsrs = 1;        // All MSRs not natively handled by WHP (incl. Hyper-V TLFS)
     bitmap.TscMsrRead = 1;           // Intercept RDTSC/RDTSCP
     bitmap.TscMsrWrite = 1;          // Intercept WRMSR TSC
     bitmap.ApicBaseMsrWrite = 1;     // Intercept APIC_BASE writes
@@ -56,7 +58,7 @@ bool Partition::SetupMsrBitmap()
         return false;
     }
 
-    m_logger->Trace(LOG_WHP, "MSR exit bitmap configured: UnhandledMsrs=1 Tsc=1 ApicBase=1 MiscEnable=1");
+    m_logger->Trace(LOG_WHP, "MSR exit bitmap configured: explicit whitelist (Tsc=1 ApicBase=1 MiscEnable=1 McUpdate=1)");
     return true;
 }
 
@@ -86,13 +88,52 @@ bool Partition::SetupExceptionBitmap()
 
 bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
 {
-    if (!m_handle || !cpuidHandler) return false;
+    if (!m_handle) return false;
 
-    // Pre-populate known CPUID leaves so WHP doesn't VM-exit for them
-    // (from libkrun pattern — reduces overhead and detection surface)
+    // Always pre-populate anti-detection leaves (hypervisor range + leaf 1 ECX[31])
     WHV_X64_CPUID_RESULT results[32];
     int count = 0;
-    cpuidHandler->GetCpuidResultList(results, &count, 32);
+
+    auto add = [&](uint32_t leaf, uint32_t subleaf, uint32_t eax,
+                   uint32_t ebx, uint32_t ecx, uint32_t edx) {
+        if (count >= 32) return;
+        results[count].Function = leaf;
+        results[count].Reserved[0] = 0;
+        results[count].Reserved[1] = 0;
+        results[count].Reserved[2] = 0;
+        results[count].Eax = eax;
+        results[count].Ebx = ebx;
+        results[count].Ecx = ecx;
+        results[count].Edx = edx;
+        count++;
+    };
+
+    // Anti-detection: Leaf 1 with hypervisor present bit (ECX[31]) cleared
+    // Use either spoofed values or real hardware (with bit cleared)
+    if (cpuidHandler) {
+        cpuidHandler->GetCpuidResultList(results, &count, 32);
+    } else {
+        // Minimal anti-detection result list (no CpuidHandler available)
+        int cpuInfo[4];
+        __cpuidex(cpuInfo, 1, 0);
+        add(1, 0, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1],
+            (uint32_t)cpuInfo[2] & ~(1u << 31), (uint32_t)cpuInfo[3]);
+    }
+
+    // Always add hypervisor leaves 0x40000000-0x4000000F as zeros
+    // (detection safety: even if cpuidHandler didn't add them, we do)
+    bool hasHypervisorLeaves = false;
+    for (int i = 0; i < count; i++) {
+        if (results[i].Function >= 0x40000000 && results[i].Function <= 0x4000000F) {
+            hasHypervisorLeaves = true;
+            break;
+        }
+    }
+    if (!hasHypervisorLeaves) {
+        for (uint32_t lf = 0x40000000; lf <= 0x4000000F; lf++) {
+            add(lf, 0, 0, 0, 0, 0);
+        }
+    }
 
     if (count == 0) {
         m_logger->Trace(LOG_WHP, "CpuidResultList empty — all leaves will VM-exit");
@@ -107,7 +148,7 @@ bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
         return false;
     }
 
-    m_logger->Trace(LOG_WHP, "CPUID result list set: %d leaves pre-populated", count);
+    m_logger->Trace(LOG_WHP, "CPUID result list set: %d leaves pre-populated (hypervisor range hidden)", count);
     return true;
 }
 

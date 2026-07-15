@@ -170,7 +170,10 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
     ApplyUniversalMask(leaf, subleaf, rax, rbx, rcx, rdx);
 
     // Clear hypervisor present bit + SMX/TXT bit in leaf 1 ECX
+    // BOTH bits must be cleared: hypervisor present is the most detectable,
+    // SMX/TXT is a secondary indicator of virtualized environment.
     if (leaf == 1) {
+        *rcx &= ~CPUID_ECX_HYPERVISOR_BIT;
         *rcx &= ~CPUID_ECX_SMX_BIT;
     }
 
