@@ -32,6 +32,7 @@ private:
     uint64_t m_tscOffset;
 
     std::atomic<uint64_t> m_lastTsc;
+    uint64_t m_lastPreExitTsc = 0;
     bool m_noiseEnabled;
     uint32_t m_noiseAmplitude;
 

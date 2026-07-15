@@ -157,7 +157,7 @@ Two complementary mechanisms:
 
 **This is build-independent** — syscall numbers are read from the running system's ntdll, so the same engine binary works across Windows versions (Win10 22H2, Win11 24H2, etc.).
 
-Known spoofed syscalls (`NtQuerySystemInformation`, `NtQueryInformationProcess`, `NtOpenKey`, `NtQueryValueKey`, `NtClose`, `NtCreateFile`, `NtQueryObject`, `NtCreateThread`, `NtCreateThreadEx`, `NtTerminateThread`) are explicitly excluded from the forward table and dispatched to dedicated handlers.
+Known spoofed syscalls (`NtQuerySystemInformation`, `NtQueryInformationProcess`, `NtOpenKey`, `NtOpenKeyEx`, `NtQueryValueKey`, `NtClose`, `NtCreateFile`, `NtQueryObject`, `NtCreateThread`, `NtCreateThreadEx`, `NtTerminateThread`) are explicitly excluded from the forward table and dispatched to dedicated handlers. NtOpenKey/Ex are intercepted to block registry queries to hypervisor-related service keys (`\registry\machine\system\currentcontrolset\services\hypervisor`, `hvservice`, `VMBus`, etc.), returning `STATUS_OBJECT_NAME_NOT_FOUND`.
 
 ### Multi-VCPU Thread Migration (Phase 6, gated)
 
@@ -172,11 +172,30 @@ This is gated behind `m_childThreadMigrationEnabled` (default `false`) and requi
 
 ### Anti-Hypervisor Detection
 
-Several measures hide the presence of the WHP hypervisor from the guest:
+Several measures hide the presence of the WHP hypervisor from the guest. These are organized into **4 phases** targeting Denuvo anti-tamper detection vectors:
+
+**Phase 1 — Syscall / MSR / Register:**
 - **CPUID hypervisor leaf** (0x40000000) returns all zeros — no hypervisor vendor string
 - **CPUID hypervisor bit** (ECX[31]) is cleared on all leaves
 - **WHP anti-detection result list** is populated even when CPUID spoofing is disabled
 - **Per-process PID tracking**: via `MagicCpuid`'s PID registration mechanism, CPUID spoofing only applies to the registered target process; all other processes in the WHP partition get pass-through
+- **NtQuerySystemInformation info class 0x5B** (SystemHypervisorInformation) returns 16 zero bytes
+- **NtQuerySystemInformation info class 0x9F** (SystemHypervisorDetailInformation) returns 0x70 zero bytes
+- **RDMSR(LSTAR)** spoofed to return real KiSystemCall64 address (resolved via ntoskrnl export walk), not 0
+- **CR4 register** VMXE (bit 13) and SMXE (bit 14) masked — hypervisor-related bits hidden from guest reads
+
+**Phase 2 — Timing / VEH:**
+- **RDTSC/RDTSCP VM-exit cost compensation**: when `TimingCoordinator::DetectRdtscAfterCpuid` detects a CPUID→RDTSC pattern, the TSC is adjusted by subtracting ~2000 cycles (VM-exit overhead), returning `lastPreExitTsc + 80` to mimic bare-metal CPUID timing
+- **SystemSpoofer VEH stack spoiling defense**: VEH handler saves the top 64 QWORDs (512 bytes) of thread stack on entry and restores them before `CONTINUE_EXECUTION`, defeating Denuvo's stack-integrity checks after exception dispatch
+
+**Phase 3 — WMI / Registry:**
+- **Win32_ComputerSystem WMI spoofing**: `HypervisorPresent=false`, realistic Model/SystemType/Manufacturer (i9-10900K desktop profile). WMI class type is tracked per-object (`WMI_CLASS_PROCESSOR` vs `WMI_CLASS_COMPUTER_SYSTEM`) to disambiguate shared property names like `Manufacturer`
+- **Registry path filtering**: `NtOpenKey`/`NtOpenKeyEx` intercepted inside `DispatchRawSyscall` — guest OBJECT_ATTRIBUTES parsed to extract the registry key path. Paths containing `hypervisor`, `hvservice`, `VMBus`, `Hyper-V`, or `HypervisorPresent` return `STATUS_OBJECT_NAME_NOT_FOUND` (0xC0000034)
+
+**Phase 4 — Config gating:**
+- All aggressive anti-detection features (AllocTracker ntdll inline hooks, SystemSpoofer VEH) gated behind `[hypervisor_hiding]` config section with `alloc_tracker = false, system_spoofer = false` defaults. This prevents detectable features from being active when not explicitly needed
+
+The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartitionProperty`) cannot be mitigated from user mode — these require Ring-0 access and are inherent to the WHP architecture.
 
 ---
 
@@ -273,6 +292,15 @@ Several measures hide the presence of the WHP hypervisor from the guest:
 | NtTerminateThread | LSTAR→HLT → HandleTerminateThreadSyscall (child VCPU teardown) | Done |
 | All syscalls (forwarded) | LSTAR→HLT → ForwardSyscall → host ntdll → real kernel | Done |
 | All queries captured to disk | CaptureLogger | Done |
+| NtQuerySystemInformation (0x5B hypervisor) | LSTAR→HLT → HandleNtQuerySystemInformation → 16 zero bytes | Done |
+| NtQuerySystemInformation (0x9F hypervisor detail) | LSTAR→HLT → HandleNtQuerySystemInformation → 0x70 zero bytes | Done |
+| RDMSR(LSTAR / 0xC0000082) | MsrHandler → cached KiSystemCall64 from ntoskrnl export | Done |
+| CR4 VMXE/SMXE | SetContextRegisters → bits 13/14 masked | Done |
+| CPUID→RDTSC timing delta | TimingCoordinator + RdtscHandler → 80-cycle bare-metal cost | Done |
+| VEH stack frame integrity | SystemSpoofer → 64-QWORD stack save/restore | Done |
+| Win32_ComputerSystem WMI (HypervisorPresent) | wbem_proxy → SpoofedComputerSystem class | Done |
+| Registry hypervisor service keys | NtOpenKey path filter → STATUS_OBJECT_NAME_NOT_FOUND | Done |
+| AllocTracker inline hooks (config-gated) | hypervisor_hiding.alloc_tracker=false (off by default) | Done |
 
 ---
 
@@ -283,8 +311,10 @@ Default: `config/config.ini` (relative to launcher binary). Config profiles spec
 ### Feature Toggles
 
 ```ini
-[system_spoofer]     enabled = false     ; VEH for SGDT/SIDT/SLDT/STR/XGETBV (off for Denuvo)
-[eat]                enabled = false     ; Export Address Table patching
+[hypervisor_hiding]  alloc_tracker = false  ; AllocTracker ntdll inline hooks (off for Denuvo — detects hook patterns)
+[hypervisor_hiding]  system_spoofer = false ; VEH SGDT/SIDT/SLDT/STR/XGETBV (off for Denuvo)
+[system_spoofer]     enabled = false        ; Legacy: VEH for SGDT/SIDT/SLDT/STR/XGETBV (off for Denuvo)
+[eat]                enabled = false        ; Export Address Table patching
 [forwarding]         enabled = true      ; Syscall forwarding (Ghost Sandbox)
 [cpuid]              status = 0          ; CPUID spoofing (0=disabled)
 [rdtsc]              status = 0          ; RDTSC spoofing
@@ -407,6 +437,7 @@ WHP uses Intel VT-x hardware virtualization. When `WHvRunVp` is called, the CPU 
 - **KUSER_SHARED_DATA at `0x7FFE0000`** works via EPT (WHP) only; VEH fallback available but less transparent
 - **IAT/EAT patching** applies to modules loaded after engine init; pre-loaded system DLLs use proxy DLL shims
 - **GPU-intensive workloads** pass through via GpuBridge (always fall through to real GPU)
+- **Denuvo hardening (Phases 1-4)**: syscall, MSR, CR4, RDTSC, VEH stack, WMI, registry, and config-gating measures are implemented to defeat Denuvo's hypervisor detection. Phase 3b (registry path filtering) reads guest memory directly — requires identity-mapped GPA=VA layout. Phase 2a (RDTSC compensation) uses a fixed 80-cycle bare-metal CPUID cost, which may need per-SKU tuning
 - **SystemSpoofer VEH** uses INT3 patches for SGDT/SIDT/SLDT/STR/XGETBV — may be detected by anti-tamper (gated behind config, off by default for Denuvo)
 - **Forward table arg counts** — unknown syscalls default to 4 args; if a >4-arg syscall is missing from the table, the forwarded call will read garbage from the stack
 - **Context capture via RtlCaptureContext** captures at Engine_VcpuEntry, not at the original game entry point. RSP is inside Engine_VcpuEntry's frame, not the loader's initial stack. For modern MSVC CRT startups using PEB-based init this works; if issues arise, an assembly register-save stub is needed

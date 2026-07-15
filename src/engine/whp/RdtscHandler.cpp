@@ -48,18 +48,33 @@ bool RdtscHandler::HandleRdtsc(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rd
     uint64_t realTsc = ReadTSC();
     uint64_t spoofedTsc = realTsc + m_tscOffset;
 
-    // Use TimingCoordinator for jitter and pattern detection
+    // VM-exit cost compensation: if the timing coordinator detected a CPUID
+    // right before this RDTSC, adjust the TSC to hide the ~2000 cycle VM-exit
+    // overhead, making it look like bare-metal timing (~80-350 cycles).
+    bool cpuidJustExited = false;
     if (m_timingCoordinator) {
-        spoofedTsc = m_timingCoordinator->AddJitter(spoofedTsc, 3700000000ULL);
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
-        m_timingCoordinator->DetectRdtscAfterCpuid((uint64_t)now.QuadPart);
+        cpuidJustExited = m_timingCoordinator->DetectRdtscAfterCpuid((uint64_t)now.QuadPart);
+        if (cpuidJustExited) {
+            // Subtract typical VM-exit overhead (~2000 cycles) so the delta
+            // between CPUID and this RDTSC appears as bare-metal cost
+            if (spoofedTsc >= m_lastPreExitTsc + 100) {
+                spoofedTsc = m_lastPreExitTsc + 80; // ~80 cycles = bare-metal CPUID cost
+            }
+            m_logger->Trace(LOG_TIMING, "RDTSC VM-exit compensation: adjusted to hide exit cost");
+        }
+        spoofedTsc = m_timingCoordinator->AddJitter(spoofedTsc, 3700000000ULL);
     } else {
         spoofedTsc = AddTimingNoise(spoofedTsc);
     }
 
     *rax = spoofedTsc & 0xFFFFFFFF;
     *rdx = (spoofedTsc >> 32) & 0xFFFFFFFF;
+
+    if (!cpuidJustExited) {
+        m_lastPreExitTsc = spoofedTsc;
+    }
 
     if (m_captureLogger) {
         m_captureLogger->CaptureRdtsc("RDTSC", 0, realTsc);
@@ -74,13 +89,24 @@ bool RdtscHandler::HandleRdtscp(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* r
     uint64_t realTsc = ReadTSC();
     uint64_t spoofedTsc = realTsc + m_tscOffset;
 
+    bool cpuidJustExited = false;
     if (m_timingCoordinator) {
-        spoofedTsc = m_timingCoordinator->AddJitter(spoofedTsc, 3700000000ULL);
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
-        m_timingCoordinator->DetectRdtscAfterCpuid((uint64_t)now.QuadPart);
+        cpuidJustExited = m_timingCoordinator->DetectRdtscAfterCpuid((uint64_t)now.QuadPart);
+        if (cpuidJustExited) {
+            if (spoofedTsc >= m_lastPreExitTsc + 100) {
+                spoofedTsc = m_lastPreExitTsc + 80;
+            }
+            m_logger->Trace(LOG_TIMING, "RDTSCP VM-exit compensation: adjusted to hide exit cost");
+        }
+        spoofedTsc = m_timingCoordinator->AddJitter(spoofedTsc, 3700000000ULL);
     } else {
         spoofedTsc = AddTimingNoise(spoofedTsc);
+    }
+
+    if (!cpuidJustExited) {
+        m_lastPreExitTsc = spoofedTsc;
     }
 
     *rax = spoofedTsc & 0xFFFFFFFF;

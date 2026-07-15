@@ -1,6 +1,12 @@
 #include "SyscallDispatch.h"
 #include "Logger.h"
 #include <cstring>
+#include <cwchar>
+#include <winternl.h>
+#include <vector>
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
 
 static Logger g_syscallLogger;
 
@@ -9,7 +15,8 @@ static Logger g_syscallLogger;
 
 SyscallDispatch::SyscallDispatch()
     : NtQuerySystemInformation(0), NtQueryInformationProcess(0),
-      NtOpenKey(0), NtQueryValueKey(0), NtClose(0), NtCreateFile(0), NtQueryObject(0)
+      NtOpenKey(0), NtOpenKeyEx(0), NtQueryValueKey(0), NtClose(0), NtCreateFile(0), NtQueryObject(0),
+      NtCreateThread(0), NtCreateThreadEx(0), NtTerminateThread(0)
 {
 }
 
@@ -116,6 +123,56 @@ int SyscallDispatch::GetArgCountForSyscall(const char* name)
     return 4;
 }
 
+uint64_t SyscallDispatch::ResolveKiSystemCall64()
+{
+    // Resolve ntoskrnl.exe KiSystemCall64 address by walking kernel module list.
+    // This is the real SYSCALL entry point — used to spoof RDMSR(LSTAR).
+    ULONG size = 0;
+    ::NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)0x0B, nullptr, 0, &size);
+    if (!size) return 0;
+
+    std::vector<uint8_t> buf((size_t)size);
+    NTSTATUS status = ::NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)0x0B, buf.data(), (ULONG)buf.size(), &size);
+    if (!NT_SUCCESS(status)) return 0;
+
+    // Parse SYSTEM_MODULE_INFORMATION (undocumented, but well-known layout)
+    uintptr_t moduleList = (uintptr_t)buf.data();
+    uint32_t* moduleCount = (uint32_t*)moduleList;
+    uintptr_t modules = moduleList + sizeof(uint32_t);
+
+    // Each SYSTEM_MODULE_INFORMATION_ENTRY: 2 reserved + 2 load order + 2 + 2 flags +
+    // 8 image base + 8 image size + 4 flags + 2 index + 2 rank + 2 unknown +
+    // 2 load count + 2 + 2 + 256 name
+    for (uint32_t i = 0; i < *moduleCount; i++) {
+        uintptr_t entry = modules + i * 0x120;
+        uint64_t imageBase = *(uint64_t*)(entry + 0x18);
+        const char* name = (const char*)(entry + 0x48);
+        if (strstr(name, "ntoskrnl.exe")) {
+            uint8_t* base = (uint8_t*)(uintptr_t)imageBase;
+            PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)base;
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+            PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(base + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+            IMAGE_DATA_DIRECTORY expDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            if (!expDir.Size) return 0;
+
+            PIMAGE_EXPORT_DIRECTORY exports = (PIMAGE_EXPORT_DIRECTORY)(base + expDir.VirtualAddress);
+            DWORD* names = (DWORD*)(base + exports->AddressOfNames);
+            WORD* ordinals = (WORD*)(base + exports->AddressOfNameOrdinals);
+            DWORD* functions = (DWORD*)(base + exports->AddressOfFunctions);
+
+            for (DWORD j = 0; j < exports->NumberOfNames; j++) {
+                const char* expName = (const char*)(base + names[j]);
+                if (strcmp(expName, "KiSystemCall64") == 0) {
+                    return (uint64_t)(base + functions[ordinals[j]]);
+                }
+            }
+            return 0;
+        }
+    }
+    return 0;
+}
+
 bool SyscallDispatch::Initialize()
 {
     if (m_initialized) return true;
@@ -123,6 +180,7 @@ bool SyscallDispatch::Initialize()
     NtQuerySystemInformation = GetSyscallNumber("NtQuerySystemInformation");
     NtQueryInformationProcess = GetSyscallNumber("NtQueryInformationProcess");
     NtOpenKey = GetSyscallNumber("NtOpenKey");
+    NtOpenKeyEx = GetSyscallNumber("NtOpenKeyEx");
     NtQueryValueKey = GetSyscallNumber("NtQueryValueKey");
     NtClose = GetSyscallNumber("NtClose");
     NtCreateFile = GetSyscallNumber("NtCreateFile");
@@ -135,6 +193,10 @@ bool SyscallDispatch::Initialize()
         NtQuerySystemInformation, NtQueryInformationProcess, NtOpenKey,
         NtQueryValueKey, NtClose, NtCreateFile, NtQueryObject,
         NtCreateThread, NtCreateThreadEx, NtTerminateThread);
+
+    // Cache real KiSystemCall64 address for spoofing RDMSR(LSTAR)
+    m_kiSystemCall64 = ResolveKiSystemCall64();
+    SYSLOG("KiSystemCall64 resolved to 0x%llX", m_kiSystemCall64);
 
     if (!NtQuerySystemInformation || !NtQueryInformationProcess) {
         SYSERR("failed to detect critical syscall numbers");
@@ -211,6 +273,7 @@ bool SyscallDispatch::BuildForwardTable()
         if (syscallNum == NtQuerySystemInformation ||
             syscallNum == NtQueryInformationProcess ||
             syscallNum == NtOpenKey ||
+            syscallNum == NtOpenKeyEx ||
             syscallNum == NtQueryValueKey ||
             syscallNum == NtClose ||
             syscallNum == NtCreateFile ||
@@ -293,6 +356,9 @@ bool SyscallDispatch::DispatchRawSyscall(uint32_t syscallNumber, uint64_t* args,
     if (syscallNumber == NtQueryInformationProcess) {
         return HandleNtQueryInformationProcess(args, result);
     }
+    if (syscallNumber == NtOpenKey || syscallNumber == NtOpenKeyEx) {
+        return HandleNtOpenKey(args, result);
+    }
 
     return false;
 }
@@ -319,7 +385,7 @@ bool SyscallDispatch::SpoofRdmsr(uint32_t msrIndex, uint64_t& value)
             value = 0;
             return true;
         case 0xC0000082:
-            value = 0;
+            value = m_kiSystemCall64;
             return true;
         default:
             return false;
@@ -362,6 +428,26 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
         if (infoLen >= sizeof(uint32_t)) {
             if (info) *(uint32_t*)(uintptr_t)info = 0;
             if (retLenPtr) *(uint32_t*)(uintptr_t)retLenPtr = sizeof(uint32_t);
+        }
+        result = STATUS_SUCCESS;
+        return true;
+    }
+
+    // SystemHypervisorInformation (0x5B) — hide hypervisor presence from user-mode
+    if (infoClass == 0x5B) {
+        if (info && infoLen >= 16) {
+            memset((void*)(uintptr_t)info, 0, 16);
+            if (retLenPtr) *(uint32_t*)(uintptr_t)retLenPtr = 16;
+        }
+        result = STATUS_SUCCESS;
+        return true;
+    }
+
+    // SystemHypervisorDetailInformation (0x9F) — hide hypervisor details
+    if (infoClass == 0x9F) {
+        if (info && infoLen >= 0x70) {
+            memset((void*)(uintptr_t)info, 0, 0x70);
+            if (retLenPtr) *(uint32_t*)(uintptr_t)retLenPtr = 0x70;
         }
         result = STATUS_SUCCESS;
         return true;
@@ -414,7 +500,40 @@ bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& 
     return false;
 }
 
-bool SyscallDispatch::HandleNtOpenKey(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }
+bool SyscallDispatch::HandleNtOpenKey(uint64_t* args, uint64_t& result)
+{
+    // args[2] = POBJECT_ATTRIBUTES
+    uint64_t objAttr = args[2];
+    if (!objAttr) return false;
+
+    // Read ObjectName from OBJECT_ATTRIBUTES + 8 (PUNICODE_STRING)
+    uint64_t objNamePtr = *(uint64_t*)(uintptr_t)(objAttr + 8);
+    if (!objNamePtr) return false;
+
+    // Read Buffer pointer from UNICODE_STRING + 4
+    uint64_t bufferPtr = *(uint64_t*)(uintptr_t)(objNamePtr + 4);
+    if (!bufferPtr) return false;
+
+    // Read string length from UNICODE_STRING + 0
+    uint16_t strLen = *(uint16_t*)(uintptr_t)objNamePtr;
+
+    // Check for hypervisor-related registry paths
+    if (strLen > 0) {
+        wchar_t keyName[256];
+        uint16_t readLen = (strLen < sizeof(keyName) - 2) ? strLen : (sizeof(keyName) - 2);
+        memcpy(keyName, (void*)(uintptr_t)bufferPtr, readLen);
+        keyName[readLen / 2] = 0;
+
+        // Block access to Hyper-V service and detection keys
+        if (wcsstr(keyName, L"hypervisor") || wcsstr(keyName, L"Hyper-V") ||
+            wcsstr(keyName, L"hvservice") || wcsstr(keyName, L"VMBus") ||
+            wcsstr(keyName, L"HypervisorPresent")) {
+            result = 0xC0000034; // STATUS_OBJECT_NAME_NOT_FOUND
+            return true;
+        }
+    }
+    return false;
+}
 bool SyscallDispatch::HandleNtQueryValueKey(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }
 bool SyscallDispatch::HandleNtClose(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }
 bool SyscallDispatch::HandleNtCreateFile(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }

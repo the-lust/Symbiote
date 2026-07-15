@@ -480,7 +480,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         // spoofing is disabled. This prevents trivial hypervisor detection via
         // CPUID leaf 0x40000000 ("Microsoft Hv") or leaf 1 ECX[31] (hypervisor bit).
         if (!g_partition->SetupCpuidResultList(g_cpuidHandler)) {
-            g_logger->Trace(LOG_WARNING, "CPUID result list setup failed — hypervisor may be detectable via CPUID");
+            g_logger.Trace(LOG_WARNING, "CPUID result list setup failed — hypervisor may be detectable via CPUID");
         }
         if (g_partition->Init()) {
             whpAvailable = true;
@@ -550,15 +550,20 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
 
 
-    // Init AllocTracker for allocated-memory CPUID interception
-    g_allocTracker = new AllocTracker(&g_logger);
-    if (g_captureLogger) g_allocTracker->SetCaptureLogger(g_captureLogger);
-    if (g_allocTracker->Initialize()) {
-        g_logger.Trace(LOG_INFO, "AllocTracker initialized - tracking executable allocations");
+    // Init AllocTracker for allocated-memory CPUID interception (gated by hypervisor_hiding config)
+    bool allocTrackerEnabled = configParser.GetBool("hypervisor_hiding", "alloc_tracker", false);
+    if (allocTrackerEnabled) {
+        g_allocTracker = new AllocTracker(&g_logger);
+        if (g_captureLogger) g_allocTracker->SetCaptureLogger(g_captureLogger);
+        if (g_allocTracker->Initialize()) {
+            g_logger.Trace(LOG_INFO, "AllocTracker initialized - tracking executable allocations");
+        } else {
+            g_logger.Trace(LOG_WARNING, "AllocTracker failed to initialize");
+            delete g_allocTracker;
+            g_allocTracker = nullptr;
+        }
     } else {
-        g_logger.Trace(LOG_WARNING, "AllocTracker failed to initialize");
-        delete g_allocTracker;
-        g_allocTracker = nullptr;
+        g_logger.Trace(LOG_DEBUG, "AllocTracker disabled by config (hypervisor_hiding.alloc_tracker=false)");
     }
 
     // Init Canary for memory scanner detection and handshake page

@@ -35,15 +35,39 @@ struct SpoofedProcessor {
 };
 
 // ============================================================================
+// Spoofed Win32_ComputerSystem props (hide hypervisor)
+// ============================================================================
+struct SpoofedComputerSystem {
+    static const wchar_t* Manufacturer() { return L"Gigabyte Technology Co., Ltd."; }
+    static const wchar_t* Model() { return L"Z490 AORUS MASTER"; }
+    static const wchar_t* SystemType() { return L"x64-based PC"; }
+    static const wchar_t* Domain() { return L"WORKGROUP"; }
+    static const wchar_t* UserName() { return L"DESKTOP-PC\\User"; }
+    static const wchar_t* PrimaryOwnerName() { return L"User"; }
+    static bool HypervisorPresent() { return false; }
+    static DWORD NumberOfProcessors() { return 1; }
+    static DWORD NumberOfLogicalProcessors() { return 20; }
+    static uint64_t TotalPhysicalMemory() { return 34359738368ULL; } // 32 GB
+};
+
+// ============================================================================
 // CSpoofWbemClassObject - wraps IWbemClassObject, spoofs Get() for CPU props
 // ============================================================================
+enum WmiClassType {
+    WMI_CLASS_UNKNOWN = 0,
+    WMI_CLASS_PROCESSOR,
+    WMI_CLASS_COMPUTER_SYSTEM,
+};
+
 class CSpoofWbemClassObject : public IWbemClassObject {
 private:
     LONG m_ref;
     IWbemClassObject* m_real;
+    WmiClassType m_classType;
 
 public:
-    CSpoofWbemClassObject(IWbemClassObject* real) : m_ref(1), m_real(real) {
+    CSpoofWbemClassObject(IWbemClassObject* real, WmiClassType classType = WMI_CLASS_UNKNOWN)
+        : m_ref(1), m_real(real), m_classType(classType) {
         if (m_real) m_real->AddRef();
         InterlockedIncrement(&g_refCount);
     }
@@ -75,7 +99,12 @@ public:
         VariantInit(pVal);
         pVal->vt = VT_BSTR;
         if (wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::Name());
-        else if (wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::Manufacturer());
+        else if (wcscmp(wszName, L"Manufacturer") == 0) {
+            if (m_classType == WMI_CLASS_COMPUTER_SYSTEM)
+                pVal->bstrVal = SysAllocString(SpoofedComputerSystem::Manufacturer());
+            else
+                pVal->bstrVal = SysAllocString(SpoofedProcessor::Manufacturer());
+        }
         else if (wcscmp(wszName, L"ProcessorId") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::ProcessorId());
         else if (wcscmp(wszName, L"Caption") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::Caption());
         else if (wcscmp(wszName, L"Description") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::Description());
@@ -86,6 +115,10 @@ public:
         else if (wcscmp(wszName, L"ExtClock") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedProcessor::ExtClock(); }
         else if (wcscmp(wszName, L"L2CacheSize") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedProcessor::L2CacheSize(); }
         else if (wcscmp(wszName, L"L3CacheSize") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedProcessor::L3CacheSize(); }
+        // Win32_ComputerSystem properties (hide hypervisor)
+        else if (wcscmp(wszName, L"HypervisorPresent") == 0) { pVal->vt = VT_BOOL; pVal->boolVal = SpoofedComputerSystem::HypervisorPresent() ? VARIANT_TRUE : VARIANT_FALSE; }
+        else if (wcscmp(wszName, L"Model") == 0) pVal->bstrVal = SysAllocString(SpoofedComputerSystem::Model());
+        else if (wcscmp(wszName, L"SystemType") == 0) pVal->bstrVal = SysAllocString(SpoofedComputerSystem::SystemType());
         else spoofed = false;
         if (pType) *pType = CIM_STRING;
         if (plFlavor) *plFlavor = 0;
@@ -109,7 +142,12 @@ public:
         return m_real ? m_real->GetPropertyQualifierSet(wszProperty, ppQualSet) : E_FAIL;
     }
     HRESULT STDMETHODCALLTYPE Clone(IWbemClassObject** ppCopy) override {
-        return m_real ? m_real->Clone(ppCopy) : E_FAIL;
+        if (!m_real) return E_FAIL;
+        HRESULT hr = m_real->Clone(ppCopy);
+        if (SUCCEEDED(hr) && ppCopy && *ppCopy) {
+            *ppCopy = new CSpoofWbemClassObject(*ppCopy, m_classType);
+        }
+        return hr;
     }
     HRESULT STDMETHODCALLTYPE GetObjectText(long lFlags, BSTR* pstrObjectText) override {
         return m_real ? m_real->GetObjectText(lFlags, pstrObjectText) : E_FAIL;
@@ -156,9 +194,11 @@ class CSpoofEnumWbemClassObject : public IEnumWbemClassObject {
 private:
     LONG m_ref;
     IEnumWbemClassObject* m_real;
+    WmiClassType m_classType;
 
 public:
-    CSpoofEnumWbemClassObject(IEnumWbemClassObject* real) : m_ref(1), m_real(real) {
+    CSpoofEnumWbemClassObject(IEnumWbemClassObject* real, WmiClassType classType = WMI_CLASS_UNKNOWN)
+        : m_ref(1), m_real(real), m_classType(classType) {
         if (m_real) m_real->AddRef();
         InterlockedIncrement(&g_refCount);
     }
@@ -188,23 +228,24 @@ public:
         if (SUCCEEDED(hr) && apObjects && puReturned && *puReturned > 0) {
             for (ULONG i = 0; i < *puReturned; i++) {
                 if (apObjects[i]) {
-                    apObjects[i] = new CSpoofWbemClassObject(apObjects[i]);
+                    apObjects[i] = new CSpoofWbemClassObject(apObjects[i], m_classType);
                 }
             }
         }
         return hr;
     }
 
-    HRESULT STDMETHODCALLTYPE NextAsync(ULONG uCount, IWbemObjectSink* pSink) override {
-        return m_real ? m_real->NextAsync(uCount, pSink) : E_FAIL;
-    }
     HRESULT STDMETHODCALLTYPE Clone(IEnumWbemClassObject** ppEnum) override {
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->Clone(ppEnum);
         if (SUCCEEDED(hr) && ppEnum && *ppEnum) {
-            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum);
+            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum, m_classType);
         }
         return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE NextAsync(ULONG uCount, IWbemObjectSink* pSink) override {
+        return m_real ? m_real->NextAsync(uCount, pSink) : E_FAIL;
     }
     HRESULT STDMETHODCALLTYPE Skip(long lTimeout, ULONG nCount) override {
         return m_real ? m_real->Skip(lTimeout, nCount) : E_FAIL;
@@ -219,9 +260,17 @@ private:
     LONG m_ref;
     IWbemServices* m_real;
 
-    bool IsWin32ProcessorQuery(const wchar_t* str) {
+    bool IsSpoofedWmiQuery(const wchar_t* str) {
         if (!str) return false;
-        return (wcsstr(str, L"Win32_Processor") != NULL);
+        return (wcsstr(str, L"Win32_Processor") != NULL) ||
+               (wcsstr(str, L"Win32_ComputerSystem") != NULL);
+    }
+
+    WmiClassType DetectClassType(const wchar_t* str) {
+        if (!str) return WMI_CLASS_UNKNOWN;
+        if (wcsstr(str, L"Win32_Processor")) return WMI_CLASS_PROCESSOR;
+        if (wcsstr(str, L"Win32_ComputerSystem")) return WMI_CLASS_COMPUTER_SYSTEM;
+        return WMI_CLASS_UNKNOWN;
     }
 
 public:
@@ -292,8 +341,8 @@ public:
     HRESULT STDMETHODCALLTYPE CreateInstanceEnum(BSTR strClass, long lFlags, IWbemContext* pCtx, IEnumWbemClassObject** ppEnum) override {
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->CreateInstanceEnum(strClass, lFlags, pCtx, ppEnum);
-        if (SUCCEEDED(hr) && ppEnum && *ppEnum && IsWin32ProcessorQuery(strClass)) {
-            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum);
+        if (SUCCEEDED(hr) && ppEnum && *ppEnum && IsSpoofedWmiQuery(strClass)) {
+            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum, DetectClassType(strClass));
         }
         return hr;
     }
@@ -305,8 +354,8 @@ public:
     HRESULT STDMETHODCALLTYPE ExecQuery(BSTR strQueryLanguage, BSTR strQuery, long lFlags, IWbemContext* pCtx, IEnumWbemClassObject** ppEnum) override {
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->ExecQuery(strQueryLanguage, strQuery, lFlags, pCtx, ppEnum);
-        if (SUCCEEDED(hr) && ppEnum && *ppEnum && IsWin32ProcessorQuery(strQuery)) {
-            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum);
+        if (SUCCEEDED(hr) && ppEnum && *ppEnum && IsSpoofedWmiQuery(strQuery)) {
+            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum, DetectClassType(strQuery));
         }
         return hr;
     }

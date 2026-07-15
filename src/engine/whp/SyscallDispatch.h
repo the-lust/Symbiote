@@ -35,15 +35,22 @@ public:
     uint32_t NtQuerySystemInformation;
     uint32_t NtQueryInformationProcess;
     uint32_t NtOpenKey;
+    uint32_t NtOpenKeyEx;
     uint32_t NtQueryValueKey;
     uint32_t NtClose;
     uint32_t NtCreateFile;
     uint32_t NtQueryObject;
+    uint32_t NtCreateThread;
+    uint32_t NtCreateThreadEx;
+    uint32_t NtTerminateThread;
 
 private:
     bool m_initialized = false;
     bool m_forwardBuilt = false;
+    uint64_t m_kiSystemCall64 = 0;
     std::unordered_map<uint32_t, ForwardEntry> m_forwardTable;
+
+    uint64_t ResolveKiSystemCall64();
 
     uint32_t GetSyscallNumber(const char* funcName);
     int GetArgCountForSyscall(const char* funcName);

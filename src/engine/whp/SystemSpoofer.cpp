@@ -363,6 +363,15 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
     uint64_t newRip = rip + pe.instrLen;
     CONTEXT* ctx = ep->ContextRecord;
 
+    // Stack-spoiling defense: Denuvo stores critical values in high unused
+    // stack space before CPUID/SYSCALL/RDMSR operations, then causes an
+    // exception. Windows writes EXCEPTION_RECORD + CONTEXT to the thread
+    // stack, overwriting those values. Save and restore the top of stack
+    // around our handler to preserve Denuvo's data.
+    uint64_t savedStackBackup[64];
+    uint64_t rsp = ctx->Rsp;
+    memcpy(savedStackBackup, (void*)rsp, sizeof(savedStackBackup));
+
     switch (pe.type) {
         case PatchType::SGDT:
         case PatchType::SIDT: {
@@ -421,6 +430,9 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
         case PatchType::RDMSR:
             break;
     }
+
+    // Restore stack top to prevent Denuvo's stack-spoiling detection
+    memcpy((void*)rsp, savedStackBackup, sizeof(savedStackBackup));
 
     ctx->Rip = newRip;
     return EXCEPTION_CONTINUE_EXECUTION;
