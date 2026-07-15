@@ -111,6 +111,7 @@ Target Process (Ring 3)
 | **TimingCoordinator** | Cross-handler timing pattern detection (RDTSC→CPUID→RDTSC), three jitter strategies (uniform/constant/linear), monotonic TSC invariant |
 | **Canary** | Guard-page memory scanner detector with VEH callback; 4KB handshake page for engine-target coordination |
 | **SystemSpoofer** | VEH-based interception of SGDT/SIDT/SLDT/STR/XGETBV — gated behind `[system_spoofer] enabled=false` (default off for Denuvo) |
+| **ThreadScheduler** | Round-robin multi-VCPU coordinator for child thread migration into dedicated VCPUs (gated, default off) |
 | **CaptureLogger** | Records all fingerprinting queries (CPUID, MSR, RDTSC, syscalls) to disk for analysis |
 | **RegisterProxyFunctions** | Engine→proxy API for GetProcAddress hook table population (avoids name-based module lookup on renamed proxies) |
 
@@ -146,9 +147,11 @@ The Ghost Sandbox enables transparent VCPU execution by migrating the game proce
    ├── CPUID → WHP exit → spoofed
    ├── RDTSC → WHP exit → spoofed
    ├── MSR   → WHP exit → spoofed
-   ├── SYSCALL → ntdll stub → LSTAR→HLT → HandleSyscallExit
-   │     ├── DispatchRawSyscall (NtQSI, NtQIP) → spoofed
-   │     └── ForwardSyscall (all others) → host ntdll → real kernel
+├── SYSCALL → ntdll stub → LSTAR→HLT → HandleSyscallExit
+│     ├── NtCreateThread/Ex → HandleCreateThreadSyscall (child VCPU migration, gated)
+│     ├── NtTerminateThread → HandleTerminateThreadSyscall (child VCPU teardown)
+│     ├── DispatchRawSyscall (NtQSI, NtQIP) → spoofed
+│     └── ForwardSyscall (all others) → host ntdll → real kernel
    ├── Memory fault → MapDynamicPage (on-demand EPT mapping)
    └── Exception → ExceptionHandler
 ```
@@ -164,11 +167,13 @@ The Ghost Sandbox enables transparent VCPU execution by migrating the game proce
 | 3 | VCPU Bootstrap: context capture, ring-3 segment/CR/EFER setup | Done |
 | 4 | Syscall Forwarding: BuildForwardTable (ntdll export scan), ForwardSyscall (switch 0-12 args) | Done |
 | 5 | EPT Violation Handler: on-demand page mapping via MapDynamicPage | Done |
-| 6 | Multi-VCPU: child threads via forwarded NtCreateThread | Planned |
+| 6 | Multi-VCPU: child VCPU allocation, NtCreateThread/Ex intercept, host thread bootstrap, NtTerminateThread | Done (gated, default off) |
 
 ### Forward Table
 
 The `SyscallDispatch::BuildForwardTable()` scans all ntdll exports, extracts syscall numbers from function stubs (`mov eax, SSN` pattern), and builds an `unordered_map<uint32_t, ForwardEntry>` with function pointer + arg count. ~90 common syscalls have explicit arg counts; unknown syscalls default to 4 args. The C++ switch dispatch (0-12 args) handles register and stack argument forwarding correctly via function pointer casts.
+
+Thread syscalls (`NtCreateThread`, `NtCreateThreadEx`, `NtTerminateThread`) are explicitly excluded from the forward table and dispatched to dedicated VCPU migration handlers instead (gated behind config).
 
 ---
 
@@ -296,7 +301,7 @@ advapi32.dll      — Proxy DLL (clean system DLL name)
 - **Denuvo persistent blacklist** — after WHP is detected once, Denuvo persists state across launches. Cleanup functions delete cache files in `game_dir`, `%appdata%\Denuvo\`, and `%TEMP%\dns*`
 - **Proxy DLLs use clean system names** loaded with absolute paths via `LoadLibraryW`. GetProcAddress hook uses engine-registered function table
 - **WHP-only host machines** — game must have WHP available. No fallback to pure emulation
-- **Single VCPU** — child threads not yet migrated into VCPUs (Phase 6 planned)
+- **Single VCPU by default** — child thread VCPU migration (Phase 6) is code-complete but gated behind `cpu_count > 1` in config and `SetChildThreadMigrationEnabled(true)`. Without these, child threads run as native host threads outside WHP, and NtCreateThread/Ex/NtTerminate are forwarded to host ntdll
 
 ---
 
