@@ -36,8 +36,7 @@ public:
 
     DeviceIoEmu* GetDeviceIoEmu() { return m_deviceIoEmu; }
     TimingEmu* GetTimingEmu() { return m_timingEmu; }
-
-private:
+    ProcessEmu* GetProcessEmu() { return m_processEmu; }
     static MinimalKernel* s_instance;
 
     Logger* m_logger;

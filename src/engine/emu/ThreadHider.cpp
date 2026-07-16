@@ -8,6 +8,9 @@ ThreadHider::ThreadHider(Logger* logger)
       m_originalCreateToolhelp32Snapshot(nullptr),
       m_originalThread32First(nullptr),
       m_originalThread32Next(nullptr),
+      m_trampolineSnapshot(nullptr),
+      m_trampolineFirst(nullptr),
+      m_trampolineNext(nullptr),
       m_hooksInstalled(false)
 {
     memset(m_origBytesSnapshot, 0, sizeof(m_origBytesSnapshot));
@@ -87,7 +90,7 @@ bool ThreadHider::IsProcessHidden(uint32_t processId) const
     return false;
 }
 
-bool ThreadHider::HandleSystemProcessInformation(uint64_t infoBuffer, uint32_t infoLength, uint64_t* returnLength, uint64_t* result)
+bool ThreadHider::HandleSystemProcessInformation(uint64_t infoBuffer, uint32_t infoLength, uint32_t* returnLength, uint64_t* result)
 {
     if (!infoBuffer || infoLength < sizeof(ULONG)) return false;
 
@@ -108,12 +111,10 @@ bool ThreadHider::HandleSystemProcessInformation(uint64_t infoBuffer, uint32_t i
 
         bool hideProcess = IsProcessHidden((uint32_t)(uintptr_t)spi->UniqueProcessId);
 
-        // If not hiding this process, copy it to the destination
         if (!hideProcess) {
             if (dst != src + totalRead) {
                 memmove(dst, src + totalRead, entrySize);
             }
-            // Zero out thread entries that are hidden
             PSYSTEM_THREAD_INFORMATION sti = (PSYSTEM_THREAD_INFORMATION)(dst + sizeof(SYSTEM_PROCESS_INFORMATION));
             ULONG threadCount = spi->NumberOfThreads;
             ULONG keptThreads = threadCount;
@@ -125,7 +126,6 @@ bool ThreadHider::HandleSystemProcessInformation(uint64_t infoBuffer, uint32_t i
             }
 
             if (keptThreads != threadCount) {
-                // Compact thread entries
                 ULONG stiWritten = 0;
                 for (ULONG t = 0; t < threadCount; t++) {
                     if (!IsThreadHidden((uint32_t)(uintptr_t)sti[t].ClientId.UniqueThread)) {
@@ -147,35 +147,67 @@ bool ThreadHider::HandleSystemProcessInformation(uint64_t infoBuffer, uint32_t i
     }
 
     *(uint32_t*)buffer = totalWritten;
-    if (returnLength) *returnLength = totalWritten;
+    if (returnLength) *returnLength = (uint32_t)totalWritten;
     if (result) *result = 0;
     return true;
 }
 
-// ── 12-byte patching helpers ──────────────────────────────────────
+// ── 12-byte detour hook with proper trampoline ───────────────────
+//
+// Writes:   target[0..1]  = 48 B8  (mov rax, imm64)
+//           target[2..9]  = hook address
+//           target[10..11]= FF E0  (jmp rax)
+//
+// Trampoline (allocated RX memory):
+//           [0..11]  = original 12 bytes from target
+//           [12..21] = 48 B8 <target+12>  (mov rax, target+12)
+//           [22..23] = FF E0  (jmp rax)
+//
+// Returns trampoline address, or nullptr on failure.
+// The hook calls the trampoline to reach the real function.
 
-static bool Install12ByteHook(void* target, void* hook, uint8_t* backup)
+static void* InstallTrampolineHook(void* target, void* hook, uint8_t* backup)
 {
     DWORD old;
     if (!VirtualProtect(target, 12, PAGE_EXECUTE_READWRITE, &old))
-        return false;
+        return nullptr;
+
     memcpy(backup, target, 12);
+
+    // Write hook at target
     uint8_t* p = (uint8_t*)target;
     p[0] = 0x48; p[1] = 0xB8;
     *(uint64_t*)&p[2] = (uint64_t)(uintptr_t)hook;
     p[10] = 0xFF; p[11] = 0xE0;
+
     VirtualProtect(target, 12, old, &old);
     FlushInstructionCache(GetCurrentProcess(), target, 12);
-    return true;
+
+    // Allocate trampoline: 12 original bytes + 12-byte jmp to target+12
+    void* trampoline = VirtualAlloc(nullptr, 24, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    if (!trampoline) return nullptr;
+
+    uint8_t* t = (uint8_t*)trampoline;
+    memcpy(t, backup, 12);                              // original 12 bytes
+    t[12] = 0x48; t[13] = 0xB8;                         // mov rax, imm64
+    *(uint64_t*)&t[14] = (uint64_t)(uintptr_t)target + 12; // resume at target+12
+    t[22] = 0xFF; t[23] = 0xE0;                         // jmp rax
+
+    FlushInstructionCache(GetCurrentProcess(), trampoline, 24);
+    return trampoline;
 }
 
-static void Remove12ByteHook(void* target, uint8_t* backup)
+static void RemoveTrampolineHook(void* target, uint8_t* backup, void* trampoline)
 {
     DWORD old;
     VirtualProtect(target, 12, PAGE_EXECUTE_READWRITE, &old);
     memcpy(target, backup, 12);
     VirtualProtect(target, 12, old, &old);
     FlushInstructionCache(GetCurrentProcess(), target, 12);
+
+    if (trampoline) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+    }
 }
 
 // ── Hook trampolines ──────────────────────────────────────────────
@@ -240,18 +272,30 @@ bool ThreadHider::InstallHooks()
     g_threadHiderInstance = this;
 
     bool ok = true;
-    ok = ok && Install12ByteHook(createSnap, HookedCreateToolhelp32Snapshot, m_origBytesSnapshot);
-    ok = ok && Install12ByteHook(th32First,  HookedThread32First,  m_origBytesFirst);
-    ok = ok && Install12ByteHook(th32Next,   HookedThread32Next,   m_origBytesNext);
+
+    m_trampolineSnapshot = InstallTrampolineHook(createSnap, HookedCreateToolhelp32Snapshot, m_origBytesSnapshot);
+    ok = ok && (m_trampolineSnapshot != nullptr);
+    if (ok) m_originalCreateToolhelp32Snapshot = m_trampolineSnapshot;
+
+    m_trampolineFirst = InstallTrampolineHook(th32First, HookedThread32First, m_origBytesFirst);
+    ok = ok && (m_trampolineFirst != nullptr);
+    if (ok) m_originalThread32First = m_trampolineFirst;
+
+    m_trampolineNext = InstallTrampolineHook(th32Next, HookedThread32Next, m_origBytesNext);
+    ok = ok && (m_trampolineNext != nullptr);
+    if (ok) m_originalThread32Next = m_trampolineNext;
 
     if (ok) {
-        m_originalCreateToolhelp32Snapshot = createSnap;
-        m_originalThread32First = th32First;
-        m_originalThread32Next = th32Next;
         m_hooksInstalled = true;
-        m_logger->Trace(LOG_INFO, "ThreadHider: inline hooks installed (3 functions)");
+        m_logger->Trace(LOG_INFO, "ThreadHider: inline hooks installed (3 functions, trampolines at %p/%p/%p)",
+            m_trampolineSnapshot, m_trampolineFirst, m_trampolineNext);
     } else {
-        m_logger->Trace(LOG_WARNING, "ThreadHider: some hooks failed");
+        m_logger->Trace(LOG_WARNING, "ThreadHider: some hooks failed — rolling back");
+        if (m_trampolineSnapshot) RemoveTrampolineHook(createSnap, m_origBytesSnapshot, m_trampolineSnapshot);
+        if (m_trampolineFirst)   RemoveTrampolineHook(th32First,  m_origBytesFirst,   m_trampolineFirst);
+        if (m_trampolineNext)    RemoveTrampolineHook(th32Next,   m_origBytesNext,    m_trampolineNext);
+        m_trampolineSnapshot = m_trampolineFirst = m_trampolineNext = nullptr;
+        g_threadHiderInstance = nullptr;
     }
 
     return ok;
@@ -267,11 +311,12 @@ bool ThreadHider::RemoveHooks()
         void* th32First  = GetProcAddress(hKernel32, "Thread32First");
         void* th32Next   = GetProcAddress(hKernel32, "Thread32Next");
 
-        if (createSnap) Remove12ByteHook(createSnap, m_origBytesSnapshot);
-        if (th32First)  Remove12ByteHook(th32First,  m_origBytesFirst);
-        if (th32Next)   Remove12ByteHook(th32Next,   m_origBytesNext);
+        if (createSnap) RemoveTrampolineHook(createSnap, m_origBytesSnapshot, m_trampolineSnapshot);
+        if (th32First)  RemoveTrampolineHook(th32First,  m_origBytesFirst,   m_trampolineFirst);
+        if (th32Next)   RemoveTrampolineHook(th32Next,   m_origBytesNext,    m_trampolineNext);
     }
 
+    m_trampolineSnapshot = m_trampolineFirst = m_trampolineNext = nullptr;
     g_threadHiderInstance = nullptr;
     m_hooksInstalled = false;
     m_logger->Trace(LOG_INFO, "ThreadHider: hooks removed");
