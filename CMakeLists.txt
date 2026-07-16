@@ -48,6 +48,7 @@ set(LAUNCHER_SOURCES
     src/launcher/Main.cpp
     src/launcher/ConfigParser.cpp
     src/launcher/ProcessUtils.cpp
+    src/launcher/SteamGameDetector.cpp
     src/launcher/app.manifest
 )
 if(NOT SYMBIOTE_NO_WHP)
