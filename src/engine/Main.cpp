@@ -96,80 +96,9 @@ static HANDLE g_engineActiveEvent = nullptr;
 
 CaptureLogger* g_captureLogger = nullptr;
 
-// Ghost Sandbox: original game entry point (saved before trampoline)
+// Ghost Sandbox: original entry point (saved before trampoline)
 static uint64_t g_originalEntryRip = 0;
 static bool g_guestPageTableBuilt = false;
-
-static void CleanupDenuvoState()
-{
-    // Clean up common Denuvo persistence vectors that may store blacklist state
-    wchar_t gameDir[MAX_PATH];
-    GetModuleFileNameW(NULL, gameDir, MAX_PATH);
-    wchar_t* lastSlash = wcsrchr(gameDir, L'\\');
-    if (lastSlash) *lastSlash = 0;
-
-    // Denuvo cache files in game directory
-    const wchar_t* patterns[] = {
-        L"\\Denuvo*.bin", L"\\Denuvo*.dat", L"\\Denuvo*.lic",
-        L"\\*.dvl", L"\\Steam*_Denuvo*"
-    };
-    for (auto pattern : patterns) {
-        wchar_t search[MAX_PATH];
-        swprintf_s(search, L"%s%s", gameDir, pattern);
-        WIN32_FIND_DATAW fd;
-        HANDLE hFind = FindFirstFileW(search, &fd);
-        if (hFind != INVALID_HANDLE_VALUE) {
-            do {
-                wchar_t fullPath[MAX_PATH];
-                swprintf_s(fullPath, L"%s\\%s", gameDir, fd.cFileName);
-                DeleteFileW(fullPath);
-            } while (FindNextFileW(hFind, &fd));
-            FindClose(hFind);
-        }
-    }
-
-    // Check %appdata% for Denuvo state
-    wchar_t appData[MAX_PATH];
-    if (GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH)) {
-        wchar_t denuvoDir[MAX_PATH];
-        swprintf_s(denuvoDir, L"%s\\Denuvo", appData);
-        DWORD attr = GetFileAttributesW(denuvoDir);
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            // Delete known Denuvo state files
-            WIN32_FIND_DATAW fd;
-            wchar_t search[MAX_PATH];
-            swprintf_s(search, L"%s\\*", denuvoDir);
-            HANDLE hFind = FindFirstFileW(search, &fd);
-            if (hFind != INVALID_HANDLE_VALUE) {
-                do {
-                    if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-                    wchar_t fullPath[MAX_PATH];
-                    swprintf_s(fullPath, L"%s\\%s", denuvoDir, fd.cFileName);
-                    DeleteFileW(fullPath);
-                } while (FindNextFileW(hFind, &fd));
-                FindClose(hFind);
-            }
-        }
-    }
-
-    // Clear temp directory files matching Denuvo patterns
-    wchar_t tempDir[MAX_PATH];
-    if (GetEnvironmentVariableW(L"TEMP", tempDir, MAX_PATH)) {
-        wchar_t search[MAX_PATH];
-        swprintf_s(search, L"%s\\dns*", tempDir);
-        WIN32_FIND_DATAW fd;
-        HANDLE hFind = FindFirstFileW(search, &fd);
-        if (hFind != INVALID_HANDLE_VALUE) {
-            do {
-                if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-                wchar_t fullPath[MAX_PATH];
-                swprintf_s(fullPath, L"%s\\%s", tempDir, fd.cFileName);
-                DeleteFileW(fullPath);
-            } while (FindNextFileW(hFind, &fd));
-            FindClose(hFind);
-        }
-    }
-}
 
 // PEB restoration thread: background monitor that restores anti-debug fields
 static void PebRestoreLoop()
@@ -194,7 +123,6 @@ static void CleanupAll()
         }
     }
 
-    CleanupDenuvoState();
     delete g_vcpuManager; g_vcpuManager = nullptr;
     delete g_minimalKernel; g_minimalKernel = nullptr;
     delete g_kuserSync; g_kuserSync = nullptr;
@@ -583,7 +511,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_eptExecHook = new EptExecHook(&g_logger, g_partition);
         g_vcpuManager->SetEptExecHook(g_eptExecHook);
 
-        // P0.3: Denuvo threaded integrity watchdog detection via EPT exec hooks
+        // P0.3: Threaded integrity watchdog detection via EPT exec hooks
         bool watchdogEnabled = configParser.GetBool("watchdog", "enabled", true);
         if (watchdogEnabled) {
             g_watchdogTracker = new WatchdogTracker(&g_logger, g_partition, g_eptExecHook);
@@ -650,7 +578,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
     bool spoofEat = configParser.GetBool("eat", "enabled", false);
 
-    // IAT hooks for proxy DLLs (always in capture mode to intercept game calls)
+    // IAT hooks for proxy DLLs (always in capture mode to intercept target calls)
     if (captureMode || spoofProcess || spoofRegistry || spoofFile || spoofTiming) {
         SetupIatHooks(spoofEat);
     } else {
@@ -842,7 +770,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
     }
 
-    // Initialize EPT page protection (hide engine/patch pages from Denuvo)
+    // Initialize EPT page protection (hide engine/patch pages from integrity verification)
     if (g_partition) {
         g_eptPageProtect = new EptPageProtect(&g_logger, g_partition);
         if (g_eptPageProtect && g_eptPageProtect->Initialize()) {
@@ -900,9 +828,9 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
         if (g_guestPageTableBuilt) {
             // Ghost Sandbox mode: engine thread does NOT enter VCPU.
-            // The game thread enters VCPU via BootstrapFromContext when
+            // The target thread enters VCPU via BootstrapFromContext when
             // it hits the entry point trampoline (Engine_VcpuEntry).
-            g_logger.Trace(LOG_INFO, "Ghost Sandbox mode: engine waiting (game thread enters VCPU)");
+            g_logger.Trace(LOG_INFO, "Ghost Sandbox mode: engine waiting (target thread enters VCPU)");
             // Engine thread stays alive but idle
             while (g_vcpuManager) {
                 Sleep(1000);
@@ -926,7 +854,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 // ─── Ghost Sandbox: Entry point interception ──────────────────────────
 
 // Called by launcher AFTER Engine_Init, BEFORE ResumeThread.
-// Modifies the game's PE entry point to jump to Engine_VcpuEntry,
+// Modifies the PE entry point to jump to Engine_VcpuEntry,
 // which captures the thread context and enters the WHP VCPU.
 ENGINE_DLL_EXPORT void Engine_InterceptEntryPoint()
 {
@@ -961,12 +889,12 @@ ENGINE_DLL_EXPORT void Engine_InterceptEntryPoint()
     g_logger.Trace(LOG_INFO, "InterceptEntryPoint: trampoline written at %p → Engine_VcpuEntry", entryPoint);
 }
 
-// Called when the game's main thread starts execution.
+// Called when the target's main thread starts execution.
 // The entry point trampoline jumps here. We capture the current thread
 // context and enter the WHP VCPU with identity-mapped guest page tables.
 ENGINE_DLL_EXPORT void Engine_VcpuEntry()
 {
-    g_logger.Trace(LOG_INFO, "Engine_VcpuEntry: game thread entered VCPU bootstrap");
+    g_logger.Trace(LOG_INFO, "Engine_VcpuEntry: target thread entered VCPU bootstrap");
 
     // Capture thread context (all GP registers via intrinsics)
     ThreadContext ctx;
@@ -1037,7 +965,7 @@ ENGINE_DLL_EXPORT void Engine_VcpuEntry()
     // Enter the WHP VCPU — this function blocks until the VCPU stops
     g_vcpuManager->BootstrapFromContext(0, ctx, g_partition->GetPageTable());
 
-    g_logger.Trace(LOG_INFO, "VCPU entry: VCPU stopped, game thread exiting");
+    g_logger.Trace(LOG_INFO, "VCPU entry: VCPU stopped, target thread exiting");
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)

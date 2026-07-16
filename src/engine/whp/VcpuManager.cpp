@@ -305,7 +305,7 @@ void VcpuManager::SetContextRegisters(uint32_t vcpuIndex, const ThreadContext& c
 
 uint32_t VcpuManager::AllocateVcpuIndex()
 {
-    // VCPU 0 is reserved for main game thread
+    // VCPU 0 is reserved for main target thread
     for (uint32_t i = 1; i < MAX_VCPU; i++) {
         if (!m_vcpus[i].running && m_vcpus[i].hostThread == nullptr) {
             return i;
@@ -528,7 +528,7 @@ bool VcpuManager::HandleCreateThreadSyscall(uint32_t vcpuIndex, uint32_t syscall
 bool VcpuManager::HandleTerminateThreadSyscall(uint32_t vcpuIndex, uint64_t* args, uint64_t& result)
 {
     (void)vcpuIndex; (void)args;
-    // Only intercept for child VCPUs (not VCPU 0 — main game thread)
+    // Only intercept for child VCPUs (not VCPU 0 — main target thread)
     uint32_t currentVcpu = t_currentVcpuIndex;
 
     if (currentVcpu != UINT32_MAX && currentVcpu > 0 && currentVcpu < MAX_VCPU

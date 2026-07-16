@@ -589,7 +589,7 @@ bool SyscallDispatch::HandleNtOpenKey(uint64_t* args, uint64_t& result)
 }
 
 // ─── P1.8: NtQueryVirtualMemory — spoof PE header reads from ntdll ─────
-// Denuvo reads its own .text section via NtQueryVirtualMemory with
+// Integrity check reads its own .text section via NtQueryVirtualMemory with
 // MemoryBasicInformation (0x00) to detect PE header modifications.
 // We intercept and return clean PAGE_EXECUTE_READ for .text pages.
 bool SyscallDispatch::HandleNtQueryVirtualMemory(uint64_t* args, uint64_t& result)

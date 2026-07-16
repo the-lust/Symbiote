@@ -373,11 +373,11 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
     uint64_t newRip = rip + pe.instrLen;
     CONTEXT* ctx = ep->ContextRecord;
 
-    // Stack-spoiling defense: Denuvo stores critical values in high unused
+    // Stack-spoiling defense: integrity check stores critical values in high unused
     // stack space before CPUID/SYSCALL/RDMSR operations, then causes an
     // exception. Windows writes EXCEPTION_RECORD + CONTEXT to the thread
     // stack, overwriting those values. Save and restore the top of stack
-    // around our handler to preserve Denuvo's data.
+    // around our handler to preserve integrity check data.
     uint64_t savedStackBackup[64];
     uint64_t rsp = ctx->Rsp;
     memcpy(savedStackBackup, (void*)rsp, sizeof(savedStackBackup));
@@ -441,7 +441,7 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
             break;
     }
 
-    // Restore stack top to prevent Denuvo's stack-spoiling detection
+    // Restore stack top to prevent stack-spoiling detection
     memcpy((void*)rsp, savedStackBackup, sizeof(savedStackBackup));
 
     ctx->Rip = newRip;
@@ -544,7 +544,7 @@ bool SystemSpoofer::HandleEptSyscallIntercept(uint64_t rip, void* context)
 
     // The VcpuManager will handle RAX-based syscall dispatch;
     // this hook notifies that a raw SYSCALL instruction was executed
-    // from an EPT-no-exec page (detecting direct syscall bypass)
+    // from an EPT-no-exec page (detecting direct syscall passthrough)
     return true;
 }
 

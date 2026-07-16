@@ -7,7 +7,6 @@
 #include "ConfigParser.h"
 #include "WhpDetection.h"
 #include "ProcessUtils.h"
-#include "SteamGameDetector.h"
 
 #pragma comment(linker, "/SUBSYSTEM:CONSOLE")
 
@@ -43,8 +42,6 @@ int main(int, char**)
     std::wstring targetArgs;
     bool useExplorer = false;
     bool debugMode = false;
-    bool listSteam = false;
-    std::wstring steamGameName;
 
     int wargc = 0;
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
@@ -63,10 +60,6 @@ int main(int, char**)
                     targetArgs += L"\"" + std::wstring(wargv[j]) + L"\"";
                 }
                 i = wargc;
-            } else if (arg == L"--steam" || arg == L"-s") {
-                listSteam = true;
-            } else if (arg == L"--steam-launch" && i + 1 < wargc) {
-                steamGameName = wargv[++i];
             } else if (arg.find(L"--config") == 0 || arg.find(L"config=") == 0) {
                 i++;
             } else if (arg[0] != L'-') {
@@ -74,53 +67,6 @@ int main(int, char**)
             }
         }
         LocalFree(wargv);
-    }
-
-    // Handle Steam mode
-    if (listSteam || !steamGameName.empty()) {
-        SteamGameDetector detector;
-        std::wstring steamRoot = detector.FindSteamRoot();
-        if (steamRoot.empty()) {
-            MessageBoxW(NULL, L"Steam not found on this system", L"Steam Error", MB_ICONERROR);
-            return 1;
-        }
-
-        if (listSteam) {
-            auto games = detector.EnumerateInstalledGames();
-            std::wstring list = detector.FormatGameList(games);
-            if (list.empty()) list = L"No Steam games found.";
-            std::wstring msg = L"Installed Steam Games:\n\n" + list;
-            MessageBoxW(NULL, msg.c_str(), L"Steam Library", MB_ICONINFORMATION);
-            return 0;
-        }
-
-        if (!steamGameName.empty()) {
-            SteamGame game = detector.FindGameByName(steamGameName);
-            if (game.fullPath.empty()) {
-                std::wstring msg = L"Steam game not found: " + steamGameName;
-                MessageBoxW(NULL, msg.c_str(), L"Steam Error", MB_ICONERROR);
-                return 1;
-            }
-
-            targetExe = detector.FindBestExecutable(game.fullPath, game.name);
-            if (targetExe.empty()) {
-                std::wstring msg = L"No executable found for: " + game.name;
-                MessageBoxW(NULL, msg.c_str(), L"Steam Error", MB_ICONERROR);
-                return 1;
-            }
-
-            targetExe = game.fullPath + L"\\" + targetExe;
-
-            // Set SteamAppId for Steamworks compatibility
-            SetEnvironmentVariableW(L"SteamAppId", game.appId.c_str());
-
-            {
-                char nameA[256]; char appIdA[32];
-                WideCharToMultiByte(CP_UTF8, 0, game.name.c_str(), -1, nameA, sizeof(nameA), NULL, NULL);
-                WideCharToMultiByte(CP_UTF8, 0, game.appId.c_str(), -1, appIdA, sizeof(appIdA), NULL, NULL);
-                LogMessage(std::string("Steam launch: ") + nameA + " (" + appIdA + ")\n");
-            }
-        }
     }
 
     if (targetExe.empty()) {
@@ -135,8 +81,7 @@ int main(int, char**)
                 L"   debug, -d                 Enable verbose debug logging\n"
                 L"   --target <exe>            Target executable path\n"
                 L"   --args <...>              Arguments passed to target\n"
-                L"   --steam, -s               List installed Steam games\n"
-                L"   --steam-launch <name>     Launch a Steam game by name\n"
+
                 L"   config=<path>             Path to config.ini (default: ./config/config.ini)",
                 L"Symbiote",
                 MB_ICONINFORMATION);

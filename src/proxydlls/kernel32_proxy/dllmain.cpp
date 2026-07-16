@@ -183,7 +183,7 @@ extern "C" HANDLE WINAPI Proxy_CreateRemoteThread(
     return real ? real(hProc, attr, stack, start, param, flags, tid) : nullptr;
 }
 
-// Hook GetProcAddress to catch dynamic lookups that bypass IAT patching.
+// Hook GetProcAddress to catch dynamic lookups that redirect IAT patching.
 // When caller looks up a function we proxy, return our proxy address instead.
 struct ProxyLookup {
     const char* dllName;

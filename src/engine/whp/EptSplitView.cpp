@@ -225,7 +225,7 @@ bool EptSplitView::ProtectMemoryRange(uint64_t gpa, uint64_t size)
     if (!m_initialized || !m_partition) return false;
 
     // Protect a memory range by mapping it as read-only (no write)
-    // Denuvo's memory integrity checks write to pages to verify them;
+    // Anti-tamper memory integrity checks write to pages to verify them;
     // blocking writes prevents the check from completing
     WHV_MAP_GPA_RANGE_FLAGS flags = WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute;
 

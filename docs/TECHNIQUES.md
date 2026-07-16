@@ -129,7 +129,7 @@ Protection systems read registry keys that expose processor name, BIOS version, 
 
 ### How Symbiote spoofs it
 1. **advapi32_proxy**: Intercepts `RegOpenKeyExW`, `RegQueryValueExW`, `RegCloseKey`. For known sensitive keys (processor name, hardware description), returns spoofed values.
-2. **ntdll_proxy**: Intercepts low-level `NtOpenKey`, `NtQueryValueKey` for targets that bypass `advapi32`.
+2. **ntdll_proxy**: Intercepts low-level `NtOpenKey`, `NtQueryValueKey` for targets that call ntdll directly (redirecting around `advapi32`).
 3. **kernel32_proxy**: `GetComputerNameW`, `CreateFileW` for volume queries.
 
 ---
@@ -260,7 +260,7 @@ In degraded mode, all vectors remain spoofable, but VEH patching is less stealth
 ## 12. Memory Scanner Canary
 
 ### What it detects
-- **Memory scanning**: Anti-cheat or anti-debugging code that walks memory regions looking for hooked pages, guard pages, or other protection artifacts.
+- **Memory scanning**: Integrity verifier or anti-debugging code that walks memory regions looking for hooked pages, guard pages, or other protection artifacts.
 - **Handshake page access**: When the target (or an injected third party) accesses the canary page, the VEH callback fires and logs the access as a potential scan event.
 
 ### How Symbiote implements it

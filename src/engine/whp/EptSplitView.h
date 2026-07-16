@@ -38,11 +38,11 @@ public:
     // Optimized view application: skip redundant maps, batch contiguous ranges
     bool ApplyViewForVcpu(uint32_t vpIndex);
 
-    // Direct memory access (bypass view) for reading hidden pages without switching
+    // Direct memory access (passthrough view) for reading hidden pages without switching
     bool ReadHiddenMemory(uint64_t gpa, void* buffer, uint64_t size);
     bool WriteHiddenMemory(uint64_t gpa, const void* buffer, uint64_t size);
 
-    // Hide specific memory regions from Denuvo scanning (EPT-based memory protection)
+    // Hide specific memory regions from integrity verification scanning (EPT-based memory protection)
     bool ProtectMemoryRange(uint64_t gpa, uint64_t size);
 
     // Check if a GPA is currently managed by split-view
