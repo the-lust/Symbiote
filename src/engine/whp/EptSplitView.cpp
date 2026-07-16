@@ -1,5 +1,6 @@
 #include "EptSplitView.h"
 #include "Partition.h"
+#include <algorithm>
 
 EptSplitView::EptSplitView(Logger* logger, Partition* partition)
     : m_logger(logger), m_partition(partition), m_initialized(false), m_currentGeneration(0)
@@ -87,7 +88,21 @@ bool EptSplitView::ApplyViewForVcpu(uint32_t vpIndex)
     auto viewIt = m_vcpuViews.find(vpIndex);
     bool hasView = (viewIt != m_vcpuViews.end());
 
-    // Track which GPAs actually changed to minimize WHP calls
+    // Skip if view already applied at current generation
+    uint64_t gen = hasView ? viewIt->second.lastViewGeneration : 0;
+    if (gen == m_currentGeneration) {
+        return true;
+    }
+
+    // Collect all pages that need remapping with their target visibility
+    struct Range {
+        uint64_t gpa;
+        uint64_t size;
+        void* targetVa;
+        bool visible;
+    };
+    std::vector<Range> ranges;
+
     for (const auto& page : m_pages) {
         if (page.size == 0 || page.visibleVa == nullptr || page.hiddenVa == nullptr) {
             continue;
@@ -101,28 +116,68 @@ bool EptSplitView::ApplyViewForVcpu(uint32_t vpIndex)
             }
         }
 
-        // Check if we need to actually change the mapping
-        // Only remap if the view generation changed
-        uint64_t gen = hasView ? viewIt->second.lastViewGeneration : 0;
-        if (gen == m_currentGeneration) {
-            continue; // View already applied
-        }
-
         void* targetVa = visible ? page.visibleVa : page.hiddenVa;
-
-        if (!UnmapView(page.gpa, page.size)) {
-            m_logger->Trace(LOG_ERROR, "SplitView unmap failed: VCPU=%u GPA=0x%llX", vpIndex, page.gpa);
-            return false;
-        }
-        if (!MapView(page.gpa, page.size, targetVa)) {
-            m_logger->Trace(LOG_ERROR, "SplitView map failed: VCPU=%u GPA=0x%llX %s",
-                vpIndex, page.gpa, visible ? "visible" : "hidden");
-            return false;
-        }
-
-        m_logger->Trace(LOG_WHP, "SplitView applied: VCPU=%u GPA=0x%llX -> %s (VA=%p)",
-            vpIndex, page.gpa, visible ? "visible" : "hidden", targetVa);
+        ranges.push_back({page.gpa, page.size, targetVa, visible});
     }
+
+    if (ranges.empty()) return true;
+
+    // Sort by GPA to identify contiguous ranges
+    std::sort(ranges.begin(), ranges.end(),
+        [](const Range& a, const Range& b) { return a.gpa < b.gpa; });
+
+    // Merge contiguous ranges with same visibility into larger blocks
+    std::vector<Range> merged;
+    merged.reserve(ranges.size());
+    Range current = ranges[0];
+
+    for (size_t i = 1; i < ranges.size(); i++) {
+        const Range& next = ranges[i];
+        uint64_t currentEnd = current.gpa + current.size;
+        bool contiguous = (next.gpa == currentEnd);
+        bool sameVisibility = (next.visible == current.visible);
+
+        if (contiguous && sameVisibility) {
+            // Extend current range
+            current.size += next.size;
+        } else {
+            merged.push_back(current);
+            current = next;
+        }
+    }
+    merged.push_back(current);
+
+    // Apply each merged range with optimal page size (2MB for large blocks)
+    int appliedCount = 0;
+    for (const auto& range : merged) {
+        uint64_t rangeGpa = range.gpa;
+        uint64_t rangeSize = range.size;
+        uint8_t* rangeVa = (uint8_t*)range.targetVa;
+
+        // Unmap existing mapping
+        if (!m_partition->UnmapGpaRange(rangeGpa, rangeSize)) {
+            m_logger->Trace(LOG_ERROR, "SplitView unmap failed: VCPU=%u GPA=0x%llX size=%llu",
+                vpIndex, rangeGpa, rangeSize);
+            return false;
+        }
+
+        // Map with read/write access (WHP handles large pages internally)
+        WHV_MAP_GPA_RANGE_FLAGS flags = WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite;
+
+        if (!m_partition->MapGpaRange(rangeVa, rangeGpa, rangeSize, flags)) {
+            m_logger->Trace(LOG_ERROR, "SplitView map failed: VCPU=%u GPA=0x%llX size=%llu flags=0x%X",
+                vpIndex, rangeGpa, rangeSize, (uint32_t)flags);
+            return false;
+        }
+
+        m_logger->Trace(LOG_WHP, "SplitView applied: VCPU=%u GPA=0x%llX size=%llu -> %s (VA=%p)",
+            vpIndex, rangeGpa, rangeSize,
+            range.visible ? "visible" : "hidden", rangeVa);
+        appliedCount++;
+    }
+
+    m_logger->Trace(LOG_DEBUG, "SplitView: VCPU=%u %d pages merged into %d range(s)",
+        vpIndex, (int)ranges.size(), appliedCount);
 
     // Update generation to avoid redundant remaps
     if (hasView) {

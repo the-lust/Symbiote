@@ -1245,7 +1245,7 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
             if (isWrite) {
                 uint64_t value = msr.Rax | (msr.Rdx << 32);
                 if (m_msrHandler && !m_msrHandler->HandleMsrWrite(nullptr, msrNumber, value)) {
-                    m_logger->Trace(LOG_WARNING, "VCPU %u: WRMSR 0x%X unhandled, skiping", vcpuIndex, msrNumber);
+                    m_logger->Trace(LOG_WARNING, "VCPU %u: WRMSR 0x%X unhandled, skipping", vcpuIndex, msrNumber);
                 }
             } else {
                 uint64_t value = 0;

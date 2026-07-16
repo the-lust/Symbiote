@@ -410,6 +410,10 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 | Environment consistency cross-referencing (8 checks) | ConsistencyVerifier CPUID/KUSER/registry/WMI correlation | Done (Phase B) |
 | EPT-based SGDT/SIDT/SLDT/STR/XGETBV emulation | SystemSpoofer HandleEptSysInstrIntercept (no INT3) | Done (Phase B) |
 | EPT-based RDMSR per-MSR spoofed values | SystemSpoofer HandleEptRdmsrIntercept (TSC, APIC, MC banks) | Done (Phase B) |
+| Auto-detecting host TSC frequency | HwDetect 3-tier detection wired to TimingEmu + RdtscHandler | Done (Phase B) |
+| Timed PEB restoration thread | Background 500ms loop monitors BeingDebugged/NtGlobalFlag | Done (Phase B) |
+| Optimized EPT view swapping | EptSplitView batches contiguous ranges, 1 WHvMapGpaRange per range | Done (Phase B) |
+| EPT syscall/RDMSR instruction dispatch | VcpuManager MemoryAccess handler routes to SystemSpoofer (0F05/0F32/0F01) | Done (Phase B) |
 
 ---
 
@@ -427,6 +431,9 @@ Default: `config/config.ini` (relative to launcher binary). Config profiles spec
 [watchdog]           enabled = true         ; Denuvo watchdog detection (WatchdogTracker)
 [ept_split_view]     enabled = true         ; EPT split-view (process cloaking)
 [forwarding]         enabled = true      ; Syscall forwarding (Ghost Sandbox)
+[stack_spoofer]      enabled = true      ; StackSpoofer ret-sled call-stack spoofing
+[indirect_syscall]   enabled = false     ; IndirectSyscall EPT ntdll syscall page hook (experimental)
+[snapshot]           enabled = false     ; Snapshot VCPU save/restore (manual API)
 [cpuid]              status = 0          ; CPUID spoofing (0=disabled)
 [rdtsc]              status = 0          ; RDTSC spoofing
 [msr]                status = 1          ; MSR spoofing

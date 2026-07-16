@@ -22,6 +22,10 @@ RdtscHandler::RdtscHandler(Logger* logger, IKernelBackend* backend)
 {
     if (m_backend) {
         m_tscOffset = m_backend->GetTscOffset();
+        uint64_t backendFreq = m_backend->GetTscFrequency();
+        if (backendFreq > 100000000 && backendFreq < 10000000000ULL) {
+            m_tscFrequency = backendFreq;
+        }
     }
 }
 

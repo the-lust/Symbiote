@@ -48,9 +48,6 @@ private:
     bool HandleNtQuerySystemInformation(uint64_t* args, uint64_t& result);
     bool HandleNtQueryInformationProcess(uint64_t* args, uint64_t& result);
     bool HandleNtOpenKey(uint64_t* args, uint64_t& result);
-    bool HandleNtQueryValueKey(uint64_t* args, uint64_t& result);
-    bool HandleNtClose(uint64_t* args, uint64_t& result);
-    bool HandleNtCreateFile(uint64_t* args, uint64_t& result);
     bool HandleNtQueryVirtualMemory(uint64_t* args, uint64_t& result); // P1.8
     bool HandleNtQuerySystemTime(uint64_t* args, uint64_t& result); // P1.5
 };

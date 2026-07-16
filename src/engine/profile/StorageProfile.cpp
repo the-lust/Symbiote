@@ -5,7 +5,7 @@ StorageProfile::StorageProfile()
     : m_totalSize(512ULL * 1024 * 1024 * 1024), // 512 GB
       m_freeSize(256ULL * 1024 * 1024 * 1024),
       m_model("Samsung SSD 980 PRO 512GB"),
-      m_serial("SERIAL_PLACEHOLDER")
+      m_serial("S4P2NJ0T123456")
 {
 }
 

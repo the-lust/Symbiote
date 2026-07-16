@@ -2,7 +2,7 @@
 #include <windows.h>
 #include "Logger.h"
 
-// Fallthrough: tail-call the real system fucntion for non-sensitive API calls
+// Fallthrough: tail-call the real system function for non-sensitive API calls
 
 class Fallthrough {
 public:
