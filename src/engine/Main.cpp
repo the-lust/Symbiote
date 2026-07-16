@@ -26,6 +26,8 @@
 #include "whp/WatchdogTracker.h"
 #include "whp/EptSplitView.h"
 #include "whp/GuestPageTable.h"
+#include "whp/AcpiTimerHandler.h"
+#include "emu/ThreadHider.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
 #include "kernel/MinimalKernel.h"
@@ -39,6 +41,8 @@
 
 static Logger g_logger;
 static TimingCoordinator g_timingCoordinator;
+static AcpiTimerHandler* g_acpiTimerHandler = nullptr;
+static ThreadHider* g_threadHider = nullptr;
 static Partition* g_partition = nullptr;
 static VcpuManager* g_vcpuManager = nullptr;
 static ExitDispatcher* g_exitDispatcher = nullptr;
@@ -174,6 +178,8 @@ static void CleanupAll()
     delete g_watchdogTracker; g_watchdogTracker = nullptr;
     delete g_eptSplitView; g_eptSplitView = nullptr;
     delete g_captureLogger; g_captureLogger = nullptr;
+    delete g_threadHider; g_threadHider = nullptr;
+    delete g_acpiTimerHandler; g_acpiTimerHandler = nullptr;
 }
 
 static wchar_t g_engineDir[MAX_PATH] = {0};
@@ -464,6 +470,9 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     g_minimalKernel = new MinimalKernel(&g_logger, g_kernelBackend);
     g_minimalKernel->Initialize();
     g_minimalKernel->LoadFromConfig(&configParser);
+    if (g_minimalKernel && g_minimalKernel->GetDeviceIoEmu()) {
+        g_minimalKernel->GetDeviceIoEmu()->Initialize();
+    }
     g_minimalKernel->BuildVirtualProcessList();
     SetSyscallHandler(MinimalKernel::DispatchThunk);
 
@@ -663,6 +672,18 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
     } else {
         g_logger.Trace(LOG_INFO, "SystemSpoofer disabled by config");
+    }
+
+    // Initialize ACPI PM timer / HPET spoofing
+    g_acpiTimerHandler = new AcpiTimerHandler(&g_logger);
+    if (g_acpiTimerHandler) {
+        g_acpiTimerHandler->Initialize();
+    }
+
+    // Initialize thread hider
+    g_threadHider = new ThreadHider(&g_logger);
+    if (g_threadHider) {
+        g_threadHider->Initialize();
     }
 
     // Signal launcher / target that hooks, patches, and shared KUSER are ready

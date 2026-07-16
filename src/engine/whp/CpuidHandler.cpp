@@ -299,3 +299,111 @@ void CpuidHandler::GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count,
     *count = idx;
     m_logger->Trace(LOG_WHP, "CpuidResultList populated: %d leaves (WHP exits only for unlisted leaves)", idx);
 }
+
+void CpuidHandler::GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount)
+{
+    int idx = 0;
+
+    auto add = [&](uint32_t leaf, uint32_t subleaf, uint32_t eax,
+                   uint32_t ebx, uint32_t ecx, uint32_t edx) {
+        if (idx >= maxCount) return;
+        results[idx].Function = leaf;
+        results[idx].Reserved[0] = 0;
+        results[idx].Reserved[1] = 0;
+        results[idx].Reserved[2] = 0;
+        results[idx].Eax = eax;
+        results[idx].Ebx = ebx;
+        results[idx].Ecx = ecx;
+        results[idx].Edx = edx;
+        idx++;
+    };
+
+    // Enumerate standard leaves 0x00-0xFF
+    for (uint32_t leaf = 0; leaf <= 0xFF; leaf++) {
+        int cpuInfo[4] = {0};
+        __cpuidex(cpuInfo, leaf, 0);
+        uint32_t eax = (uint32_t)cpuInfo[0];
+        uint32_t ebx = (uint32_t)cpuInfo[1];
+        uint32_t ecx = (uint32_t)cpuInfo[2];
+        uint32_t edx = (uint32_t)cpuInfo[3];
+
+        // Apply feature masking to hide virtualization hints
+        if (leaf == 1) {
+            ecx &= ~CPUID_ECX_HYPERVISOR_BIT;
+            ecx &= ~CPUID_ECX_SMX_BIT;
+        }
+        ApplyFeatureMask(leaf, 0, m_cpuVendor, &eax, &ebx, &ecx, &edx);
+
+        // Skip hypervisor leaves (0x40000000 range) — handled separately
+        add(leaf, 0, eax, ebx, ecx, edx);
+
+        // Handle subleaves for cache/topology (leaf 4, leaf B, leaf D, leaf 14h)
+        if (leaf == 4) {
+            for (uint32_t sub = 1; sub <= 3; sub++) {
+                __cpuidex(cpuInfo, leaf, sub);
+                uint32_t seax = (uint32_t)cpuInfo[0];
+                uint32_t sebx = (uint32_t)cpuInfo[1];
+                uint32_t secx = (uint32_t)cpuInfo[2];
+                uint32_t sedx = (uint32_t)cpuInfo[3];
+                ApplyFeatureMask(leaf, sub, m_cpuVendor, &seax, &sebx, &secx, &sedx);
+                add(leaf, sub, seax, sebx, secx, sedx);
+            }
+        }
+        if (leaf == 7) {
+            for (uint32_t sub = 1; sub <= 2; sub++) {
+                __cpuidex(cpuInfo, leaf, sub);
+                uint32_t seax = (uint32_t)cpuInfo[0];
+                uint32_t sebx = (uint32_t)cpuInfo[1];
+                uint32_t secx = (uint32_t)cpuInfo[2];
+                uint32_t sedx = (uint32_t)cpuInfo[3];
+                ApplyFeatureMask(leaf, sub, m_cpuVendor, &seax, &sebx, &secx, &sedx);
+                add(leaf, sub, seax, sebx, secx, sedx);
+            }
+        }
+        if (leaf == 0xB) {
+            for (uint32_t sub = 1; sub <= 2; sub++) {
+                __cpuidex(cpuInfo, leaf, sub);
+                add(leaf, sub, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1],
+                    (uint32_t)cpuInfo[2], (uint32_t)cpuInfo[3]);
+            }
+        }
+        if (leaf == 0xD) {
+            for (uint32_t sub = 1; sub <= 2; sub++) {
+                __cpuidex(cpuInfo, leaf, sub);
+                add(leaf, sub, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1],
+                    (uint32_t)cpuInfo[2], (uint32_t)cpuInfo[3]);
+            }
+        }
+    }
+
+    // Extended leaves 0x80000000-0x800000FF
+    for (uint32_t leaf = 0x80000000; leaf <= 0x800000FF; leaf++) {
+        int cpuInfo[4] = {0};
+        __cpuidex(cpuInfo, leaf, 0);
+        uint32_t eax = (uint32_t)cpuInfo[0];
+        uint32_t ebx = (uint32_t)cpuInfo[1];
+        uint32_t ecx = (uint32_t)cpuInfo[2];
+        uint32_t edx = (uint32_t)cpuInfo[3];
+
+        if (leaf >= 0x80000002 && leaf <= 0x80000004) {
+            // Brand string — use our spoofed brand
+            uint64_t ra, rb, rc, rd;
+            if (HandleBrandStringLeaf(leaf, &ra, &rb, &rc, &rd)) {
+                eax = (uint32_t)ra; ebx = (uint32_t)rb;
+                ecx = (uint32_t)rc; edx = (uint32_t)rd;
+            }
+        } else {
+            ApplyFeatureMask(leaf, 0, m_cpuVendor, &eax, &ebx, &ecx, &edx);
+        }
+
+        add(leaf, 0, eax, ebx, ecx, edx);
+    }
+
+    // Hypervisor leaves 0x40000000-0x400000FF — all zeros
+    for (uint32_t leaf = 0x40000000; leaf <= 0x400000FF; leaf++) {
+        add(leaf, 0, 0, 0, 0, 0);
+    }
+
+    *count = idx;
+    m_logger->Trace(LOG_WHP, "Comprehensive CpuidResultList populated: %d leaves (all leaves pre-cached, no VM-exits)", idx);
+}

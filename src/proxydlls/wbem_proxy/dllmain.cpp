@@ -89,6 +89,90 @@ struct SpoofedDiskDrive {
 };
 
 // ============================================================================
+// Spoofed Win32_VideoController props (NVIDIA GeForce RTX 3080)
+// ============================================================================
+struct SpoofedVideoController {
+    static const wchar_t* Name() { return L"NVIDIA GeForce RTX 3080"; }
+    static const wchar_t* Caption() { return L"NVIDIA GeForce RTX 3080"; }
+    static const wchar_t* Description() { return L"NVIDIA GeForce RTX 3080"; }
+    static const wchar_t* AdapterCompatibility() { return L"NVIDIA"; }
+    static const wchar_t* DriverVersion() { return L"31.0.15.3742"; }
+    static const wchar_t* PNPDeviceID() { return L"PCI\\VEN_10DE&DEV_2206&SUBSYS_38811462&REV_A1"; }
+    static uint32_t AdapterRAM() { return 10737418240ULL; } // 10GB
+    static uint32_t CurrentHorizontalResolution() { return 2560; }
+    static uint32_t CurrentVerticalResolution() { return 1440; }
+    static uint32_t CurrentRefreshRate() { return 144; }
+    static uint32_t CurrentBitsPerPixel() { return 32; }
+    static uint32_t VideoMemoryType() { return 2; } // DDR6
+};
+
+// ============================================================================
+// Spoofed Win32_NetworkAdapter props (hide VM MAC prefixes)
+// ============================================================================
+struct SpoofedNetworkAdapter {
+    static const wchar_t* Name() { return L"Intel(R) Ethernet Connection I225-V"; }
+    static const wchar_t* Manufacturer() { return L"Intel Corporation"; }
+    static const wchar_t* MACAddress() { return L"B8:2A:72:C9:38:7E"; } // Dell OUI
+    static const wchar_t* AdapterType() { return L"Ethernet 802.3"; }
+    static uint64_t Speed() { return 1000000000ULL; } // 1 Gbps
+    static bool PhysicalAdapter() { return true; }
+};
+
+// ============================================================================
+// Spoofed Win32_PhysicalMemory props
+// ============================================================================
+struct SpoofedPhysicalMemory {
+    static const wchar_t* BankLabel() { return L"BANK 0"; }
+    static const wchar_t* Manufacturer() { return L"Kingston"; }
+    static const wchar_t* PartNumber() { return L"KVR26N19D8/16"; }
+    static const wchar_t* SerialNumber() { return L"2C2C8D1A"; }
+    static uint64_t Capacity() { return 17179869184ULL; } // 16GB
+    static uint32_t Speed() { return 2666; }
+    static uint32_t MemoryType() { return 26; } // DDR4
+    static uint32_t FormFactor() { return 8; } // DIMM
+};
+
+// ============================================================================
+// Spoofed Win32_USBController props
+// ============================================================================
+struct SpoofedUSBController {
+    static const wchar_t* Name() { return L"Intel(R) USB 3.1 eXtensible Host Controller - 1.10 (Microsoft)"; }
+    static const wchar_t* Manufacturer() { return L"Intel Corporation"; }
+    static const wchar_t* Caption() { return L"Intel(R) USB 3.1 eXtensible Host Controller - 1.10 (Microsoft)"; }
+    static const wchar_t* PNPDeviceID() { return L"PCI\\VEN_8086&DEV_43ED&SUBSYS_86941043&REV_11"; }
+};
+
+// ============================================================================
+// Spoofed Sensor classes (return non-empty to avoid VM detection)
+// ============================================================================
+struct SpoofedSensor {
+    static const wchar_t* Name() { return L"CPU Temperature Sensor"; }
+    static const wchar_t* Manufacturer() { return L"Intel Corporation"; }
+    static const wchar_t* SensorType() { return L"Temperature"; }
+    static bool Enabled() { return true; }
+};
+
+struct SpoofedTemperatureProbe {
+    static const wchar_t* Name() { return L"CPU Diode Temperature"; }
+    static const wchar_t* Manufacturer() { return L"Intel Corporation"; }
+    static uint32_t CurrentReading() { return 45; } // 45C
+    static uint32_t NormalMin() { return 30; }
+    static uint32_t NormalMax() { return 85; }
+};
+
+struct SpoofedFan {
+    static const wchar_t* Name() { return L"Chassis Fan"; }
+    static const wchar_t* Manufacturer() { return L"Dell Inc."; }
+    static uint64_t DesiredSpeed() { return 1200; } // RPM
+};
+
+struct SpoofedVoltageProbe {
+    static const wchar_t* Name() { return L"CPU Core Voltage"; }
+    static const wchar_t* Manufacturer() { return L"Intel Corporation"; }
+    static uint32_t CurrentReading() { return 1200; } // 1.2V
+};
+
+// ============================================================================
 // CSpoofWbemClassObject - wraps IWbemClassObject, spoofs Get() for WMI props
 // ============================================================================
 enum WmiClassType {
@@ -98,6 +182,14 @@ enum WmiClassType {
     WMI_CLASS_BASEBOARD,
     WMI_CLASS_BIOS,
     WMI_CLASS_DISK_DRIVE,
+    WMI_CLASS_VIDEO_CONTROLLER,
+    WMI_CLASS_NETWORK_ADAPTER,
+    WMI_CLASS_PHYSICAL_MEMORY,
+    WMI_CLASS_USB_CONTROLLER,
+    WMI_CLASS_SENSOR,
+    WMI_CLASS_TEMPERATURE_PROBE,
+    WMI_CLASS_FAN,
+    WMI_CLASS_VOLTAGE_PROBE,
 };
 
 class CSpoofWbemClassObject : public IWbemClassObject {
@@ -197,6 +289,66 @@ public:
         else if (wcscmp(wszName, L"TotalHeads") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedDiskDrive::TotalHeads(); }
         else if (wcscmp(wszName, L"TotalCylinders") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedDiskDrive::TotalCylinders(); }
         else if (wcscmp(wszName, L"Partitions") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedDiskDrive::Partitions(); }
+
+        // --- Win32_VideoController ---
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedVideoController::Name());
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"Caption") == 0) pVal->bstrVal = SysAllocString(SpoofedVideoController::Caption());
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"Description") == 0) pVal->bstrVal = SysAllocString(SpoofedVideoController::Description());
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"AdapterCompatibility") == 0) pVal->bstrVal = SysAllocString(SpoofedVideoController::AdapterCompatibility());
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"DriverVersion") == 0) pVal->bstrVal = SysAllocString(SpoofedVideoController::DriverVersion());
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"PNPDeviceID") == 0) pVal->bstrVal = SysAllocString(SpoofedVideoController::PNPDeviceID());
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"AdapterRAM") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedVideoController::AdapterRAM(); }
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"CurrentHorizontalResolution") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedVideoController::CurrentHorizontalResolution(); }
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"CurrentVerticalResolution") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedVideoController::CurrentVerticalResolution(); }
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"CurrentRefreshRate") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedVideoController::CurrentRefreshRate(); }
+        else if (m_classType == WMI_CLASS_VIDEO_CONTROLLER && wcscmp(wszName, L"CurrentBitsPerPixel") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedVideoController::CurrentBitsPerPixel(); }
+
+        // --- Win32_NetworkAdapter ---
+        else if (m_classType == WMI_CLASS_NETWORK_ADAPTER && wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedNetworkAdapter::Name());
+        else if (m_classType == WMI_CLASS_NETWORK_ADAPTER && wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedNetworkAdapter::Manufacturer());
+        else if (m_classType == WMI_CLASS_NETWORK_ADAPTER && wcscmp(wszName, L"MACAddress") == 0) pVal->bstrVal = SysAllocString(SpoofedNetworkAdapter::MACAddress());
+        else if (m_classType == WMI_CLASS_NETWORK_ADAPTER && wcscmp(wszName, L"AdapterType") == 0) pVal->bstrVal = SysAllocString(SpoofedNetworkAdapter::AdapterType());
+        else if (m_classType == WMI_CLASS_NETWORK_ADAPTER && wcscmp(wszName, L"Speed") == 0) { pVal->vt = VT_UI8; pVal->ullVal = SpoofedNetworkAdapter::Speed(); }
+        else if (m_classType == WMI_CLASS_NETWORK_ADAPTER && wcscmp(wszName, L"PhysicalAdapter") == 0) { pVal->vt = VT_BOOL; pVal->boolVal = SpoofedNetworkAdapter::PhysicalAdapter() ? VARIANT_TRUE : VARIANT_FALSE; }
+
+        // --- Win32_PhysicalMemory ---
+        else if (m_classType == WMI_CLASS_PHYSICAL_MEMORY && wcscmp(wszName, L"BankLabel") == 0) pVal->bstrVal = SysAllocString(SpoofedPhysicalMemory::BankLabel());
+        else if (m_classType == WMI_CLASS_PHYSICAL_MEMORY && wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedPhysicalMemory::Manufacturer());
+        else if (m_classType == WMI_CLASS_PHYSICAL_MEMORY && wcscmp(wszName, L"PartNumber") == 0) pVal->bstrVal = SysAllocString(SpoofedPhysicalMemory::PartNumber());
+        else if (m_classType == WMI_CLASS_PHYSICAL_MEMORY && wcscmp(wszName, L"SerialNumber") == 0) pVal->bstrVal = SysAllocString(SpoofedPhysicalMemory::SerialNumber());
+        else if (m_classType == WMI_CLASS_PHYSICAL_MEMORY && wcscmp(wszName, L"Capacity") == 0) { pVal->vt = VT_UI8; pVal->ullVal = SpoofedPhysicalMemory::Capacity(); }
+        else if (m_classType == WMI_CLASS_PHYSICAL_MEMORY && wcscmp(wszName, L"Speed") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedPhysicalMemory::Speed(); }
+        else if (m_classType == WMI_CLASS_PHYSICAL_MEMORY && wcscmp(wszName, L"MemoryType") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedPhysicalMemory::MemoryType(); }
+        else if (m_classType == WMI_CLASS_PHYSICAL_MEMORY && wcscmp(wszName, L"FormFactor") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedPhysicalMemory::FormFactor(); }
+
+        // --- Win32_USBController ---
+        else if (m_classType == WMI_CLASS_USB_CONTROLLER && wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedUSBController::Name());
+        else if (m_classType == WMI_CLASS_USB_CONTROLLER && wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedUSBController::Manufacturer());
+        else if (m_classType == WMI_CLASS_USB_CONTROLLER && wcscmp(wszName, L"Caption") == 0) pVal->bstrVal = SysAllocString(SpoofedUSBController::Caption());
+        else if (m_classType == WMI_CLASS_USB_CONTROLLER && wcscmp(wszName, L"PNPDeviceID") == 0) pVal->bstrVal = SysAllocString(SpoofedUSBController::PNPDeviceID());
+
+        // --- CIM_Sensor ---
+        else if (m_classType == WMI_CLASS_SENSOR && wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedSensor::Name());
+        else if (m_classType == WMI_CLASS_SENSOR && wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedSensor::Manufacturer());
+        else if (m_classType == WMI_CLASS_SENSOR && wcscmp(wszName, L"SensorType") == 0) pVal->bstrVal = SysAllocString(SpoofedSensor::SensorType());
+        else if (m_classType == WMI_CLASS_SENSOR && wcscmp(wszName, L"Enabled") == 0) { pVal->vt = VT_BOOL; pVal->boolVal = SpoofedSensor::Enabled() ? VARIANT_TRUE : VARIANT_FALSE; }
+
+        // --- Win32_TemperatureProbe ---
+        else if (m_classType == WMI_CLASS_TEMPERATURE_PROBE && wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedTemperatureProbe::Name());
+        else if (m_classType == WMI_CLASS_TEMPERATURE_PROBE && wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedTemperatureProbe::Manufacturer());
+        else if (m_classType == WMI_CLASS_TEMPERATURE_PROBE && wcscmp(wszName, L"CurrentReading") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedTemperatureProbe::CurrentReading(); }
+        else if (m_classType == WMI_CLASS_TEMPERATURE_PROBE && wcscmp(wszName, L"NormalMin") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedTemperatureProbe::NormalMin(); }
+        else if (m_classType == WMI_CLASS_TEMPERATURE_PROBE && wcscmp(wszName, L"NormalMax") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedTemperatureProbe::NormalMax(); }
+
+        // --- Win32_Fan ---
+        else if (m_classType == WMI_CLASS_FAN && wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedFan::Name());
+        else if (m_classType == WMI_CLASS_FAN && wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedFan::Manufacturer());
+        else if (m_classType == WMI_CLASS_FAN && wcscmp(wszName, L"DesiredSpeed") == 0) { pVal->vt = VT_UI8; pVal->ullVal = SpoofedFan::DesiredSpeed(); }
+
+        // --- Win32_VoltageProbe ---
+        else if (m_classType == WMI_CLASS_VOLTAGE_PROBE && wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedVoltageProbe::Name());
+        else if (m_classType == WMI_CLASS_VOLTAGE_PROBE && wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedVoltageProbe::Manufacturer());
+        else if (m_classType == WMI_CLASS_VOLTAGE_PROBE && wcscmp(wszName, L"CurrentReading") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedVoltageProbe::CurrentReading(); }
 
         else spoofed = false;
 
@@ -345,7 +497,15 @@ private:
                (wcsstr(str, L"Win32_ComputerSystem") != NULL) ||
                (wcsstr(str, L"Win32_BaseBoard") != NULL) ||
                (wcsstr(str, L"Win32_BIOS") != NULL) ||
-               (wcsstr(str, L"Win32_DiskDrive") != NULL);
+               (wcsstr(str, L"Win32_DiskDrive") != NULL) ||
+               (wcsstr(str, L"Win32_VideoController") != NULL) ||
+               (wcsstr(str, L"Win32_NetworkAdapter") != NULL) ||
+               (wcsstr(str, L"Win32_PhysicalMemory") != NULL) ||
+               (wcsstr(str, L"Win32_USBController") != NULL) ||
+               (wcsstr(str, L"CIM_Sensor") != NULL) ||
+               (wcsstr(str, L"Win32_TemperatureProbe") != NULL) ||
+               (wcsstr(str, L"Win32_Fan") != NULL) ||
+               (wcsstr(str, L"Win32_VoltageProbe") != NULL);
     }
 
     WmiClassType DetectClassType(const wchar_t* str) {
@@ -355,6 +515,14 @@ private:
         if (wcsstr(str, L"Win32_BaseBoard")) return WMI_CLASS_BASEBOARD;
         if (wcsstr(str, L"Win32_BIOS")) return WMI_CLASS_BIOS;
         if (wcsstr(str, L"Win32_DiskDrive")) return WMI_CLASS_DISK_DRIVE;
+        if (wcsstr(str, L"Win32_VideoController")) return WMI_CLASS_VIDEO_CONTROLLER;
+        if (wcsstr(str, L"Win32_NetworkAdapter")) return WMI_CLASS_NETWORK_ADAPTER;
+        if (wcsstr(str, L"Win32_PhysicalMemory")) return WMI_CLASS_PHYSICAL_MEMORY;
+        if (wcsstr(str, L"Win32_USBController")) return WMI_CLASS_USB_CONTROLLER;
+        if (wcsstr(str, L"CIM_Sensor")) return WMI_CLASS_SENSOR;
+        if (wcsstr(str, L"Win32_TemperatureProbe")) return WMI_CLASS_TEMPERATURE_PROBE;
+        if (wcsstr(str, L"Win32_Fan")) return WMI_CLASS_FAN;
+        if (wcsstr(str, L"Win32_VoltageProbe")) return WMI_CLASS_VOLTAGE_PROBE;
         return WMI_CLASS_UNKNOWN;
     }
 

@@ -68,4 +68,10 @@ private:
     void ScanRegion(uint8_t* start, SIZE_T size);
     void PatchInstruction(uint64_t addr, PatchType type, uint8_t origByte, uint8_t modrm, int len);
     void ApplyPatches();
+
+    // Anti-memory-scanning: hide INT3 patches from Denuvo's CRC checks
+    void EnableAntiScan(bool enable);
+    bool ApplyCamouflage();
+    bool RestorePatches();
+    static void GenerateCamouflage(uint8_t* buffer, int len);
 };

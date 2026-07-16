@@ -32,6 +32,7 @@ public:
                             uint64_t* rax, uint64_t* rbx,
                             uint64_t* rcx, uint64_t* rdx);
     // Populate WHP CPUID result list with known spoofs so WHP doesn't exit
+    void GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount);
     void GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount);
 
 private:

@@ -13,6 +13,7 @@
 #include "emu/ObjectEmu.h"
 #include "emu/PeLoader.h"
 #include "proxy/ModuleCloak.h"
+#include "emu/DeviceIoEmu.h"
 
 MinimalKernel* MinimalKernel::s_instance = nullptr;
 
@@ -23,6 +24,7 @@ MinimalKernel::MinimalKernel(Logger* logger, IKernelBackend* backend)
       m_virtualState(nullptr), m_threadManager(nullptr),
       m_sectionEmu(nullptr), m_objectEmu(nullptr),
       m_moduleCloak(nullptr), m_peLoader(nullptr),
+      m_deviceIoEmu(nullptr),
       m_spoofProcess(false), m_spoofRegistry(false), m_spoofFile(false),
       m_spoofTiming(false), m_spoofToken(false), m_spoofThread(false),
       m_cloakModule(false)
@@ -49,6 +51,7 @@ bool MinimalKernel::Initialize()
     m_sectionEmu = new SectionEmu(m_logger);
     m_objectEmu = new ObjectEmu(m_logger);
     m_peLoader = new PeLoader(m_logger);
+    m_deviceIoEmu = new DeviceIoEmu(m_logger);
 
     m_initialized = true;
     s_instance = this;
@@ -73,6 +76,7 @@ void MinimalKernel::Shutdown()
     delete m_fileEmu; m_fileEmu = nullptr;
     delete m_memoryEmu; m_memoryEmu = nullptr;
     delete m_processEmu; m_processEmu = nullptr;
+    delete m_deviceIoEmu; m_deviceIoEmu = nullptr;
 
     m_initialized = false;
     m_logger->Trace(LOG_INFO, "MinimalKernel shutdown");

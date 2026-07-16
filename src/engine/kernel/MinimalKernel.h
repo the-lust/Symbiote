@@ -17,6 +17,7 @@ class SectionEmu;
 class ObjectEmu;
 class ModuleCloak;
 class PeLoader;
+class DeviceIoEmu;
 
 class MinimalKernel {
 public:
@@ -53,6 +54,9 @@ private:
     ObjectEmu* m_objectEmu;
     ModuleCloak* m_moduleCloak;
     PeLoader* m_peLoader;
+
+    DeviceIoEmu* GetDeviceIoEmu() { return m_deviceIoEmu; }
+    DeviceIoEmu* m_deviceIoEmu;
 
     // Config flags
     bool m_spoofProcess;

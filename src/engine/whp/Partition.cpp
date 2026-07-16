@@ -157,6 +157,35 @@ bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
     return true;
 }
 
+bool Partition::SetupAntiDetectionCpuidResultList(CpuidHandler* cpuidHandler)
+{
+    if (!m_handle) return false;
+
+    // Allocate 1024-entry array for comprehensive coverage
+    WHV_X64_CPUID_RESULT results[1024];
+    int count = 0;
+
+    if (cpuidHandler) {
+        cpuidHandler->GetComprehensiveCpuidResultList(results, &count, 1024);
+    }
+
+    if (count == 0) {
+        m_logger->Trace(LOG_WHP, "AntiDetection CpuidResultList empty — will use standard setup");
+        return SetupCpuidResultList(cpuidHandler);
+    }
+
+    HRESULT hr = WHvSetPartitionProperty(m_handle,
+        WHvPartitionPropertyCodeCpuidResultList,
+        results, (uint32_t)(count * sizeof(WHV_X64_CPUID_RESULT)));
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "WHvSetPartitionProperty(CpuidResultList/anti-detect) failed: 0x%08X", hr);
+        return SetupCpuidResultList(cpuidHandler);
+    }
+
+    m_logger->Trace(LOG_WHP, "Anti-detection CPUID result list set: %d leaves (0 VM-exits for standard ranges)", count);
+    return true;
+}
+
 bool Partition::SetupCpuCount(uint32_t count)
 {
     HRESULT hr = WHvSetPartitionProperty(m_handle,
