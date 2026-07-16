@@ -94,6 +94,13 @@ LONG Canary::OnException(EXCEPTION_POINTERS* ep)
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    // Stack-spoiling defense: save top of stack before processing, restore after.
+    // Denuvo stores critical values in high unused stack space before triggering
+    // exceptions; Windows' exception dispatch overwrites those values.
+    uint64_t savedStackBackup[64];
+    uint64_t rsp = ep->ContextRecord->Rsp;
+    memcpy(savedStackBackup, (void*)rsp, sizeof(savedStackBackup));
+
     m_logger->Trace(LOG_INFO, "Canary: access detected at offset 0x%llX (op=%llu)",
         faultAddr - pageBase,
         ep->ExceptionRecord->ExceptionInformation[0]);
@@ -110,5 +117,6 @@ LONG Canary::OnException(EXCEPTION_POINTERS* ep)
     DWORD oldProtect;
     VirtualProtect(m_canaryPage, 0x1000, PAGE_READWRITE, &oldProtect);
 
+    memcpy((void*)rsp, savedStackBackup, sizeof(savedStackBackup));
     return EXCEPTION_CONTINUE_EXECUTION;
 }

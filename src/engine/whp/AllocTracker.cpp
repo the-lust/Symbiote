@@ -278,11 +278,23 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
     uint64_t faultAddr = ep->ExceptionRecord->ExceptionInformation[1];
     uint64_t rip = (uint64_t)ep->ContextRecord->Rip;
 
+    // Stack-spoiling defense: save top of stack before processing, restore after.
+    // Denuvo stores critical values in high unused stack space before triggering
+    // exceptions; Windows' exception dispatch overwrites those values.
+    uint64_t savedStackBackup[64];
+    uint64_t rsp = ep->ContextRecord->Rsp;
+    memcpy(savedStackBackup, (void*)rsp, sizeof(savedStackBackup));
+
+    auto restoreStack = [&]() {
+        memcpy((void*)rsp, savedStackBackup, sizeof(savedStackBackup));
+    };
+
     EnterCriticalSection(&m_cs);
 
     TrackedPage* page = FindPage(faultAddr);
     if (!page) {
         LeaveCriticalSection(&m_cs);
+        restoreStack();
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -292,6 +304,7 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
     if (hits > GUARD_HIT_LIMIT) {
         page->isClean = true;
         LeaveCriticalSection(&m_cs);
+        restoreStack();
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -359,6 +372,7 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
             isCpuid ? "CPUID" : isRdtsc ? "RDTSC" : "RDTSCP",
             (void*)rip, pageBase, hits);
 
+        restoreStack();
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -368,6 +382,7 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
     VirtualProtect((LPVOID)pageBase, 0x1000,
         PAGE_EXECUTE_READWRITE | PAGE_GUARD, &oldProt2);
 
+    restoreStack();
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 

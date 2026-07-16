@@ -2,7 +2,7 @@
 
 **Ring-3 Windows userspace hardware fingerprint spoofing framework — educational / security research**
 
-Symbiote is a research platform for studying hardware fingerprinting techniques — intercepting and spoofing CPUID, MSR, KUSER_SHARED_DATA, WMI, registry, syscalls, and timing entirely from user mode **without kernel drivers**. It uses Microsoft's **Windows Hypervisor Platform (WHP)** as its execution backend, with **EPT process migration (Ghost Sandbox)** for transparent guest execution inside a Hyper-V VCPU, **LSTAR→HLT syscall interception with host ntdll forwarding**, **proxy DLLs with IAT/EAT patching**, and **config-gated VEH handlers** for descriptor-table queries and JIT memory.
+Symbiote is a research platform for studying hardware fingerprinting techniques — intercepting and spoofing CPUID, MSR, KUSER_SHARED_DATA, WMI, registry, syscalls, and timing entirely from user mode **without kernel drivers**. It uses Microsoft's **Windows Hypervisor Platform (WHP)** as its execution backend, with **EPT process migration (Ghost Sandbox)** for transparent guest execution inside a Hyper-V VCPU, **LSTAR→HLT syscall interception with host ntdll forwarding**, **proxy DLLs with IAT/EAT patching**, **config-gated VEH handlers**, **BEL (Big Emulator Lock) multi-VCPU architecture**, **EPT-based execution hook single-step system**, **Steam sandbox launcher**, **GPU DXVK passthrough**, and **WHP state snapshot/restore**.
 
 > **WARNING: Educational / security research only.** This project exists to study hardware fingerprinting mechanisms.
 
@@ -45,22 +45,24 @@ symbiote/
 │   ├── msr_reader/               # MSR register reader (via semav6msr64 kernel driver)
 │   └── test_sections.ps1         # Section-by-section bisect test script for game compatibility
 └── src/
-    ├── launcher/                 # launcher.exe — CLI arg parsing, suspended process creation,
-    │                             #   engine.dll injection, Engine_Init, entry point interception
-    ├── engine/                   # engine.dll — core engine (35 WHP files, 24 emu, 16 proxy, ...)
+    ├── launcher/                 # launcher.exe — CLI arg parsing, Steam sandbox detection,
+    │                             #   suspended process creation, engine.dll injection,
+    │                             #   Engine_Init, entry point interception
+    ├── engine/                   # engine.dll — core engine (40+ WHP files, 24 emu, 17 proxy, ...)
     │   ├── whp/                  # WHP partition, GuestPageTable, VcpuManager, SyscallDispatch,
     │   │                         #   CpuidHandler, RdtscHandler, MsrHandler, EptHook, KuserHook,
     │   │                         #   KuserSync, MagicCpuid, Canary, AllocTracker,
     │   │                         #   TimingCoordinator, SystemSpoofer, ThreadScheduler,
-    │   │                         #   ExitDispatcher, ExceptionHandler
+    │   │                         #   ExitDispatcher, ExceptionHandler, EptExecHook,
+    │   │                         #   KernelLock (BEL), Snapshot
     │   ├── kernel/               # MinimalKernel (unified syscall dispatcher),
     │   │                         #   SystemProfile (CPU profiles), KernelBackend (bridge)
     │   ├── emu/                  # Syscall emulators: ProcessEmu, MemoryEmu, FileEmu, RegistryEmu,
     │   │                         #   TimingEmu, CryptoEmu, ThreadManager, SectionEmu, ObjectEmu,
     │   │                         #   VirtualState, PeLoader
     │   ├── proxy/                # IatPatch (IAT/EAT patching, restore), InlineHook (12-byte jmp),
-    │   │                         #   GpuBridge (GPU DLL passthrough), ModuleCloak (PEB hiding),
-    │   │                         #   SyscallBridge
+    │   │                         #   GpuBridge (GPU DLL passthrough), DxvkIntegration (DXVK proxy bypass),
+    │   │                         #   ModuleCloak (PEB hiding), SyscallBridge
     │   ├── profile/              # GpuProfile, StorageProfile (identity profiles for spoofing)
     │   ├── capture/              # CaptureLogger (structured TSV logging, 100MB auto-rotate)
     │   ├── log/                  # Logger subsystem (SYSLOG, SYSERR macros)
@@ -159,16 +161,21 @@ Two complementary mechanisms:
 
 Known spoofed syscalls (`NtQuerySystemInformation`, `NtQueryInformationProcess`, `NtOpenKey`, `NtOpenKeyEx`, `NtQueryValueKey`, `NtClose`, `NtCreateFile`, `NtQueryObject`, `NtCreateThread`, `NtCreateThreadEx`, `NtTerminateThread`) are explicitly excluded from the forward table and dispatched to dedicated handlers. NtOpenKey/Ex are intercepted to block registry queries to hypervisor-related service keys (`\registry\machine\system\currentcontrolset\services\hypervisor`, `hvservice`, `VMBus`, etc.), returning `STATUS_OBJECT_NAME_NOT_FOUND`.
 
-### Multi-VCPU Thread Migration (Phase 6, gated)
+### Big Emulator Lock (BEL) — Multi-VCPU Architecture
 
-The engine supports creating child VCPUs (up to 20, indices 0-19) for guest threads. When a guest thread calls `NtCreateThread` or `NtCreateThreadEx`:
+The engine implements the **Big Emulator Lock** pattern: all VCPU threads acquire a shared `KernelLock` before entering C++ handler code and release it during guest execution (`WHvRunVirtualProcessor`). This serializes all emulator state access while allowing parallel guest execution across VCPUs.
 
+**Per-VCPU GDT**: each VCPU (indices 0-19) receives a unique GDT at `PER_VCPU_GDT_BASE + n * 0x1000` with 6-entry x64 descriptors (null, ring-0 code/data, ring-3 code/data, ring-3 long-mode code). This prevents WOW64 threads on different VCPUs from leaking TEB bases through shared FS-segment selectors.
+
+**ThreadScheduler**: provides a round-robin ready queue (`MarkReady`/`PickNextVcpu`) for fair time-slicing across VCPUs, with a scheduler loop thread and `SyncBarrier`/`ExitCoordinator` for coordinated start/stop.
+
+**Multi-VCPU Thread Migration** (Phase 6, gated): when a guest thread calls `NtCreateThread` or `NtCreateThreadEx`:
 1. `HandleCreateThreadSyscall()` allocates a child VCPU index, creates a WHP VCPU on the partition
 2. Allocates a 1 MB child stack and builds a `ThreadContext` with register state
-3. Creates a **host thread** via `CreateThread()` that enters `ThreadBootstrapEntry` → its own `WHvRunVirtualProcessor` loop
+3. Creates a **host thread** via `CreateThread()` that enters its own `WHvRunVirtualProcessor` loop (BEL-synchronized)
 4. Maps the host thread handle to VCPU index for later lookup
 
-This is gated behind `m_childThreadMigrationEnabled` (default `false`) and requires `cpu_count > 1` in config. Without these, `NtCreateThread/Ex/NtTerminateThread` are forwarded to host ntdll, and child threads run as native host threads outside WHP. `ThreadScheduler` provides round-robin multi-VCPU coordination (started but idle at `cpu_count=1`).
+This is gated behind `m_childThreadMigrationEnabled` (default `false`) and requires `cpu_count > 1` in config.
 
 ### Anti-Hypervisor Detection
 
@@ -192,8 +199,27 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 - **Win32_ComputerSystem WMI spoofing**: `HypervisorPresent=false`, realistic Model/SystemType/Manufacturer (i9-10900K desktop profile). WMI class type is tracked per-object (`WMI_CLASS_PROCESSOR` vs `WMI_CLASS_COMPUTER_SYSTEM`) to disambiguate shared property names like `Manufacturer`
 - **Registry path filtering**: `NtOpenKey`/`NtOpenKeyEx` intercepted inside `DispatchRawSyscall` — guest OBJECT_ATTRIBUTES parsed to extract the registry key path. Paths containing `hypervisor`, `hvservice`, `VMBus`, `Hyper-V`, or `HypervisorPresent` return `STATUS_OBJECT_NAME_NOT_FOUND` (0xC0000034)
 
-**Phase 4 — Config gating:**
-- All aggressive anti-detection features (AllocTracker ntdll inline hooks, SystemSpoofer VEH) gated behind `[hypervisor_hiding]` config section with `alloc_tracker = false, system_spoofer = false` defaults. This prevents detectable features from being active when not explicitly needed
+**Phase 4 — Config gating + EPT execution hooks:**
+- All aggressive anti-detection features (AllocTracker ntdll inline hooks, SystemSpoofer VEH) gated behind `[hypervisor_hiding]` config section with defaults `alloc_tracker = false, system_spoofer = false`. This prevents detectable features from being active when not explicitly needed
+- **EptExecHook** supersedes AllocTracker when WHP is available — strips EXEC from EPT entries for targeted pages and uses WHP #DB single-step instead of VEH guard pages. Undetectable by user-mode anti-tamper since EPT is invisible from ring-3. When EptExecHook is active, AllocTracker init is skipped with a warning
+- **Expanded exception bitmap**: `#UD` (invalid opcode), `#PF` (page fault), `#MF` (x87 FP error), `#XM` (SIMD FP error) are now handled in the VCPU exit loop. `#UD` skips 1 byte; `#PF` calls `MapDynamicPage` as EPT violation fallback; `#MF`/`#XM` clear and continue
+- **EPT map coalescing**: contiguous GPA ranges in deferred map/unmap queues are merged into single `WHvMapGpaRange`/`WHvUnmapGpaRange` calls, avoiding ~second-long stalls from page-by-page EPT updates
+
+**Phase 4b — Denuvo state cleanup at exit:**
+- `CleanupDenuvoState()` removes Denuvo cache files from `game_dir`, `%appdata%\Denuvo\`, and `%TEMP%\dns*` before engine shutdown, preventing persistent blacklist state from surviving across launches
+
+**Phase 5 — VEH stack-fault hardening:**
+- All VEH handlers (SystemSpoofer, AllocTracker, Canary) now implement the **64-QWORD stack save/restore** pattern to defeat Denuvo's stack-spoiling detection. Previously only SystemSpoofer had this defense
+
+**Phase 6 — Steam sandbox + DXVK passthrough:**
+- **SteamGameDetector**: VDF text parser for `libraryfolders.vdf` and `appmanifest_*.acf`, enumerates all Steam library folders and installed games, scores executables by name-token match / depth / size to find the main game binary
+- **`launcher.exe --steam-launch "Game Name"`**: auto-detects Steam game, resolves best executable via scorer, sets `SteamAppId` env var, launches under WHP
+- **DxvkIntegration**: detects DXVK DLLs (d3d9, d3d10, d3d10_1, d3d10core, d3d11, dxgi) alongside target exe, pre-loads them to initialize before the game hooks, sets `g_dxvkBypassActive` flag so proxy interception skips DXVK modules
+
+**Phase 7 — Snapshot/restore:**
+- Full WHP state serialization: all 36 VCPU registers (GPRs, CRs, DRs, segments, EFER, STAR/LSTAR/CSTAR, GDTR/IDTR/TR/LDTR), memory region metadata (GPA, size, flags via Partition tracking), and EptExecHook hook list
+- `Snapshot::Create()` captures state to binary buffer; `WriteToFile()` saves as `.snap`; `LoadFromFile()` validates magic/version; `Restore()` re-sets VCPU registers and re-registers EPT hooks
+- Format: magic `SYMBIOTE` + version 1 + QPC timestamp + VCPU register blocks + memory region blocks + handler data
 
 The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartitionProperty`) cannot be mitigated from user mode — these require Ring-0 access and are inherent to the WHP architecture.
 
@@ -220,7 +246,12 @@ The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartit
 | **AllocTracker** | `whp/AllocTracker.cpp/.h` | Monitors JIT/allocated memory via guard pages + VEH for CPUID interception in decrypted code |
 | **TimingCoordinator** | `whp/TimingCoordinator.h` | Cross-handler RDTSC→CPUID→RDTSC pattern detection with 3 jitter strategies (uniform/constant/linear) |
 | **SystemSpoofer** | `whp/SystemSpoofer.cpp/.h` | VEH-based interception of SGDT/SIDT/SLDT/STR/XGETBV — gated behind config (default off) |
-| **ThreadScheduler** | `whp/ThreadScheduler.cpp/.h` | Round-robin multi-VCPU coordinator for child thread migration (started but idle at cpu_count=1) |
+| **EptExecHook** | `whp/EptExecHook.cpp/.h` | EPT-based execution hook single-step system — strips EXEC from EPT, catches exec faults, arms #DB single-step, re-strips. Supersedes AllocTracker when WHP available |
+| **KernelLock (BEL)** | `whp/KernelLock.cpp/.h` | CRITICAL_SECTION-based mutex with owner-tracking — serializes C++ handler code, released during guest execution for parallel VCPU execution |
+| **Snapshot** | `whp/Snapshot.cpp/.h` | Full WHP state serialization (36 VCPU registers, memory regions, EptExecHook hooks) with file I/O and restore |
+| **DxvkIntegration** | `proxy/DxvkIntegration.cpp/.h` | DXVK passthrough — detects DXVK DLLs, pre-loads them, sets bypass flag so proxy hooks skip DXVK modules |
+| **SteamGameDetector** | `launcher/SteamGameDetector.cpp/.h` | VDF parser for libraryfolders.vdf + appmanifest.acf, executable scoring heuristic, `--steam-launch` mode |
+| **ThreadScheduler** | `whp/ThreadScheduler.cpp/.h` | Round-robin multi-VCPU coordinator with BEL: MarkReady/PickNextVcpu, SyncBarrier, ExitCoordinator |
 | **ExitDispatcher** | `whp/ExitDispatcher.cpp/.h` | WHP exit reason dispatch routing |
 | **ExceptionHandler** | `whp/ExceptionHandler.cpp/.h` | WHP VP exception handling (#BP, #DB) |
 | **MinimalKernel** | `kernel/MinimalKernel.cpp/.h` | Unified syscall dispatcher owning all emulator instances |
@@ -311,9 +342,9 @@ Default: `config/config.ini` (relative to launcher binary). Config profiles spec
 ### Feature Toggles
 
 ```ini
-[hypervisor_hiding]  alloc_tracker = false  ; AllocTracker ntdll inline hooks (off for Denuvo — detects hook patterns)
-[hypervisor_hiding]  system_spoofer = false ; VEH SGDT/SIDT/SLDT/STR/XGETBV (off for Denuvo)
-[system_spoofer]     enabled = false        ; Legacy: VEH for SGDT/SIDT/SLDT/STR/XGETBV (off for Denuvo)
+[hypervisor_hiding]  alloc_tracker = false  ; AllocTracker (VEH guard pages — off by default; EptExecHook supersedes)
+[hypervisor_hiding]  system_spoofer = false ; SystemSpoofer VEH (SGDT/SIDT/SLDT/STR/XGETBV — off for Denuvo)
+[system_spoofer]     enabled = false        ; Legacy fallback (same as hypervisor_hiding.system_spoofer)
 [eat]                enabled = false        ; Export Address Table patching
 [forwarding]         enabled = true      ; Syscall forwarding (Ghost Sandbox)
 [cpuid]              status = 0          ; CPUID spoofing (0=disabled)
@@ -325,7 +356,10 @@ Default: `config/config.ini` (relative to launcher binary). Config profiles spec
 [file]               status = 1          ; File spoofing
 [timing]             status = 1          ; Timing spoofing
 [magic]              status = 0          ; MagicCpuid handshake (off by default)
+[vm]                 cpu_count = 2       ; Virtual CPU count (for multi-VCPU BEL + child thread migration)
 ```
+
+Note: `hypervisor_hiding.system_spoofer` and `system_spoofer.enabled` both control the same feature. The engine reads `hypervisor_hiding.system_spoofer` first, with `system_spoofer.enabled` as fallback.
 
 ### Capture Mode
 
@@ -421,9 +455,12 @@ ws2_32.dll            Proxy DLL (clean system DLL name)
 | Mode | Execution overhead | Mechanism |
 |------|-------------------|-----------|
 | **WHP VCPU** (VMX non-root) | **~0%** (~50-200 exits × ~2000 cycles each) | Only CPUID/RDTSC/MSR/HALT cause VM exits; all other instructions run natively |
+| **BEL multi-VCPU** | **~0%** (lock is uncontended in practice) | KernelLock released during WHvRunVirtualProcessor; only contended during concurrent VM-exits |
 | **Syscall Forwarding** | Per-syscall: ~2000 cycle exit + function call overhead | Every guest SYSCALL exits via LSTAR→HLT, dispatched to host ntdll |
 | **SystemSpoofer VEH** (host) | **5-30%+** per patched instruction | Each SGDT/SIDT/SLDT/STR/XGETBV triggers kernel exception (5000-10000+ cycles) |
 | **EPT page fault** | ~5000 cycles on first access | On-demand WHvMapGpaRange for dynamically allocated pages |
+| **EptExecHook single-step** | ~3000 cycles per hook fire | EPT re-map + #DB single-step + re-strip — per-execution-fault cost |
+| **Snapshot** | ~10-100ms depending on VCPU count | WHvGetVirtualProcessorRegisters × num VCPUs + memory region enumeration |
 
 ### Why WHP has near-zero overhead
 
@@ -444,6 +481,10 @@ WHP uses Intel VT-x hardware virtualization. When `WHvRunVp` is called, the CPU 
 - **Denuvo persistent blacklist** — after WHP is detected once, Denuvo persists state across launches. Cleanup functions delete cache files in `game_dir`, `%appdata%\Denuvo\`, and `%TEMP%\dns*`
 - **Proxy DLLs use clean system names** loaded with absolute paths via `LoadLibraryW`; GetProcAddress hook uses engine-registered function table
 - **WHP-only host machines** — game must have WHP available. No fallback to pure emulation
+- **BEL is always active** — KernelLock is acquired/released around every HandleExit call. The lock is non-recursive; asserts in debug builds catch accidental re-acquisition. Single-VCPU workloads see zero contention
+- **EptExecHook snapshot serialization** saves only GPA lists; callbacks (std::function) are not serializable — they must be re-registered by the owning code after Restore
+- **DXVK passthrough** only pre-loads DXVK DLLs — the actual DXVK binaries must be present in the game directory or provided via `InstallDxvkDlls()`. Does not bundle DXVK itself
+- **Snapshot memory regions** save only metadata (GPA, size, flags) — page content is not included. On restore, EPT is rebuilt on-demand by MapDynamicPage. Full memory content snapshot would require 2× memory usage and is not implemented
 - **Single VCPU by default** — child thread VCPU migration (Phase 6) is code-complete but gated behind `cpu_count > 1` in config and `SetChildThreadMigrationEnabled(true)`. Without these, child threads run as native host threads outside WHP
 - **Syscall number stability** — SSNs vary across Windows builds; dynamic detection from ntdll handles this, but any run-time resolution failure causes the engine to fall back to forwarding
 

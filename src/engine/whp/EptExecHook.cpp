@@ -149,3 +149,55 @@ void EptExecHook::RemoveExecPermission(uint64_t gpa)
     WHvMapGpaRange(m_partition->GetHandle(), (void*)(uintptr_t)gpa,
         (WHV_GUEST_PHYSICAL_ADDRESS)gpa, 0x1000, flags);
 }
+
+// ─── Snapshot serialization ───────────────────────────────────────────
+
+size_t EptExecHook::GetSerializedSize() const
+{
+    // Layout: uint32_t count + count * uint64_t gpa
+    return sizeof(uint32_t) + m_hooks.size() * sizeof(uint64_t);
+}
+
+bool EptExecHook::Serialize(std::vector<uint8_t>& buffer) const
+{
+    size_t needed = GetSerializedSize();
+    size_t offset = buffer.size();
+    buffer.resize(offset + needed);
+
+    uint32_t count = (uint32_t)m_hooks.size();
+    memcpy(buffer.data() + offset, &count, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+
+    for (const auto& [gpa, hook] : m_hooks) {
+        memcpy(buffer.data() + offset, &gpa, sizeof(uint64_t));
+        offset += sizeof(uint64_t);
+    }
+
+    HOOK_LOG("Serialized %u hook GPAs (%zu bytes)", count, needed);
+    return true;
+}
+
+bool EptExecHook::Deserialize(const uint8_t* data, size_t size)
+{
+    if (size < sizeof(uint32_t)) return false;
+
+    uint32_t count;
+    memcpy(&count, data, sizeof(uint32_t));
+    data += sizeof(uint32_t);
+    size -= sizeof(uint32_t);
+
+    if (count > 0 && size < count * sizeof(uint64_t)) return false;
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t gpa;
+        memcpy(&gpa, data, sizeof(uint64_t));
+        data += sizeof(uint64_t);
+        size -= sizeof(uint64_t);
+
+        // Re-register hook without callback (callbacks are set up by the owning code)
+        RegisterPageHook(gpa, nullptr);
+    }
+
+    HOOK_LOG("Deserialized %u hook GPAs", count);
+    return true;
+}

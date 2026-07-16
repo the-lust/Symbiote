@@ -124,7 +124,6 @@ std::vector<uint8_t> Snapshot::Create(Partition* partition,
     (void)cpuidHandler;
     (void)rdtscHandler;
     (void)msrHandler;
-    (void)eptExecHook;
 
     if (!partition) {
         m_logger->Trace(LOG_ERROR, "Snapshot: no partition provided");
@@ -195,9 +194,14 @@ std::vector<uint8_t> Snapshot::Create(Partition* partition,
         offset += sizeof(uint64_t) * 2; // gpa + size
     }
 
-    // Handler data size (placeholder — real serialization is handler-specific)
-    *(uint32_t*)(snapshot.data() + offset) = 0;
-    offset += sizeof(uint32_t);
+    // Handler data: serialize EptExecHook state
+    size_t handlerOffset = offset;
+    offset += sizeof(uint32_t); // placeholder for size
+    if (eptExecHook) {
+        eptExecHook->Serialize(snapshot);
+    }
+    uint32_t handlerSize = (uint32_t)(snapshot.size() - offset + sizeof(uint32_t));
+    *(uint32_t*)(snapshot.data() + handlerOffset) = handlerSize;
 
     // Shrink to actual size
     snapshot.resize(offset);
@@ -223,8 +227,6 @@ bool Snapshot::Restore(const std::vector<uint8_t>& snapshotData,
     (void)cpuidHandler;
     (void)rdtscHandler;
     (void)msrHandler;
-    (void)eptExecHook;
-
     if (!ValidateHeader(snapshotData.data(), snapshotData.size())) {
         m_logger->Trace(LOG_ERROR, "Snapshot: restore failed — invalid header");
         return false;
@@ -259,10 +261,14 @@ bool Snapshot::Restore(const std::vector<uint8_t>& snapshotData,
     // In a full implementation, we would re-map all regions here.
     offset += header->numMemoryRegions * (sizeof(MemoryRegionBlock) - 1 + sizeof(uint64_t) * 2);
 
-    // Handler data — skip
+    // Handler data — deserialize EptExecHook state
     if (offset + sizeof(uint32_t) <= snapshotData.size()) {
         uint32_t handlerSize = *(const uint32_t*)(snapshotData.data() + offset);
-        offset += sizeof(uint32_t) + handlerSize;
+        offset += sizeof(uint32_t);
+        if (handlerSize > 0 && eptExecHook && offset + handlerSize <= snapshotData.size()) {
+            eptExecHook->Deserialize(snapshotData.data() + offset, handlerSize);
+        }
+        offset += handlerSize;
     }
 
     m_logger->Trace(LOG_INFO, "Snapshot: restored state from %zu-byte snapshot", snapshotData.size());
