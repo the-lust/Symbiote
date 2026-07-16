@@ -114,10 +114,15 @@ bool VcpuManager::Run(uint32_t vcpuIndex)
     m_vcpus[vcpuIndex].running = true;
     m_logger->Trace(LOG_INFO, "VCPU %u starting execution (boot code)", vcpuIndex);
 
+    m_kernelLock.Lock(); // BEL: acquire on entry
+
     while (m_vcpus[vcpuIndex].running) {
         WHV_RUN_VP_EXIT_CONTEXT exitCtx;
+
+        m_kernelLock.Unlock(); // BEL: release during guest execution
         HRESULT hr = WHvRunVirtualProcessor(m_partition->GetHandle(), vcpuIndex,
             &exitCtx, sizeof(exitCtx));
+        m_kernelLock.Lock(); // BEL: re-acquire on VM-exit
 
         if (FAILED(hr)) {
             m_logger->Trace(LOG_ERROR, "WHvRunVirtualProcessor failed: 0x%08X", hr);
@@ -143,6 +148,7 @@ bool VcpuManager::Run(uint32_t vcpuIndex)
         }
     }
 
+    m_kernelLock.Unlock(); // BEL: release on exit
     m_logger->Trace(LOG_INFO, "VCPU %u stopped", vcpuIndex);
     return true;
 }
@@ -168,16 +174,27 @@ bool VcpuManager::BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& 
     // Set captured thread context and custom CR3
     SetContextRegisters(vcpuIndex, ctx, pageTable);
 
+    // Set up per-VCPU GDT for this VCPU
+    if (!SetupPerVcpuGdt(vcpuIndex)) {
+        m_logger->Trace(LOG_ERROR, "Bootstrap: per-VCPU GDT setup failed");
+        return false;
+    }
+
     m_vcpus[vcpuIndex].running = true;
     t_currentVcpuIndex = vcpuIndex;
     m_logger->Trace(LOG_INFO, "Bootstrap: VCPU %u entered with CR3=0x%llX, RIP=0x%llX",
         vcpuIndex, pageTable ? pageTable->GetPml4Gpa() : 0, ctx.rip);
 
+    m_kernelLock.Lock(); // BEL: acquire on entry
+
     // Main VCPU loop
     while (m_vcpus[vcpuIndex].running) {
         WHV_RUN_VP_EXIT_CONTEXT exitCtx;
+
+        m_kernelLock.Unlock(); // BEL: release during guest execution
         HRESULT hr = WHvRunVirtualProcessor(m_partition->GetHandle(), vcpuIndex,
             &exitCtx, sizeof(exitCtx));
+        m_kernelLock.Lock(); // BEL: re-acquire on VM-exit
 
         if (FAILED(hr)) {
             m_logger->Trace(LOG_ERROR, "Bootstrap: WHvRunVirtualProcessor failed: 0x%08X", hr);
@@ -200,6 +217,7 @@ bool VcpuManager::BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& 
         }
     }
 
+    m_kernelLock.Unlock(); // BEL: release on exit
     t_currentVcpuIndex = UINT32_MAX;
     m_logger->Trace(LOG_INFO, "Bootstrap: VCPU %u stopped", vcpuIndex);
     return true;
@@ -344,15 +362,25 @@ DWORD WINAPI VcpuManager::ThreadBootstrapEntry(LPVOID param)
 
 void VcpuManager::EnterVcpuFromBootstrap(uint32_t vcpuIndex)
 {
+    if (!SetupPerVcpuGdt(vcpuIndex)) {
+        m_logger->Trace(LOG_ERROR, "ChildVCPU %u: per-VCPU GDT setup failed", vcpuIndex);
+        return;
+    }
+
     m_vcpus[vcpuIndex].running = true;
     t_currentVcpuIndex = vcpuIndex;
 
     m_logger->Trace(LOG_INFO, "ChildVCPU %u entering run loop", vcpuIndex);
 
+    m_kernelLock.Lock(); // BEL: acquire on entry
+
     while (m_vcpus[vcpuIndex].running) {
         WHV_RUN_VP_EXIT_CONTEXT exitCtx;
+
+        m_kernelLock.Unlock(); // BEL: release during guest execution
         HRESULT hr = WHvRunVirtualProcessor(m_partition->GetHandle(), vcpuIndex,
             &exitCtx, sizeof(exitCtx));
+        m_kernelLock.Lock(); // BEL: re-acquire on VM-exit
 
         if (FAILED(hr)) {
             m_logger->Trace(LOG_ERROR, "ChildVCPU %u: WHvRunVirtualProcessor failed: 0x%08X", vcpuIndex, hr);
@@ -367,6 +395,7 @@ void VcpuManager::EnterVcpuFromBootstrap(uint32_t vcpuIndex)
         }
     }
 
+    m_kernelLock.Unlock(); // BEL: release on exit
     t_currentVcpuIndex = UINT32_MAX;
     FreeVcpuIndex(vcpuIndex);
     m_logger->Trace(LOG_INFO, "ChildVCPU %u exited", vcpuIndex);
@@ -510,6 +539,71 @@ bool VcpuManager::HandleTerminateThreadSyscall(uint32_t vcpuIndex, uint64_t* arg
 
     // VCPU 0 or unknown — let normal forwarding handle it
     return false;
+}
+
+// ─── Per-VCPU GDT ─────────────────────────────────────────────────────
+
+bool VcpuManager::SetupPerVcpuGdt(uint32_t vcpuIndex)
+{
+    if (vcpuIndex >= MAX_VCPU) return false;
+
+    uint64_t gdtGpa = PER_VCPU_GDT_BASE + (uint64_t)vcpuIndex * PER_VCPU_GDT_SIZE;
+
+    // Allocate and map a page of guest memory for this VCPU's GDT
+    void* gdtVa = VirtualAlloc(nullptr, PER_VCPU_GDT_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!gdtVa) {
+        m_logger->Trace(LOG_ERROR, "Per-VCPU GDT %u: VirtualAlloc failed", vcpuIndex);
+        return false;
+    }
+
+    // Zero-fill
+    memset(gdtVa, 0, PER_VCPU_GDT_SIZE);
+
+    // Set up minimal x64 GDT entries:
+    //   Entry 0: null descriptor
+    //   Entry 1: ring-0 code segment (0x10 selector)
+    //   Entry 2: ring-0 data segment (0x18 selector)
+    //   Entry 3: ring-3 code segment (0x23 selector) — 32-bit compatibility
+    //   Entry 4: ring-3 data segment (0x2B selector)
+    //   Entry 5: ring-3 code segment (0x33 selector) — 64-bit long mode
+    //   Entry 6: TSS descriptor (reserved)
+    uint64_t* gdt = (uint64_t*)gdtVa;
+    gdt[0] = 0x0000000000000000ULL;              // null
+    gdt[1] = 0x00AF9B000000FFFFULL;              // ring-0 code 64
+    gdt[2] = 0x00CF93000000FFFFULL;              // ring-0 data
+    gdt[3] = 0x00CFFB000000FFFFULL;              // ring-3 code 32
+    gdt[4] = 0x00CFF3000000FFFFULL;              // ring-3 data
+    gdt[5] = 0x00AFFB000000FFFFULL;              // ring-3 code 64
+
+    WHV_MAP_GPA_RANGE_FLAGS flags = (WHV_MAP_GPA_RANGE_FLAGS)(
+        WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite);
+    if (!m_partition->MapGpaRange(gdtVa, gdtGpa, PER_VCPU_GDT_SIZE, flags)) {
+        m_logger->Trace(LOG_ERROR, "Per-VCPU GDT %u: MapGpaRange failed at GPA 0x%llX", vcpuIndex, gdtGpa);
+        VirtualFree(gdtVa, 0, MEM_RELEASE);
+        return false;
+    }
+
+    // Set GDTR for this VCPU
+    WHV_X64_TABLE_REGISTER gdtr;
+    gdtr.Base = gdtGpa;
+    gdtr.Limit = 6 * 8 - 1; // 6 entries
+
+    WHV_REGISTER_VALUE gdtrValue;
+    gdtrValue.Table = gdtr;
+
+    WHV_REGISTER_NAME gdtrReg = WHvX64RegisterGdtr;
+    HRESULT hr = WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
+        &gdtrReg, 1, &gdtrValue);
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "Per-VCPU GDT %u: WHvSetVirtualProcessorRegisters failed: 0x%08X",
+            vcpuIndex, hr);
+        VirtualFree(gdtVa, 0, MEM_RELEASE);
+        return false;
+    }
+
+    m_logger->Trace(LOG_WHP, "Per-VCPU GDT %u: GPA=0x%llX base=0x%llX limit=%u",
+        vcpuIndex, gdtGpa, gdtr.Base, gdtr.Limit);
+    return true;
 }
 
 // ─── Boot code setup ──────────────────────────────────────────────────
