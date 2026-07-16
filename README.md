@@ -267,6 +267,9 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 - **ThreadHider (real hooks, wired to ProcessEmu)**: 12-byte inline hooks on `kernel32!CreateToolhelp32Snapshot`, `Thread32First`, `Thread32Next` filter hidden threads from all toolhelp enumeration. `HandleSystemProcessInformation()` walks `SYSTEM_PROCESS_INFORMATION` chain, removes hidden thread entries, and compacts the output buffer — now called from ProcessEmu's `SystemProcessInformation` case, applying thread filtering to the synthetic process list. Engine threads auto-registered at init via `HideThread(GetCurrentThreadId())` + snapshot enumeration. Trampoline bug fixed: `InstallTrampolineHook` allocates RX trampoline with `mov rax, target+12; jmp rax` instead of storing patched address (fixes infinite recursion)
 - **NtQueryInformationProcess anti-debug classes**: `ThreadManager` intercepts `ProcessDebugPort` (class 7 → returns 0), `ProcessDebugObjectHandle` (class 0x1E → returns NULL), `ProcessDebugFlags` (class 0x1F → returns 1) — completely masks debugger presence from kernel-mode queries
 - **SystemSpoofer EPT methods (real emulation)**: `HandleEptSyscallIntercept`, `HandleEptRdmsrIntercept`, `HandleEptSysInstrIntercept` now implement full instruction emulation matching the VEH handler. SGDT/SIDT returns config-controlled GDT/IDT base/limit; SLDT returns 0; STR returns 0x40; XGETBV returns spoofed XCR0; RDMSR returns per-MSR spoofed values (IA32_TIME_STAMP_COUNTER, APIC_BASE, FEATURE_CONTROL, etc.)
+- **Static SSN fallback tables**: `SyscallTables` embeds 4 build tables (19041/22000/22621/26100) from hfiref0x/SyscallTables data. `BuildForwardTable()` cross-checks runtime-detected SSNs against known-good values and falls back to static data on mismatch
+- **ApiSet schema resolver**: `ApiSetResolver` parses the V6 ApiSet schema from PEB on Win10+, maps all contract DLL names (`api-ms-win-core-*`) to their host DLLs, and logs proxy coverage gaps at init
+- **IatPatch PE parsing hardening**: Bound import table scanning, delay-load import patching, ApiSet-aware DLL name matching (handles `api-` prefix contracts), forwarded export detection (skips EAT patches for forwarded exports), system module whitelist
 
 ---
 
@@ -315,11 +318,12 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 | **ObjectEmu** | `emu/ObjectEmu.cpp/.h` | Object handle spoofing |
 | **VirtualState** | `emu/VirtualState.cpp/.h` | Virtual state management |
 | **PeLoader** | `emu/PeLoader.cpp/.h` | PE loading emulation |
-| **IatPatch** | `proxy/IatPatch.cpp/.h` | IAT and EAT patching (PatchIAT, PatchEAT, RestoreAll) |
+| **IatPatch** | `proxy/IatPatch.cpp/.h` | IAT and EAT patching (PatchIAT, PatchEAT, RestoreAll); bound import/delay-load/ApiSet-aware; forwarded export detection |
 | **InlineHook** | `proxy/InlineHook.cpp/.h` | 12-byte `mov rax,imm64; jmp rax` hooks with instruction decoder for trampolines |
 | **GpuBridge** | `proxy/GpuBridge.cpp/.h` | GPU DLL passthrough — GPU-intensive calls always go to real system |
 | **ModuleCloak** | `proxy/ModuleCloak.cpp/.h` | Module hiding from PEB/LDR |
 | **SyscallBridge** | `proxy/SyscallBridge.cpp/.h` | Syscall forwarding bridge |
+| **ApiSetResolver** | `proxy/ApiSetResolver.cpp/.h` | Parses V6 ApiSet schema from PEB, maps contract DLL names to host DLLs, logs proxy coverage gaps |
 | **TimingCoordinator** | `whp/TimingCoordinator.h/.cpp` | Cross-clock β-time correlation — `SnapshotBaseClocks()`, `GetConsistent*()` methods ensure consistent drift across QPC/TSC/SysTime/TickCount/timeGetTime |
 | **CaptureLogger** | `capture/CaptureLogger.cpp/.h` | Structured tab-separated capture log (100MB auto-rotate) for all fingerprint queries |
 | **GpuProfile** | `profile/GpuProfile.cpp/.h` | GPU identity profile for WMI spoofing |
@@ -329,6 +333,7 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 | **StackSpoofer** | `emu/StackSpoofer.cpp/.h` | SilentMoonwalk-style return-address spoofing — saves/replaces/restores return address on stack with ntdll ret sled |
 | **IndirectSyscall** | `whp/IndirectSyscall.cpp/.h` | EPT execute-disable on ntdll syscall page — catches direct/indirect syscall bypass at the EPT level |
 | **ConsistencyVerifier** | `whp/ConsistencyVerifier.cpp/.h` | 11 real consistency checks (CPU, cache, memory, TSC freq, brand, manufacturer, BIOS, chassis, disk, network, timing) — zero unconditional passes |
+| **SyscallTables** | `whp/SyscallTables.cpp/.h` | Static SSN tables for 4 Windows builds (19041/22000/22621/26100), binary-search lookup, cross-check against runtime-detected SSNs |
 | **AcpiTimerHandler** | `whp/AcpiTimerHandler.cpp/.h` | Synthetic ACPI PM timer (port 0x608, 3.579545 MHz) and HPET counter (0xFED00000+X, ~10 MHz) |
 | **Proxy DLLs** (13) | `proxydlls/*/` | IAT/EAT interceptors with clean system DLL names (`kernel32.dll`, `ntdll.dll`, `advapi32.dll`, etc.) |
 | **verify.exe** | `src/verify/` | 9-phase spoof verification test suite (CPUID, RDTSC, MSR, KUSER, syscalls, PEB, registry, WMI, network) |
@@ -414,6 +419,9 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 | Timed PEB restoration thread | Background 500ms loop monitors BeingDebugged/NtGlobalFlag | Done (Phase B) |
 | Optimized EPT view swapping | EptSplitView batches contiguous ranges, 1 WHvMapGpaRange per range | Done (Phase B) |
 | EPT syscall/RDMSR instruction dispatch | VcpuManager MemoryAccess handler routes to SystemSpoofer (0F05/0F32/0F01) | Done (Phase B) |
+| Static SSN fallback table (4 builds) | SyscallTables cross-check + binary-search lookup in BuildForwardTable/Initialize | Done (Phase B) |
+| ApiSet schema resolution (V6) | ApiSetResolver PEB parse + proxy coverage logging | Done (Phase B) |
+| IAT/EAT patching edge-case hardening | Bound imports, delay-load patching, ApiSet-aware DLL name matching, forwarded export handling | Done (Phase B) |
 
 ---
 
