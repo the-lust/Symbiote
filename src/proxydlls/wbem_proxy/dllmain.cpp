@@ -98,7 +98,7 @@ struct SpoofedVideoController {
     static const wchar_t* AdapterCompatibility() { return L"NVIDIA"; }
     static const wchar_t* DriverVersion() { return L"31.0.15.3742"; }
     static const wchar_t* PNPDeviceID() { return L"PCI\\VEN_10DE&DEV_2206&SUBSYS_38811462&REV_A1"; }
-    static uint32_t AdapterRAM() { return 10737418240ULL; } // 10GB
+    static uint32_t AdapterRAM() { return 2147483648UL; } // 2GB (fits uint32_t)
     static uint32_t CurrentHorizontalResolution() { return 2560; }
     static uint32_t CurrentVerticalResolution() { return 1440; }
     static uint32_t CurrentRefreshRate() { return 144; }
@@ -625,7 +625,7 @@ public:
     HRESULT STDMETHODCALLTYPE ExecMethod(BSTR strObjectPath, BSTR strMethodName, long lFlags, IWbemContext* pCtx, IWbemClassObject* pInParams, IWbemClassObject** ppOutParams, IWbemCallResult** ppCallResult) override {
         return m_real ? m_real->ExecMethod(strObjectPath, strMethodName, lFlags, pCtx, pInParams, ppOutParams, ppCallResult) : E_FAIL;
     }
-    HRESULT STDMETHODCALLTYPE ExecMethodAsync(BSTR strObjectPath, BSTR strMethodName, long lFlags, IWbemContext* pCtx, IWbemObjectSink* pResponseHandler) override {
+    HRESULT STDMETHODCALLTYPE ExecMethodAsync(BSTR strObjectPath, BSTR strMethodName, long lFlags, IWbemContext* pCtx, IWbemClassObject* pInParams, IWbemObjectSink* pResponseHandler) override {
         return m_real ? m_real->ExecMethodAsync(strObjectPath, strMethodName, lFlags, pCtx, pInParams, pResponseHandler) : E_FAIL;
     }
 };

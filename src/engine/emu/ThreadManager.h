@@ -15,6 +15,7 @@ public:
     bool HandleNtGetContextThread(uint64_t* args, uint64_t* result);
     bool HandleNtSetContextThread(uint64_t* args, uint64_t* result);
     bool HandleNtQueryInformationThread(uint64_t* args, uint64_t* result);
+    bool HandleNtQueryInformationProcess(uint64_t* args, uint64_t* result);
 
     bool HandleNtCreateEvent(uint64_t* args, uint64_t* result);
     bool HandleNtSetEvent(uint64_t* args, uint64_t* result);

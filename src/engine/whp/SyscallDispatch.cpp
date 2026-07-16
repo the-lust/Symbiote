@@ -581,10 +581,8 @@ bool SyscallDispatch::HandleNtQueryVirtualMemory(uint64_t* args, uint64_t& resul
     bool isNtdllPage = (baseAddr >= ntdllBase && baseAddr < ntdllEnd);
 
     if (!isNtdllPage) {
-        // Also check engine.dll
-        HMODULE hEngine = nullptr;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            (LPCWSTR)&HandleNtQueryVirtualMemory, &hEngine);
+        // Check if address falls within engine.dll
+        HMODULE hEngine = GetModuleHandleW(L"engine.dll");
         if (hEngine) {
             uint64_t engineBase = (uint64_t)hEngine;
             if (baseAddr >= engineBase && baseAddr < engineBase + 0x100000) {

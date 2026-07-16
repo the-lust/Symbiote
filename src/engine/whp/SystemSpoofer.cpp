@@ -524,3 +524,204 @@ void SystemSpoofer::GenerateCamouflage(uint8_t* buffer, int len)
         buffer[i] = nops[rand() % (sizeof(nops) / sizeof(nops[0]))];
     }
 }
+
+// ── EPT-based instruction interception handlers ────────────────────
+
+bool SystemSpoofer::HandleEptSyscallIntercept(uint64_t rip, void* context)
+{
+    if (!s_instance) return false;
+
+    uint64_t syscallNum = 0;
+    if (context) {
+        CONTEXT* ctx = (CONTEXT*)context;
+        syscallNum = ctx->Rax;
+    }
+
+    // Dispatch syscall via existing handler path
+    s_instance->m_logger->Trace(LOG_EPT,
+        "EPT syscall intercept: RIP=0x%llX syscall=0x%llX",
+        rip, syscallNum);
+
+    // The VcpuManager will handle RAX-based syscall dispatch;
+    // this hook notifies that a raw SYSCALL instruction was executed
+    // from an EPT-no-exec page (detecting direct syscall bypass)
+    return true;
+}
+
+bool SystemSpoofer::HandleEptRdmsrIntercept(uint64_t rip, uint32_t msr, uint64_t* value, void*)
+{
+    if (!s_instance || !value) return false;
+
+    s_instance->m_logger->Trace(LOG_EPT,
+        "EPT RDMSR intercept: RIP=0x%llX MSR=0x%X", rip, msr);
+
+    // Return spoofed values consistent with the hypervisor environment
+    switch (msr) {
+        case 0x10: // IA32_TIME_STAMP_COUNTER
+            if (s_instance->m_syntheticTsc) {
+                *value = *s_instance->m_syntheticTsc;
+                return true;
+            }
+            *value = __rdtsc();
+            return true;
+
+        case 0x8B: // IA32_BIOS_SIGN_ID (microcode revision)
+            *value = 0x00000000;
+            return true;
+
+        case 0x17: // IA32_PLATFORM_ID
+            *value = 0;
+            return true;
+
+        case 0x3A: // IA32_FEATURE_CONTROL
+            *value = 0x0000000000000005ULL;
+            return true;
+
+        case 0x1B: // IA32_APIC_BASE
+            *value = 0xFEE00000 | (1ULL << 11);
+            return true;
+
+        case 0xE1: // IA32_MC0_STATUS
+        case 0xE3: // IA32_MC1_STATUS
+        case 0xE5: // IA32_MC2_STATUS
+        case 0xE7: // IA32_MC3_STATUS
+            *value = 0;
+            return true;
+
+        case 0xC0010114: // HWCR (AMD)
+        case 0xC0010010: // TSeg (AMD)
+        case 0xC0011020: // IBS (AMD)
+            *value = 0;
+            return true;
+
+        default:
+            // Return safe default
+            *value = 0;
+            return true;
+    }
+}
+
+bool SystemSpoofer::HandleEptSysInstrIntercept(uint64_t rip, uint8_t* instruction, uint32_t length, void* context)
+{
+    if (!s_instance || !instruction) return false;
+
+    CONTEXT* ctx = (CONTEXT*)context;
+    if (!ctx) return false;
+
+    if (length >= 2 && instruction[0] == 0x0F) {
+        switch (instruction[1]) {
+            case 0x01: {
+                if (length >= 3) {
+                    uint8_t modrm = instruction[2];
+                    uint8_t reg = (modrm >> 3) & 7;
+                    uint8_t mod = (modrm >> 6) & 3;
+
+                    if (reg == 2 && mod == 3 && (modrm & 7) == 0) {
+                        // XGETBV (0F 01 D0)
+                        uint32_t xcr = (uint32_t)ctx->Rcx;
+                        if (xcr == 0) {
+                            ctx->Rax = (uint64_t)(uint32_t)(s_instance->m_xgetbvResult & 0xFFFFFFFF);
+                            ctx->Rdx = (uint64_t)(uint32_t)(s_instance->m_xgetbvResult >> 32);
+                        } else {
+                            ctx->Rax = 0;
+                            ctx->Rdx = 0;
+                        }
+                        s_instance->m_logger->Trace(LOG_EPT,
+                            "EPT XGETBV intercept: XCR0=0x%llX", s_instance->m_xgetbvResult);
+                        return true;
+                    }
+
+                    if (reg == 0) { // SGDT (0F 01 /0)
+                        uint64_t dest = ComputeEffAddr(ctx, modrm, instruction, rip);
+                        if (dest) {
+                            uint16_t limit = s_instance->m_gdtLimit;
+                            uint64_t base = s_instance->m_gdtBase;
+                            uint8_t data[10];
+                            memcpy(data, &limit, 2);
+                            memcpy(data + 2, &base, 8);
+                            WriteMemory(dest, data, 10);
+                        }
+                        s_instance->m_logger->Trace(LOG_EPT,
+                            "EPT SGDT: base=0x%llX limit=0x%X", s_instance->m_gdtBase, s_instance->m_gdtLimit);
+                        return true;
+                    }
+
+                    if (reg == 1) { // SIDT (0F 01 /1)
+                        uint64_t dest = ComputeEffAddr(ctx, modrm, instruction, rip);
+                        if (dest) {
+                            uint16_t limit = s_instance->m_idtLimit;
+                            uint64_t base = s_instance->m_idtBase;
+                            uint8_t data[10];
+                            memcpy(data, &limit, 2);
+                            memcpy(data + 2, &base, 8);
+                            WriteMemory(dest, data, 10);
+                        }
+                        s_instance->m_logger->Trace(LOG_EPT,
+                            "EPT SIDT: base=0x%llX limit=0x%X", s_instance->m_idtBase, s_instance->m_idtLimit);
+                        return true;
+                    }
+                }
+                break;
+            }
+
+            case 0x00: {
+                if (length >= 3) {
+                    uint8_t modrm = instruction[2];
+                    uint8_t reg = (modrm >> 3) & 7;
+                    uint8_t mod = (modrm >> 6) & 3;
+
+                    if (reg == 0) { // SLDT (0F 00 /0)
+                        if (mod == 3) {
+                            SetRegisterByRm(ctx, modrm & 7, 0);
+                        } else {
+                            uint64_t dest = ComputeEffAddr(ctx, modrm, instruction, rip);
+                            if (dest) {
+                                uint16_t zero = 0;
+                                WriteMemory(dest, &zero, 2);
+                            }
+                        }
+                        s_instance->m_logger->Trace(LOG_EPT, "EPT SLDT intercept at RIP=0x%llX", rip);
+                        return true;
+                    }
+
+                    if (reg == 1) { // STR (0F 00 /1)
+                        if (mod == 3) {
+                            SetRegisterByRm(ctx, modrm & 7, 0x40);
+                        } else {
+                            uint64_t dest = ComputeEffAddr(ctx, modrm, instruction, rip);
+                            if (dest) {
+                                uint16_t trVal = 0x40;
+                                WriteMemory(dest, &trVal, 2);
+                            }
+                        }
+                        s_instance->m_logger->Trace(LOG_EPT, "EPT STR intercept at RIP=0x%llX", rip);
+                        return true;
+                    }
+                }
+                break;
+            }
+
+            case 0x05: { // SYSCALL (0F 05)
+                s_instance->m_logger->Trace(LOG_EPT,
+                    "EPT SYSCALL intercept via sys instr handler at RIP=0x%llX", rip);
+                return true;
+            }
+
+            case 0x32: { // RDMSR (0F 32)
+                uint32_t msr = (uint32_t)ctx->Rcx;
+                uint64_t value = 0;
+                SystemSpoofer::HandleEptRdmsrIntercept(rip, msr, &value, context);
+                ctx->Rax = value & 0xFFFFFFFF;
+                ctx->Rdx = (value >> 32) & 0xFFFFFFFF;
+                s_instance->m_logger->Trace(LOG_EPT,
+                    "EPT RDMSR intercept via sys instr handler: MSR=0x%X value=0x%llX", msr, value);
+                return true;
+            }
+        }
+    }
+
+    s_instance->m_logger->Trace(LOG_WARNING,
+        "EPT sys instr intercept: unknown instr at RIP=0x%llX (len=%u first=0x%02X)",
+        rip, length, instruction[0]);
+    return true;
+}

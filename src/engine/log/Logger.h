@@ -13,7 +13,9 @@ enum LogCategory {
     LOG_EPT = 6,
     LOG_CPUID = 7,
     LOG_TIMING = 8,
-    LOG_DEBUG = 9,
+    LOG_SPOOF = 9,
+    LOG_VERIFY = 10,
+    LOG_DEBUG = 99,
 };
 
 class Logger {

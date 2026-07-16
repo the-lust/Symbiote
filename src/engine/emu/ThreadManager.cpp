@@ -5,6 +5,7 @@ typedef LONG NTSTATUS;
 #endif
 #undef WIN32_NO_STATUS
 #include <ntstatus.h>
+#include <winternl.h>
 #include <cstring>
 
 typedef enum _EVENT_TYPE {
@@ -135,6 +136,18 @@ bool ThreadManager::HandleNtGetContextThread(uint64_t* args, uint64_t* result)
     PVOID ctx = (PVOID)(uintptr_t)args[1];
 
     BOOL ok = GetThreadContext(hThread, (LPCONTEXT)ctx);
+    if (ok && ctx) {
+        CONTEXT* pCtx = (CONTEXT*)ctx;
+        // Zero hardware breakpoints (HWBP countermeasure)
+        if (pCtx->ContextFlags & CONTEXT_DEBUG_REGISTERS) {
+            pCtx->Dr0 = 0;
+            pCtx->Dr1 = 0;
+            pCtx->Dr2 = 0;
+            pCtx->Dr3 = 0;
+            pCtx->Dr6 = 0;
+            pCtx->Dr7 = 0;
+        }
+    }
     *result = ok ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
     return true;
 }
@@ -144,8 +157,69 @@ bool ThreadManager::HandleNtSetContextThread(uint64_t* args, uint64_t* result)
     HANDLE hThread = (HANDLE)(ULONG_PTR)args[0];
     PVOID ctx = (PVOID)(uintptr_t)args[1];
 
+    if (ctx) {
+        CONTEXT* pCtx = (CONTEXT*)ctx;
+        // Block setting hardware breakpoints (HWBP countermeasure)
+        if (pCtx->ContextFlags & CONTEXT_DEBUG_REGISTERS) {
+            pCtx->Dr0 = 0;
+            pCtx->Dr1 = 0;
+            pCtx->Dr2 = 0;
+            pCtx->Dr3 = 0;
+            pCtx->Dr6 = 0;
+            pCtx->Dr7 = 0;
+        }
+    }
+
     BOOL ok = SetThreadContext(hThread, (LPCONTEXT)ctx);
     *result = ok ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
+    return true;
+}
+
+bool ThreadManager::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* result)
+{
+    HANDLE hProcess = (HANDLE)(ULONG_PTR)args[0];
+    auto infoClass = (PROCESS_INFORMATION_CLASS)args[1];
+    PVOID outBuf = (PVOID)(uintptr_t)args[2];
+    ULONG bufLen = (ULONG)args[3];
+    PULONG retLen = (PULONG)(uintptr_t)args[4];
+
+    // Handle anti-debug query classes
+    if (infoClass == (PROCESS_INFORMATION_CLASS)7 && outBuf && bufLen >= 4) {
+        // ProcessDebugPort — return 0 (not being debugged)
+        *(DWORD*)outBuf = 0;
+        if (retLen) *retLen = 4;
+        *result = (uint64_t)STATUS_SUCCESS;
+        return true;
+    }
+
+    if (infoClass == (PROCESS_INFORMATION_CLASS)0x1E && outBuf && bufLen >= sizeof(HANDLE)) {
+        // ProcessDebugObjectHandle — return NULL
+        *(HANDLE*)outBuf = nullptr;
+        if (retLen) *retLen = sizeof(HANDLE);
+        *result = (uint64_t)STATUS_SUCCESS;
+        return true;
+    }
+
+    if (infoClass == (PROCESS_INFORMATION_CLASS)0x1F && outBuf && bufLen >= 4) {
+        // ProcessDebugFlags — return 1 (not being debugged)
+        *(DWORD*)outBuf = 1;
+        if (retLen) *retLen = 4;
+        *result = (uint64_t)STATUS_SUCCESS;
+        return true;
+    }
+
+    // Fall through to NTDLL for other classes
+    typedef NTSTATUS (NTAPI* RealNtQueryInformationProcess_t)(
+        HANDLE, PROCESS_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+    static RealNtQueryInformationProcess_t realFunc = (RealNtQueryInformationProcess_t)
+        GetProcAddress(GetNtdll(), "NtQueryInformationProcess");
+
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    if (realFunc) {
+        status = realFunc(hProcess, infoClass, outBuf, bufLen, retLen);
+    }
+
+    *result = (uint64_t)status;
     return true;
 }
 

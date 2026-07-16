@@ -316,6 +316,7 @@ void CpuidHandler::GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results
         results[idx].Ecx = ecx;
         results[idx].Edx = edx;
         idx++;
+        (void)subleaf;
     };
 
     // Enumerate standard leaves 0x00-0xFF
