@@ -83,22 +83,58 @@ bool FileEmu::HandleNtCreateFile(uint64_t* args, uint64_t* result)
     return false;
 }
 
-bool FileEmu::HandleNtReadFile(uint64_t*, uint64_t*)
+bool FileEmu::HandleNtReadFile(uint64_t* args, uint64_t* result)
 {
-    // fall through
-    return false;
+    HANDLE hFile = (HANDLE)(ULONG_PTR)args[0];
+    PVOID buffer = (PVOID)(uintptr_t)args[1];
+    ULONG length = (ULONG)args[2];
+    PULONG bytesRead = (PULONG)(uintptr_t)args[3];
+    PLARGE_INTEGER offset = (PLARGE_INTEGER)(uintptr_t)args[4];
+
+    typedef NTSTATUS (NTAPI* RealNtReadFile_t)(HANDLE, HANDLE, PVOID, PVOID, PVOID, PVOID, ULONG, PULONG, PLARGE_INTEGER);
+    static RealNtReadFile_t realFunc = (RealNtReadFile_t)
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtReadFile");
+
+    if (!realFunc) return false;
+    NTSTATUS status = realFunc(hFile, nullptr, nullptr, nullptr, (PIO_STATUS_BLOCK)buffer, buffer, length, bytesRead, offset);
+    *result = (uint64_t)status;
+    return true;
 }
 
-bool FileEmu::HandleNtWriteFile(uint64_t*, uint64_t*)
+bool FileEmu::HandleNtWriteFile(uint64_t* args, uint64_t* result)
 {
-    // fall through
-    return false;
+    HANDLE hFile = (HANDLE)(ULONG_PTR)args[0];
+    PVOID buffer = (PVOID)(uintptr_t)args[1];
+    ULONG length = (ULONG)args[2];
+    PULONG bytesWritten = (PULONG)(uintptr_t)args[3];
+    PLARGE_INTEGER offset = (PLARGE_INTEGER)(uintptr_t)args[4];
+
+    typedef NTSTATUS (NTAPI* RealNtWriteFile_t)(HANDLE, HANDLE, PVOID, PVOID, PVOID, PVOID, ULONG, PULONG, PLARGE_INTEGER);
+    static RealNtWriteFile_t realFunc = (RealNtWriteFile_t)
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtWriteFile");
+
+    if (!realFunc) return false;
+    NTSTATUS status = realFunc(hFile, nullptr, nullptr, nullptr, (PIO_STATUS_BLOCK)buffer, buffer, length, bytesWritten, offset);
+    *result = (uint64_t)status;
+    return true;
 }
 
-bool FileEmu::HandleNtQueryInformationFile(uint64_t*, uint64_t*)
+bool FileEmu::HandleNtQueryInformationFile(uint64_t* args, uint64_t* result)
 {
-    // fall through
-    return false;
+    HANDLE hFile = (HANDLE)(ULONG_PTR)args[0];
+    PVOID info = (PVOID)(uintptr_t)args[1];
+    ULONG length = (ULONG)args[2];
+    auto infoClass = (FILE_INFORMATION_CLASS)args[3];
+
+    typedef NTSTATUS (NTAPI* RealNtQueryInformationFile_t)(HANDLE, PVOID, PVOID, ULONG, FILE_INFORMATION_CLASS);
+    static RealNtQueryInformationFile_t realFunc = (RealNtQueryInformationFile_t)
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationFile");
+
+    if (!realFunc) return false;
+    IO_STATUS_BLOCK iosb;
+    NTSTATUS status = realFunc(hFile, &iosb, info, length, infoClass);
+    *result = (uint64_t)status;
+    return true;
 }
 
 bool FileEmu::HandleNtQueryVolumeInformationFile(uint64_t* args, uint64_t* result)

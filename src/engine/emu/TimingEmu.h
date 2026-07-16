@@ -27,4 +27,5 @@ private:
     uint64_t m_tickBase;
     uint64_t m_timeBase;
     bool m_initialized;
+    uint32_t m_currentResolution;
 };

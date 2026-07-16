@@ -24,6 +24,7 @@ public:
     void StartCounterUpdater();
     void StopCounterUpdater();
     static uint64_t GetCounterUpdaterTsc();
+    static uint64_t* GetCounterUpdaterTscPtr();
     static void CounterUpdaterThread(RdtscHandler* handler);
 
     uint64_t GetTscOffset() const { return m_tscOffset; }

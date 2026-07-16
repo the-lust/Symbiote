@@ -10,7 +10,7 @@ typedef LONG NTSTATUS;
 
 TimingEmu::TimingEmu(Logger* logger)
     : m_logger(logger), m_syntheticTscBase(0), m_syntheticTscFreq(3700000000ULL),
-      m_qpcBase(0), m_tickBase(0), m_timeBase(0), m_initialized(false)
+      m_qpcBase(0), m_tickBase(0), m_timeBase(0), m_initialized(false), m_currentResolution(0)
 {
     LARGE_INTEGER qpc;
     QueryPerformanceCounter(&qpc);
@@ -84,8 +84,13 @@ bool TimingEmu::HandleNtQueryPerformanceCounter(uint64_t* args, uint64_t* result
     return true;
 }
 
-bool TimingEmu::HandleNtSetTimerResolution(uint64_t*, uint64_t* result)
+bool TimingEmu::HandleNtSetTimerResolution(uint64_t* args, uint64_t* result)
 {
+    uint32_t requestedRes = (uint32_t)args[0];
+    BOOLEAN set = (BOOLEAN)args[1];
+    if (set && requestedRes > 0) {
+        m_currentResolution = requestedRes;
+    }
     *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }
@@ -133,9 +138,10 @@ bool TimingEmu::HandleGetSystemTime(uint64_t* args, uint64_t* result)
 
 bool TimingEmu::HandleGetSystemTimeAdjustment(uint64_t* args, uint64_t* result)
 {
+    // args: [0]=PDWORD lpTimeAdjustment, [1]=PDWORD lpTimeIncrement, [2]=PBOOL lpTimeAdjustmentDisabled
     if (args[0]) *(uint32_t*)(uintptr_t)args[0] = 156001;
-    if (args[1]) *(uint32_t*)(uintptr_t)args[1] = 0;
-    if (args[2]) args[2] = 1;
+    if (args[1]) *(uint32_t*)(uintptr_t)args[1] = 10000;
+    if (args[2]) *(BOOL*)(uintptr_t)args[2] = FALSE;
     *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }

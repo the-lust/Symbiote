@@ -7,6 +7,8 @@
 #include "SyscallDispatch.h"
 #include "EptExecHook.h"
 #include "KernelLock.h"
+#include "emu/StackSpoofer.h"
+#include "IndirectSyscall.h"
 #include <unordered_map>
 
 class Partition;
@@ -57,6 +59,18 @@ public:
 
     // BEL (Big Emulator Lock) — serializes all C++ handler code
     KernelLock* GetKernelLock() { return &m_kernelLock; }
+
+    // Stack spoofer for return-address anti-walker
+    void SetStackSpoofer(StackSpoofer* spoofer) { m_stackSpoofer = spoofer; }
+    StackSpoofer* GetStackSpoofer() const { return m_stackSpoofer; }
+
+    // Indirect syscall EPT hook
+    void SetIndirectSyscall(IndirectSyscall* isc) { m_indirectSyscall = isc; }
+    IndirectSyscall* GetIndirectSyscall() const { return m_indirectSyscall; }
+
+    // SystemSpoofer for EPT-based instruction interception
+    void SetSystemSpoofer(SystemSpoofer* spoofer) { m_systemSpoofer = spoofer; }
+    SystemSpoofer* GetSystemSpoofer() const { return m_systemSpoofer; }
 
     // Singleton access for ThreadBootstrapEntry (static thread proc)
     static VcpuManager* GetInstance() { return s_instance; }
@@ -118,6 +132,9 @@ private:
     SyscallDispatch m_syscallDispatch;
     KernelLock m_kernelLock;
     EptExecHook* m_eptExecHook = nullptr;
+    StackSpoofer* m_stackSpoofer = nullptr;
+    IndirectSyscall* m_indirectSyscall = nullptr;
+    SystemSpoofer* m_systemSpoofer = nullptr;
 
     // Per-VCPU GDTs — each VCPU gets its own GDT at a unique GPA so that
     // WOW64 threads on different VCPUs don't share FS-segment bases

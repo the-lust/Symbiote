@@ -742,6 +742,17 @@ bool VcpuManager::HandleSyscallExit(uint32_t vcpuIndex)
     m_logger->Trace(LOG_WHP, "VCPU %u: SYSCALL 0x%X from return-addr 0x%llX (RSP=0x%llX)",
         vcpuIndex, syscallNum, returnAddr, guestRsp);
 
+    // Simulate a CONTEXT to pass to stack spoofer
+    CONTEXT spoofCtx;
+    memset(&spoofCtx, 0, sizeof(spoofCtx));
+    spoofCtx.Rsp = guestRsp;
+    spoofCtx.Rax = values[0].Reg64;
+
+    // Stack spoofer: replace return address with ntdll ret sled before dispatch
+    if (m_stackSpoofer) {
+        m_stackSpoofer->SpoofReturnAddress(&spoofCtx);
+    }
+
     uint64_t result = 0;
     bool handled = false;
 
@@ -768,6 +779,11 @@ bool VcpuManager::HandleSyscallExit(uint32_t vcpuIndex)
     if (!handled) {
         result = 0xC0000001;
         m_logger->Trace(LOG_WHP, "VCPU %u: unhandled syscall 0x%X", vcpuIndex, syscallNum);
+    }
+
+    // Restore return address after syscall completes
+    if (m_stackSpoofer && handled) {
+        m_stackSpoofer->RestoreReturnAddress(&spoofCtx, returnAddr);
     }
 
     WHV_REGISTER_NAME retNames[3] = {
@@ -1259,11 +1275,122 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
             WHV_MEMORY_ACCESS_CONTEXT& mem = exitCtx.MemoryAccess;
             uint64_t faultGpa = mem.Gpa;
 
-            // Check for EPT-based execution hooks first (single-step mechanism)
-            if (m_eptExecHook && mem.AccessInfo.AccessType == 2) { // WHvMemoryAccessExecute = 2
-                if (m_eptExecHook->HandleExecFault(faultGpa, 0,
+            // Read RIP for memory access
+            WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
+            WHV_REGISTER_VALUE ripValue;
+            uint64_t rip = 0;
+            hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
+                &ripName, 1, &ripValue);
+            if (SUCCEEDED(hr)) rip = ripValue.Reg64;
+
+            // EPT-based system instruction interception (execute access)
+            if (mem.AccessInfo.AccessType == 2) { // WHvMemoryAccessExecute = 2
+                // First check EptExecHook (registered hooks)
+                if (m_eptExecHook && m_eptExecHook->HandleExecFault(faultGpa, rip,
                     m_partition->GetHandle(), vcpuIndex)) {
                     return true;
+                }
+
+                // Try SystemSpoofer EPT handlers for system instructions
+                // Read instruction bytes at RIP for decoding
+                uint8_t instr[16] = {0};
+                if (rip) {
+                    __try {
+                        memcpy(instr, (void*)rip, min(sizeof(instr), 16));
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {
+                        memset(instr, 0, sizeof(instr));
+                    }
+                }
+
+                // Read guest registers for EPT handler context
+                WHV_REGISTER_NAME gpNames[] = {
+                    WHvX64RegisterRax, WHvX64RegisterRcx, WHvX64RegisterRdx,
+                    WHvX64RegisterRbx, WHvX64RegisterRsp, WHvX64RegisterRbp,
+                    WHvX64RegisterRsi, WHvX64RegisterRdi,
+                    WHvX64RegisterR8,  WHvX64RegisterR9,  WHvX64RegisterR10,
+                    WHvX64RegisterR11, WHvX64RegisterR12, WHvX64RegisterR13,
+                    WHvX64RegisterR14, WHvX64RegisterR15
+                };
+                WHV_REGISTER_VALUE gpVals[16];
+                bool haveGprs = false;
+                if (SUCCEEDED(WHvGetVirtualProcessorRegisters(m_partition->GetHandle(),
+                        vcpuIndex, gpNames, 16, gpVals))) {
+                    haveGprs = true;
+                }
+
+                CONTEXT eptCtx;
+                memset(&eptCtx, 0, sizeof(eptCtx));
+                if (haveGprs) {
+                    eptCtx.Rax = gpVals[0].Reg64;  eptCtx.Rcx = gpVals[1].Reg64;
+                    eptCtx.Rdx = gpVals[2].Reg64;  eptCtx.Rbx = gpVals[3].Reg64;
+                    eptCtx.Rsp = gpVals[4].Reg64;  eptCtx.Rbp = gpVals[5].Reg64;
+                    eptCtx.Rsi = gpVals[6].Reg64;  eptCtx.Rdi = gpVals[7].Reg64;
+                    eptCtx.R8  = gpVals[8].Reg64;  eptCtx.R9  = gpVals[9].Reg64;
+                    eptCtx.R10 = gpVals[10].Reg64; eptCtx.R11 = gpVals[11].Reg64;
+                    eptCtx.R12 = gpVals[12].Reg64; eptCtx.R13 = gpVals[13].Reg64;
+                    eptCtx.R14 = gpVals[14].Reg64; eptCtx.R15 = gpVals[15].Reg64;
+                }
+
+                // Try syscall interception (0F 05)
+                if (instr[0] == 0x0F && instr[1] == 0x05) {
+                    if (m_systemSpoofer && m_systemSpoofer->HandleEptSyscallIntercept(rip, &eptCtx)) {
+                        // Advance RIP past SYSCALL instruction
+                        ripValue.Reg64 = rip + 2;
+                        WHvSetVirtualProcessorRegisters(m_partition->GetHandle(),
+                            vcpuIndex, &ripName, 1, &ripValue);
+                        return true;
+                    }
+                }
+
+                // Try RDMSR interception (0F 32)
+                if (instr[0] == 0x0F && instr[1] == 0x32) {
+                    uint32_t msrNum = (uint32_t)eptCtx.Rcx;
+                    uint64_t msrValue = 0;
+                    if (m_systemSpoofer && m_systemSpoofer->HandleEptRdmsrIntercept(rip, msrNum, &msrValue, &eptCtx)) {
+                        eptCtx.Rax = msrValue & 0xFFFFFFFF;
+                        eptCtx.Rdx = (msrValue >> 32) & 0xFFFFFFFF;
+                        WHV_REGISTER_NAME msrRegs[2] = {WHvX64RegisterRax, WHvX64RegisterRdx};
+                        WHV_REGISTER_VALUE msrVals[2];
+                        msrVals[0].Reg64 = eptCtx.Rax;
+                        msrVals[1].Reg64 = eptCtx.Rdx;
+                        WHvSetVirtualProcessorRegisters(m_partition->GetHandle(),
+                            vcpuIndex, msrRegs, 2, msrVals);
+                        ripValue.Reg64 = rip + 2;
+                        WHvSetVirtualProcessorRegisters(m_partition->GetHandle(),
+                            vcpuIndex, &ripName, 1, &ripValue);
+                        return true;
+                    }
+                }
+
+                // Try system instruction interception (SGDT/SIDT/SLDT/STR/XGETBV)
+                if (instr[0] == 0x0F && (instr[1] == 0x01 || instr[1] == 0x00)) {
+                    uint32_t instrLen = (instr[1] == 0x01) ? 3 : 3;
+                    if (m_systemSpoofer && m_systemSpoofer->HandleEptSysInstrIntercept(rip, instr, instrLen, &eptCtx)) {
+                        // Write back modified registers
+                        WHV_REGISTER_NAME sysRegs[] = {
+                            WHvX64RegisterRax, WHvX64RegisterRcx, WHvX64RegisterRdx,
+                            WHvX64RegisterRbx, WHvX64RegisterRsp, WHvX64RegisterRbp,
+                            WHvX64RegisterRsi, WHvX64RegisterRdi,
+                            WHvX64RegisterR8,  WHvX64RegisterR9,  WHvX64RegisterR10,
+                            WHvX64RegisterR11, WHvX64RegisterR12, WHvX64RegisterR13,
+                            WHvX64RegisterR14, WHvX64RegisterR15
+                        };
+                        WHV_REGISTER_VALUE sysVals[16];
+                        sysVals[0].Reg64 = eptCtx.Rax;  sysVals[1].Reg64 = eptCtx.Rcx;
+                        sysVals[2].Reg64 = eptCtx.Rdx;  sysVals[3].Reg64 = eptCtx.Rbx;
+                        sysVals[4].Reg64 = eptCtx.Rsp;  sysVals[5].Reg64 = eptCtx.Rbp;
+                        sysVals[6].Reg64 = eptCtx.Rsi;  sysVals[7].Reg64 = eptCtx.Rdi;
+                        sysVals[8].Reg64 = eptCtx.R8;   sysVals[9].Reg64 = eptCtx.R9;
+                        sysVals[10].Reg64 = eptCtx.R10; sysVals[11].Reg64 = eptCtx.R11;
+                        sysVals[12].Reg64 = eptCtx.R12; sysVals[13].Reg64 = eptCtx.R13;
+                        sysVals[14].Reg64 = eptCtx.R14; sysVals[15].Reg64 = eptCtx.R15;
+                        WHvSetVirtualProcessorRegisters(m_partition->GetHandle(),
+                            vcpuIndex, sysRegs, 16, sysVals);
+                        ripValue.Reg64 = rip + instrLen;
+                        WHvSetVirtualProcessorRegisters(m_partition->GetHandle(),
+                            vcpuIndex, &ripName, 1, &ripValue);
+                        return true;
+                    }
                 }
             }
 
@@ -1278,12 +1405,6 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
 
             // Fallback to exit dispatcher
             if (m_exitDispatcher) {
-                WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
-                WHV_REGISTER_VALUE ripValue;
-                uint64_t rip = 0;
-                hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
-                    &ripName, 1, &ripValue);
-                if (SUCCEEDED(hr)) rip = ripValue.Reg64;
                 bool handled = m_exitDispatcher->Dispatch(nullptr, &exitCtx, &rip);
                 m_partition->FlushDeferredMaps();
                 return handled;

@@ -35,6 +35,7 @@ public:
     static bool DispatchThunk(uint64_t syscallNumber, uint64_t* args, uint64_t* result);
 
     DeviceIoEmu* GetDeviceIoEmu() { return m_deviceIoEmu; }
+    TimingEmu* GetTimingEmu() { return m_timingEmu; }
 
 private:
     static MinimalKernel* s_instance;

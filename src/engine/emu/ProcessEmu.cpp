@@ -827,18 +827,20 @@ bool ProcessEmu::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* resul
 
     switch (infoClass) {
         case 0x07: {
+            // ProcessDebugPort — 0 = no debugger, -1 = being debugged
             if (args[1] == 0 || args[3] < sizeof(uint32_t)) {
                 *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
-            *(uint32_t*)(uintptr_t)args[1] = 0xFFFFFFFF;
+            *(uint32_t*)(uintptr_t)args[1] = 0;
             if (args[4]) *(uint32_t*)(uintptr_t)args[4] = sizeof(uint32_t);
                 *result = (uint64_t)STATUS_SUCCESS;
-            m_logger->Trace(LOG_INFO, "Spoofed ProcessDebugPort=0xFFFFFFFF (no debugger)");
+            m_logger->Trace(LOG_INFO, "Spoofed ProcessDebugPort=0 (no debugger)");
             return true;
         }
 
         case 0x1E: {
+            // ProcessDebugObjectHandle — NULL = no debug object
             if (args[1] == 0 || args[3] < sizeof(HANDLE)) {
                 *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
@@ -847,6 +849,19 @@ bool ProcessEmu::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* resul
             if (args[4]) *(uint32_t*)(uintptr_t)args[4] = sizeof(HANDLE);
                 *result = (uint64_t)STATUS_SUCCESS;
             m_logger->Trace(LOG_INFO, "Spoofed ProcessDebugObjectHandle=NULL");
+            return true;
+        }
+
+        case 0x1F: {
+            // ProcessDebugFlags — 1 = not being debugged
+            if (args[1] == 0 || args[3] < sizeof(uint32_t)) {
+                *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
+                return true;
+            }
+            *(uint32_t*)(uintptr_t)args[1] = 1;
+            if (args[4]) *(uint32_t*)(uintptr_t)args[4] = sizeof(uint32_t);
+                *result = (uint64_t)STATUS_SUCCESS;
+            m_logger->Trace(LOG_INFO, "Spoofed ProcessDebugFlags=1 (no debugger)");
             return true;
         }
 

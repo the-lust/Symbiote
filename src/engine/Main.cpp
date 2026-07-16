@@ -29,6 +29,10 @@
 #include "whp/AcpiTimerHandler.h"
 #include "whp/EptPageProtect.h"
 #include "emu/DeviceIoEmu.h"
+#include "emu/StackSpoofer.h"
+#include "emu/TimingEmu.h"
+#include "whp/IndirectSyscall.h"
+#include "whp/Snapshot.h"
 #include "whp/VeSimulation.h"
 #include "whp/ConsistencyVerifier.h"
 #include "emu/ThreadHider.h"
@@ -74,6 +78,9 @@ static EptSplitView* g_eptSplitView = nullptr;
 static EptPageProtect* g_eptPageProtect = nullptr;
 static VeSimulation* g_veSimulation = nullptr;
 static ConsistencyVerifier* g_consistencyVerifier = nullptr;
+static StackSpoofer* g_stackSpoofer = nullptr;
+static IndirectSyscall* g_indirectSyscall = nullptr;
+static Snapshot* g_snapshot = nullptr;
 
 static HANDLE g_engineReadyEvent = nullptr;
 static HANDLE g_engineActiveEvent = nullptr;
@@ -190,6 +197,9 @@ static void CleanupAll()
     delete g_consistencyVerifier; g_consistencyVerifier = nullptr;
     delete g_veSimulation; g_veSimulation = nullptr;
     delete g_eptPageProtect; g_eptPageProtect = nullptr;
+    delete g_stackSpoofer; g_stackSpoofer = nullptr;
+    delete g_indirectSyscall; g_indirectSyscall = nullptr;
+    delete g_snapshot; g_snapshot = nullptr;
 }
 
 static wchar_t g_engineDir[MAX_PATH] = {0};
@@ -682,6 +692,65 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
     } else {
         g_logger.Trace(LOG_INFO, "SystemSpoofer disabled by config");
+    }
+
+    // Phase B: Wire SystemSpoofer to VcpuManager for EPT dispatch
+    if (g_vcpuManager) {
+        g_vcpuManager->SetSystemSpoofer(g_systemSpoofer);
+    }
+
+    // Phase B: StackSpoofer (call-stack return address protection)
+    bool spoofStackSpoofer = configParser.GetBool("stack_spoofer", "enabled", true);
+    if (spoofStackSpoofer && g_vcpuManager) {
+        g_stackSpoofer = new StackSpoofer(&g_logger);
+        if (g_stackSpoofer->Initialize()) {
+            g_vcpuManager->SetStackSpoofer(g_stackSpoofer);
+            g_logger.Trace(LOG_INFO, "StackSpoofer initialized — return address protection active");
+        } else {
+            g_logger.Trace(LOG_WARNING, "StackSpoofer failed to initialize");
+            delete g_stackSpoofer;
+            g_stackSpoofer = nullptr;
+        }
+    } else {
+        g_logger.Trace(LOG_INFO, "StackSpoofer disabled by config (requires WHP)");
+    }
+
+    // Phase B: IndirectSyscall (EPT execute-disabled ntdll syscall stubs)
+    bool spoofIndirectSyscall = configParser.GetBool("indirect_syscall", "enabled", false);
+    if (spoofIndirectSyscall && g_eptExecHook) {
+        g_indirectSyscall = new IndirectSyscall(&g_logger);
+        if (g_indirectSyscall->Initialize(g_eptExecHook)) {
+            if (g_vcpuManager) g_vcpuManager->SetIndirectSyscall(g_indirectSyscall);
+            g_logger.Trace(LOG_INFO, "IndirectSyscall initialized — EPT syscall stubs active");
+        } else {
+            g_logger.Trace(LOG_WARNING, "IndirectSyscall failed to initialize");
+            delete g_indirectSyscall;
+            g_indirectSyscall = nullptr;
+        }
+    } else {
+        g_logger.Trace(LOG_INFO, "IndirectSyscall disabled by config (requires EptExecHook)");
+    }
+
+    // Phase B: Snapshot for VCPU save/restore
+    bool snapshotEnabled = configParser.GetBool("snapshot", "enabled", false);
+    if (snapshotEnabled && g_partition) {
+        g_snapshot = new Snapshot(&g_logger);
+        g_logger.Trace(LOG_INFO, "Snapshot instance created (save/restore API ready)");
+        // Snapshot usage: g_snapshot->Create(...), g_snapshot->WriteToFile(...),
+        //                g_snapshot->LoadFromFile(...), g_snapshot->Restore(...)
+    } else {
+        g_logger.Trace(LOG_INFO, "Snapshot disabled by config (requires WHP)");
+    }
+
+    // Phase B: Wire synthetic TSC source to TimingEmu and SystemSpoofer
+    // Both derive from the same CounterUpdater TSC for coherent timing
+    if (g_minimalKernel && g_minimalKernel->GetTimingEmu()) {
+        g_minimalKernel->GetTimingEmu()->SetSyntheticTscSource(RdtscHandler::GetCounterUpdaterTscPtr());
+        g_logger.Trace(LOG_INFO, "TimingEmu: synthetic TSC source set to CounterUpdater");
+    }
+    if (g_systemSpoofer) {
+        g_systemSpoofer->m_syntheticTsc = RdtscHandler::GetCounterUpdaterTscPtr();
+        g_logger.Trace(LOG_INFO, "SystemSpoofer: synthetic TSC source set to CounterUpdater");
     }
 
     // Initialize ACPI PM timer / HPET spoofing
