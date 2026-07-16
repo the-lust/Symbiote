@@ -39,6 +39,7 @@ private:
     bool m_initialized = false;
     bool m_forwardBuilt = false;
     uint64_t m_kiSystemCall64 = 0;
+    uint32_t m_buildNum = 0;
     std::unordered_map<uint32_t, ForwardEntry> m_forwardTable;
 
     uint64_t ResolveKiSystemCall64();

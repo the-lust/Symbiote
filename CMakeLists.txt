@@ -105,6 +105,7 @@ set(ENGINE_SOURCES
     src/engine/proxy/ModuleCloak.cpp
     src/engine/proxy/ProxyBase.cpp
     src/engine/proxy/SyscallBridge.cpp
+    src/engine/proxy/ApiSetResolver.cpp
 )
 if(NOT SYMBIOTE_NO_WHP)
     list(APPEND ENGINE_SOURCES
@@ -133,6 +134,7 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/VeSimulation.cpp
         src/engine/whp/ConsistencyVerifier.cpp
         src/engine/whp/IndirectSyscall.cpp
+        src/engine/whp/SyscallTables.cpp
     )
 endif()
 add_library(engine SHARED ${ENGINE_SOURCES})

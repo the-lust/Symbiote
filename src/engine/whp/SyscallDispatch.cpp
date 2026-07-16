@@ -1,4 +1,5 @@
 #include "SyscallDispatch.h"
+#include "SyscallTables.h"
 #include "Logger.h"
 #include <cstring>
 #include <cwchar>
@@ -172,20 +173,52 @@ bool SyscallDispatch::Initialize()
 {
     if (m_initialized) return true;
 
-    NtQuerySystemInformation = GetSyscallNumber("NtQuerySystemInformation");
-    NtQueryInformationProcess = GetSyscallNumber("NtQueryInformationProcess");
-    NtOpenKey = GetSyscallNumber("NtOpenKey");
-    NtOpenKeyEx = GetSyscallNumber("NtOpenKeyEx");
-    NtQueryValueKey = GetSyscallNumber("NtQueryValueKey");
-    NtClose = GetSyscallNumber("NtClose");
-    NtCreateFile = GetSyscallNumber("NtCreateFile");
-    NtQueryObject = GetSyscallNumber("NtQueryObject");
-    NtCreateThread = GetSyscallNumber("NtCreateThread");
-    NtCreateThreadEx = GetSyscallNumber("NtCreateThreadEx");
-    NtTerminateThread = GetSyscallNumber("NtTerminateThread");
-    NtQueryVirtualMemory = GetSyscallNumber("NtQueryVirtualMemory");
-    NtDeviceIoControlFile = GetSyscallNumber("NtDeviceIoControlFile");
-    NtQuerySystemTime = GetSyscallNumber("NtQuerySystemTime");
+    uint32_t detected[] = {
+        NtQuerySystemInformation = GetSyscallNumber("NtQuerySystemInformation"),
+        NtQueryInformationProcess = GetSyscallNumber("NtQueryInformationProcess"),
+        NtOpenKey = GetSyscallNumber("NtOpenKey"),
+        NtOpenKeyEx = GetSyscallNumber("NtOpenKeyEx"),
+        NtQueryValueKey = GetSyscallNumber("NtQueryValueKey"),
+        NtClose = GetSyscallNumber("NtClose"),
+        NtCreateFile = GetSyscallNumber("NtCreateFile"),
+        NtQueryObject = GetSyscallNumber("NtQueryObject"),
+        NtCreateThread = GetSyscallNumber("NtCreateThread"),
+        NtCreateThreadEx = GetSyscallNumber("NtCreateThreadEx"),
+        NtTerminateThread = GetSyscallNumber("NtTerminateThread"),
+        NtQueryVirtualMemory = GetSyscallNumber("NtQueryVirtualMemory"),
+        NtDeviceIoControlFile = GetSyscallNumber("NtDeviceIoControlFile"),
+        NtQuerySystemTime = GetSyscallNumber("NtQuerySystemTime"),
+    };
+    const char* names[] = {
+        "NtQuerySystemInformation", "NtQueryInformationProcess",
+        "NtOpenKey", "NtOpenKeyEx", "NtQueryValueKey", "NtClose",
+        "NtCreateFile", "NtQueryObject", "NtCreateThread", "NtCreateThreadEx",
+        "NtTerminateThread", "NtQueryVirtualMemory", "NtDeviceIoControlFile",
+        "NtQuerySystemTime",
+    };
+    uint32_t* vars[] = {
+        &NtQuerySystemInformation, &NtQueryInformationProcess,
+        &NtOpenKey, &NtOpenKeyEx, &NtQueryValueKey, &NtClose,
+        &NtCreateFile, &NtQueryObject, &NtCreateThread, &NtCreateThreadEx,
+        &NtTerminateThread, &NtQueryVirtualMemory, &NtDeviceIoControlFile,
+        &NtQuerySystemTime,
+    };
+
+    // Cross-check runtime-detected SSNs against static tables
+    m_buildNum = SyscallTables::DetectBuildNumber();
+    uint32_t buildNum = m_buildNum;
+    if (SyscallTables::HasTable(buildNum)) {
+        SYSLOG("build %u detected, cross-checking SSNs against known table", buildNum);
+        for (int i = 0; i < 14; i++) {
+            if (detected[i] != 0 && !SyscallTables::CrossCheck(names[i], detected[i], buildNum)) {
+                uint32_t lookup = SyscallTables::Lookup(names[i], buildNum);
+                SYSERR("SSN mismatch for %s: runtime=0x%X, known=0x%X — using known value", names[i], detected[i], lookup);
+                *vars[i] = lookup;
+            }
+        }
+    } else {
+        SYSLOG("build %u has no static table, using runtime-detected SSNs only", buildNum);
+    }
 
     SYSLOG("NtQSI=0x%X NtQIP=0x%X NtOpenKey=0x%X NtQueryValueKey=0x%X NtClose=0x%X NtCreateFile=0x%X NtQueryObject=0x%X NtCreateThread=0x%X NtCreateThreadEx=0x%X NtTerminateThread=0x%X NtQVM=0x%X NtDICF=0x%X NtQST=0x%X",
         NtQuerySystemInformation, NtQueryInformationProcess, NtOpenKey,
@@ -262,6 +295,17 @@ bool SyscallDispatch::BuildForwardTable()
             }
         }
         if (!syscallNum) continue;
+
+        // Cross-check forward table entries against static data
+        if (m_buildNum > 0) {
+            if (!SyscallTables::CrossCheck(name, syscallNum, m_buildNum)) {
+                uint32_t correctSsn = SyscallTables::Lookup(name, m_buildNum);
+                if (correctSsn != 0) {
+                    SYSLOG("forward table SSM mismatch for %s: runtime=0x%X, known=0x%X — corrected", name, syscallNum, correctSsn);
+                    syscallNum = correctSsn;
+                }
+            }
+        }
 
         if (syscallNum == NtQuerySystemInformation ||
             syscallNum == NtQueryInformationProcess ||

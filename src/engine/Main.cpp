@@ -43,6 +43,7 @@
 #include "proxy/IatPatch.h"
 #include "proxy/SyscallBridge.h"
 #include "proxy/GpuBridge.h"
+#include "proxy/ApiSetResolver.h"
 #include "kernel/SystemProfile.h"
 #include "kernel/KernelBackend.h"
 #include "util/HwDetect.h"
@@ -236,6 +237,13 @@ static wchar_t g_engineDir[MAX_PATH] = {0};
 static void SetupIatHooks(bool enableEat = false)
 {
     g_iatPatch = new IatPatch(&g_logger);
+
+    // Initialize ApiSetResolver for proxy DLL coverage verification
+    {
+        static ApiSetResolver s_apiSetResolver(&g_logger);
+        s_apiSetResolver.Initialize();
+        s_apiSetResolver.LogCoverage();
+    }
 
     // Get engine DLL directory for loading proxy DLLs with full paths
     if (!g_engineDir[0] && g_engineModule) {
