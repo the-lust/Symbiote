@@ -31,6 +31,7 @@
 #include "emu/DeviceIoEmu.h"
 #include "emu/StackSpoofer.h"
 #include "emu/TimingEmu.h"
+#include "emu/ProcessEmu.h"
 #include "whp/IndirectSyscall.h"
 #include "whp/Snapshot.h"
 #include "whp/VeSimulation.h"
@@ -825,6 +826,12 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             CloseHandle(hSnap);
         }
         g_logger.Trace(LOG_INFO, "ThreadHider: engine threads registered as hidden");
+
+        // Wire ThreadHider into ProcessEmu for NtQuerySystemInformation thread filtering
+        if (g_minimalKernel && g_minimalKernel->GetProcessEmu()) {
+            g_minimalKernel->GetProcessEmu()->SetThreadHider(g_threadHider);
+            g_logger.Trace(LOG_INFO, "ThreadHider: wired to ProcessEmu NtQuerySystemInformation path");
+        }
     }
 
     // Initialize EPT page protection (hide engine/patch pages from Denuvo)

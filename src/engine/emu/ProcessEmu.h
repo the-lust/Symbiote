@@ -7,6 +7,7 @@
 
 class ConfigParser;
 class ModuleCloak;
+class ThreadHider;
 
 class ProcessEmu {
 public:
@@ -20,9 +21,12 @@ public:
     bool HandleNtOpenProcess(uint64_t* args, uint64_t* result);
     uint64_t GetSpoofedPebField(uint32_t offset);
 
+    void SetThreadHider(ThreadHider* hider) { m_threadHider = hider; }
+
 private:
     Logger* m_logger;
     ModuleCloak* m_moduleCloak;
+    ThreadHider* m_threadHider = nullptr;
 
     struct VirtualProcessInfo {
         uint64_t uniqueProcessId;

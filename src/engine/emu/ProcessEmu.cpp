@@ -1,5 +1,6 @@
 #define WIN32_NO_STATUS
 #include "ProcessEmu.h"
+#include "ThreadHider.h"
 #include "ConfigParser.h"
 #include <windows.h>
 #ifndef NTSTATUS
@@ -285,7 +286,13 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
 
             memcpy((void*)infoBuffer, buffer.data(), buffer.size());
             if (returnLengthPtr) *(uint32_t*)returnLengthPtr = totalSize;
-                *result = (uint64_t)STATUS_SUCCESS;
+            *result = (uint64_t)STATUS_SUCCESS;
+
+            // Apply ThreadHider filtering to remove hidden threads/processes
+            if (m_threadHider) {
+                m_threadHider->HandleSystemProcessInformation(infoBuffer, infoLength, (uint32_t*)(uintptr_t)returnLengthPtr, result);
+            }
+
             return true;
         }
 

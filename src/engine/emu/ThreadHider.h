@@ -18,7 +18,7 @@ public:
     void HideProcess(uint32_t processId);
     void UnhideProcess(uint32_t processId);
 
-    bool HandleSystemProcessInformation(uint64_t infoBuffer, uint32_t infoLength, uint64_t* returnLength, uint64_t* result);
+    bool HandleSystemProcessInformation(uint64_t infoBuffer, uint32_t infoLength, uint32_t* returnLength, uint64_t* result);
 
     bool IsThreadHidden(uint32_t threadId) const;
     bool IsProcessHidden(uint32_t processId) const;
@@ -36,6 +36,9 @@ private:
     uint8_t m_origBytesSnapshot[12];
     uint8_t m_origBytesFirst[12];
     uint8_t m_origBytesNext[12];
+    void* m_trampolineSnapshot;
+    void* m_trampolineFirst;
+    void* m_trampolineNext;
     bool m_hooksInstalled;
 
     bool InstallHooks();
