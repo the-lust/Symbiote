@@ -2,6 +2,7 @@
 #include "CpuidHandler.h"
 #include "GuestPageTable.h"
 #include <winerror.h>
+#include <algorithm>
 
 Partition::Partition(Logger* logger)
     : m_logger(logger), m_handle(nullptr), m_initialized(false), m_guestPageTable(nullptr)
@@ -66,13 +67,15 @@ bool Partition::SetupExceptionBitmap()
 {
     if (!m_handle) return false;
 
-    // Enable VM exits on #BP (0x03 = INT3) for raw syscall interception
-    // and #DB (0x01 = single-step) for trampoline restore
-    // Bitmap layout: bit N corresponds to exception vector N, where the
-    // WHP-defined enum values map to exception vectors directly
+    // Enable VM exits on exceptions we need to handle.
+    // Bitmap layout: bit N corresponds to exception vector N.
     uint64_t exceptionBitmap = 0;
-    exceptionBitmap |= (1ULL << 0x01); // #DB - single step (trampoline restore)
+    exceptionBitmap |= (1ULL << 0x01); // #DB - single step (trampoline restore, exec hook step)
     exceptionBitmap |= (1ULL << 0x03); // #BP - breakpoint (syscall/RDMSR intercept)
+    exceptionBitmap |= (1ULL << 0x06); // #UD - invalid opcode (catch malicious decode)
+    exceptionBitmap |= (1ULL << 0x0E); // #PF - page fault (EPT violation fallback)
+    exceptionBitmap |= (1ULL << 0x10); // #MF - x87 FP error
+    exceptionBitmap |= (1ULL << 0x13); // #XM - SIMD FP error
 
     HRESULT hr = WHvSetPartitionProperty(m_handle,
         WHvPartitionPropertyCodeExceptionExitBitmap,
@@ -82,7 +85,7 @@ bool Partition::SetupExceptionBitmap()
         return false;
     }
 
-    m_logger->Trace(LOG_WHP, "Exception exit bitmap configured: #BP=1 #DB=1");
+    m_logger->Trace(LOG_WHP, "Exception exit bitmap configured: #DB #BP #UD #PF #MF #XM");
     return true;
 }
 
@@ -225,6 +228,89 @@ void Partition::Destroy()
         m_initialized = false;
         m_logger->Trace(LOG_WHP, "Partition destroyed");
     }
+}
+
+bool Partition::MapGpaRangeDeferred(void* hostVa, WHV_GUEST_PHYSICAL_ADDRESS guestPa, uint64_t sizeInBytes, WHV_MAP_GPA_RANGE_FLAGS flags)
+{
+    if (!m_handle || !m_initialized) return false;
+    m_deferredMaps.push_back({flags, guestPa, sizeInBytes, hostVa});
+    return true;
+}
+
+bool Partition::UnmapGpaRangeDeferred(WHV_GUEST_PHYSICAL_ADDRESS guestPa, uint64_t sizeInBytes)
+{
+    if (!m_handle || !m_initialized) return false;
+    m_deferredUnmaps.push_back({guestPa, sizeInBytes});
+    return true;
+}
+
+bool Partition::FlushDeferredMaps()
+{
+    if (m_deferredMaps.empty()) return true;
+
+    // Sort by GPA ascending
+    std::sort(m_deferredMaps.begin(), m_deferredMaps.end(),
+        [](const DeferredMap& a, const DeferredMap& b) { return a.guestPa < b.guestPa; });
+
+    // Merge contiguous runs with same flags
+    size_t writeIdx = 0;
+    for (size_t i = 1; i < m_deferredMaps.size(); i++) {
+        uint64_t prevEnd = m_deferredMaps[writeIdx].guestPa + m_deferredMaps[writeIdx].size;
+        if (prevEnd == m_deferredMaps[i].guestPa &&
+            m_deferredMaps[writeIdx].flags == m_deferredMaps[i].flags &&
+            (uint8_t*)m_deferredMaps[writeIdx].hostVa == (uint8_t*)m_deferredMaps[i].hostVa - (m_deferredMaps[i].guestPa - m_deferredMaps[writeIdx].guestPa)) {
+            // Contiguous: extend current entry
+            m_deferredMaps[writeIdx].size += m_deferredMaps[i].size;
+        } else {
+            writeIdx++;
+            if (writeIdx != i) m_deferredMaps[writeIdx] = m_deferredMaps[i];
+        }
+    }
+    m_deferredMaps.resize(writeIdx + 1);
+
+    // Issue merged WHvMapGpaRange calls
+    bool allOk = true;
+    for (auto& dm : m_deferredMaps) {
+        HRESULT hr = WHvMapGpaRange(m_handle, dm.hostVa, dm.guestPa, dm.size, dm.flags);
+        if (FAILED(hr)) {
+            m_logger->Trace(LOG_ERROR, "WHvMapGpaRange(guestPa=0x%llX, size=%llu) failed: 0x%08X",
+                dm.guestPa, dm.size, hr);
+            allOk = false;
+        }
+    }
+    m_deferredMaps.clear();
+    return allOk;
+}
+
+bool Partition::FlushDeferredUnmaps()
+{
+    if (m_deferredUnmaps.empty()) return true;
+
+    std::sort(m_deferredUnmaps.begin(), m_deferredUnmaps.end(),
+        [](const DeferredUnmap& a, const DeferredUnmap& b) { return a.guestPa < b.guestPa; });
+
+    size_t writeIdx = 0;
+    for (size_t i = 1; i < m_deferredUnmaps.size(); i++) {
+        uint64_t prevEnd = m_deferredUnmaps[writeIdx].guestPa + m_deferredUnmaps[writeIdx].size;
+        if (prevEnd == m_deferredUnmaps[i].guestPa) {
+            m_deferredUnmaps[writeIdx].size += m_deferredUnmaps[i].size;
+        } else {
+            writeIdx++;
+            if (writeIdx != i) m_deferredUnmaps[writeIdx] = m_deferredUnmaps[i];
+        }
+    }
+    m_deferredUnmaps.resize(writeIdx + 1);
+
+    bool allOk = true;
+    for (auto& du : m_deferredUnmaps) {
+        HRESULT hr = WHvUnmapGpaRange(m_handle, du.guestPa, du.size);
+        if (FAILED(hr)) {
+            m_logger->Trace(LOG_ERROR, "WHvUnmapGpaRange(guestPa=0x%llX) failed: 0x%08X", du.guestPa, hr);
+            allOk = false;
+        }
+    }
+    m_deferredUnmaps.clear();
+    return allOk;
 }
 
 bool Partition::MapGpaRange(void* hostVa, WHV_GUEST_PHYSICAL_ADDRESS guestPa, uint64_t sizeInBytes, WHV_MAP_GPA_RANGE_FLAGS flags)

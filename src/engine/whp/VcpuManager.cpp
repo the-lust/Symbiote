@@ -954,8 +954,15 @@ bool VcpuManager::HandleVpBreakpoint(uint32_t vcpuIndex, uint64_t rip)
     }
 }
 
-bool VcpuManager::HandleVpSingleStep(uint32_t, uint64_t)
+bool VcpuManager::HandleVpSingleStep(uint32_t vcpuIndex, uint64_t)
 {
+    // Check if this #DB is our internal EPT single-step completion
+    if (m_eptExecHook && m_eptExecHook->HandleSingleStepComplete(
+        m_partition->GetHandle(), vcpuIndex)) {
+        return true;
+    }
+
+    // Not our step — let the exception handler try (or pass through)
     return false;
 }
 
@@ -977,26 +984,71 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
             &ripName, 1, &ripValue);
         if (SUCCEEDED(hr)) rip = ripValue.Reg64;
 
-        if (exc.ExceptionType == 0x03) {
-            return HandleVpBreakpoint(vcpuIndex, rip);
-        }
+        // Dispatch by exception vector
+        switch (exc.ExceptionType) {
+            case 0x01: // #DB — single step (trampoline restore, exec hook step)
+                return HandleVpSingleStep(vcpuIndex, rip);
 
-        if (exc.ExceptionType == 0x01) {
-            return HandleVpSingleStep(vcpuIndex, rip);
-        }
+            case 0x03: // #BP — breakpoint (syscall/RDMSR intercept)
+                return HandleVpBreakpoint(vcpuIndex, rip);
 
-        if (m_exceptionHandler) {
-            if (m_exceptionHandler->HandleException(nullptr, exc.ExceptionType, nullptr, &rip)) {
-                ripValue.Reg64 = rip;
+            case 0x06: { // #UD — invalid opcode
+                m_logger->Trace(LOG_WHP, "VCPU %u: #UD at RIP 0x%llX, skipping 1 byte",
+                    vcpuIndex, rip);
+                ripValue.Reg64 = rip + 1;
                 WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
                     &ripName, 1, &ripValue);
                 return true;
             }
-        }
 
-        m_logger->Trace(LOG_WHP, "VCPU %u: unhandled exception type 0x%X at RIP 0x%llX",
-            vcpuIndex, exc.ExceptionType, rip);
-        return false;
+            case 0x0E: { // #PF — page fault (EPT violation fallback)
+                uint64_t cr2 = 0;
+                WHV_REGISTER_NAME cr2Name = WHvX64RegisterCr2;
+                WHV_REGISTER_VALUE cr2Value;
+                if (ReadVcpuRegs(vcpuIndex, &cr2Name, &cr2Value, 1)) {
+                    cr2 = cr2Value.Reg64;
+                }
+                m_logger->Trace(LOG_WHP, "VCPU %u: #PF at RIP 0x%llX, fault VA 0x%llX, err=0x%X",
+                    vcpuIndex, rip, cr2, (uint32_t)exc.ErrorCode);
+                // Try mapping the faulting page
+                if (m_partition->GetPageTable() && m_partition->GetPageTable()->MapDynamicPage(cr2, true)) {
+                    m_partition->FlushDeferredMaps();
+                    return true;
+                }
+                // Forward to exception handler as fallback
+                if (m_exceptionHandler && m_exceptionHandler->HandleException(nullptr, exc.ExceptionType, nullptr, &rip)) {
+                    ripValue.Reg64 = rip;
+                    WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
+                        &ripName, 1, &ripValue);
+                    return true;
+                }
+                return false;
+            }
+
+            case 0x10: // #MF — x87 FP error
+            case 0x13: // #XM — SIMD FP error
+                m_logger->Trace(LOG_WHP, "VCPU %u: FP exception type 0x%X at RIP 0x%llX (ignoring)",
+                    vcpuIndex, exc.ExceptionType, rip);
+                // Clear FP error state and continue
+                ripValue.Reg64 = rip + 1;
+                WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
+                    &ripName, 1, &ripValue);
+                return true;
+
+            default:
+                // Try the generic exception handler
+                if (m_exceptionHandler) {
+                    if (m_exceptionHandler->HandleException(nullptr, exc.ExceptionType, nullptr, &rip)) {
+                        ripValue.Reg64 = rip;
+                        WHvSetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
+                            &ripName, 1, &ripValue);
+                        return true;
+                    }
+                }
+                m_logger->Trace(LOG_WHP, "VCPU %u: unhandled exception type 0x%X at RIP 0x%llX",
+                    vcpuIndex, exc.ExceptionType, rip);
+                return false;
+        }
     }
 
     switch (reason) {
@@ -1107,17 +1159,27 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
         }
 
         case WHvRunVpExitReasonMemoryAccess: {
-            // EPT violation — try on-demand page mapping
             WHV_MEMORY_ACCESS_CONTEXT& mem = exitCtx.MemoryAccess;
             uint64_t faultGpa = mem.Gpa;
 
-            if (m_partition->GetPageTable()) {
-                bool isWrite = mem.AccessInfo.AccessType == WHvMemoryAccessWrite;
-                if (m_partition->GetPageTable()->MapDynamicPage(faultGpa, isWrite)) {
+            // Check for EPT-based execution hooks first (single-step mechanism)
+            if (m_eptExecHook && mem.AccessInfo.AccessType == 2) { // WHvMemoryAccessExecute = 2
+                if (m_eptExecHook->HandleExecFault(faultGpa, 0,
+                    m_partition->GetHandle(), vcpuIndex)) {
                     return true;
                 }
             }
 
+            // Normal on-demand page mapping
+            if (m_partition->GetPageTable()) {
+                bool isWrite = (mem.AccessInfo.AccessType == 1); // WHvMemoryAccessWrite = 1
+                if (m_partition->GetPageTable()->MapDynamicPage(faultGpa, isWrite)) {
+                    m_partition->FlushDeferredMaps();
+                    return true;
+                }
+            }
+
+            // Fallback to exit dispatcher
             if (m_exitDispatcher) {
                 WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
                 WHV_REGISTER_VALUE ripValue;
@@ -1125,8 +1187,11 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
                 hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(), vcpuIndex,
                     &ripName, 1, &ripValue);
                 if (SUCCEEDED(hr)) rip = ripValue.Reg64;
-                return m_exitDispatcher->Dispatch(nullptr, &exitCtx, &rip);
+                bool handled = m_exitDispatcher->Dispatch(nullptr, &exitCtx, &rip);
+                m_partition->FlushDeferredMaps();
+                return handled;
             }
+            m_partition->FlushDeferredMaps();
             return false;
         }
 

@@ -109,6 +109,7 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/ExceptionHandler.cpp
         src/engine/whp/ExitDispatcher.cpp
         src/engine/whp/EptHook.cpp
+        src/engine/whp/EptExecHook.cpp
         src/engine/whp/KuserSync.cpp
         src/engine/whp/MagicCpuid.cpp
         src/engine/whp/MsrHandler.cpp
