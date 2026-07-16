@@ -1,5 +1,5 @@
 param(
-    [string]$Target = "D:\Steam\steamapps\common\Hatsune Miku Project DIVA Mega Mix Plus\DivaMegaMix.exe",
+    [string]$Target = "C:\TargetApp\target.exe",
     [string]$Launcher = "D:\emu\genjutsu\build\msvc\x64\bin\Release\launcher.exe",
     [string]$ConfigPath = "D:\emu\genjutsu\config\config.ini",
     [string]$LogPath = "D:\emu\genjutsu\build\msvc\x64\bin\Release\emu.log",
@@ -87,7 +87,7 @@ adapter1_mac = 00:15:5D:73:9A:FA
 memory_size_mb = 512
 cpu_count = 2
 [target]
-path = D:\Steam\steamapps\common\Hatsune Miku Project DIVA Mega Mix Plus\DivaMegaMix.exe
+path = C:\TargetApp\target.exe
 arguments =
 wait_for_debugger = false
 "@

@@ -228,7 +228,7 @@ static void TestWmi() {
         snprintf(g_buf, sizeof(g_buf), "0x%08X", hr);
         LogResult("WMI", "Locator create", g_buf, false);
 
-        // Try bypassing proxy: direct GetProcAddress
+        // Try passthrough proxy: direct GetProcAddress
         typedef HRESULT (STDMETHODCALLTYPE *RealCCI)(REFCLSID, IUnknown*, DWORD, REFIID, void**);
         HMODULE hOle32 = GetModuleHandleW(L"ole32.dll");
         if (hOle32) {

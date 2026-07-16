@@ -5,7 +5,7 @@
 
 namespace fs = std::filesystem;
 
-bool g_dxvkBypassActive = false;
+bool g_dxvkPassthroughActive = false;
 
 const wchar_t* DxvkIntegration::kDxvkDlls[] = {
     L"d3d9.dll",
@@ -109,11 +109,11 @@ bool DxvkIntegration::ProtectDxvkDlls(const std::vector<std::wstring>& dxvkDlls)
 {
     if (dxvkDlls.empty()) return true;
 
-    // Set the bypass flag so proxy hooks skip interception for DXVK modules
-    g_dxvkBypassActive = true;
+    // Set the passthrough flag so proxy hooks skip interception for DXVK modules
+    g_dxvkPassthroughActive = true;
 
     // Ensure all DXVK DLLs are loaded into the process (so they're initialized
-    // before the game starts hooking them). We do this by forcing a LoadLibrary
+    // before the target starts hooking them). We do this by forcing a LoadLibrary
     // for each DXVK DLL path.
     for (const auto& dllPath : dxvkDlls) {
         HMODULE hMod = LoadLibraryW(dllPath.c_str());
@@ -126,13 +126,13 @@ bool DxvkIntegration::ProtectDxvkDlls(const std::vector<std::wstring>& dxvkDlls)
         }
     }
 
-    m_logger->Trace(LOG_INFO, "DXVK: bypass active for %zu DLLs", dxvkDlls.size());
+    m_logger->Trace(LOG_INFO, "DXVK: passthrough active for %zu DLLs", dxvkDlls.size());
     return true;
 }
 
 bool DxvkIntegration::IsDxvkModule(const std::wstring& moduleName)
 {
-    if (!g_dxvkBypassActive) return false;
+    if (!g_dxvkPassthroughActive) return false;
 
     std::wstring lower = moduleName;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);

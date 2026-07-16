@@ -23,7 +23,7 @@
 ### A1: Comprehensive CPUID Pre-Population
 - **Files**: `CpuidHandler.cpp`, `Partition.cpp`
 - All 512+ CPUID leaves (0x00-0xFF, 0x80000000-0x800000FF, 0x40000000-0x400000FF) pre-populated in WHP result list
-- Eliminates VM-exits for unlisted leaves → Denuvo cannot measure RDTSC→CPUID→RDTSC delta
+- Eliminates VM-exits for unlisted leaves → integrity verification cannot measure RDTSC→CPUID→RDTSC delta
 - Feature masking applied to all leaves
 
 ### A2: Enhanced RDTSC Timing Compensation

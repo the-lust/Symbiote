@@ -120,7 +120,7 @@ uint64_t TimingCoordinator::GetConsistentHpetCounter() const
 bool TimingCoordinator::VerifyClockConsistency() const
 {
     // Verify that all clock sources are consistent with each other
-    // This prevents Denuvo from cross-referencing clocks
+    // This prevents integrity verification from cross-referencing clocks
     uint64_t tsc = GetConsistentTsc();
     uint64_t qpc = GetConsistentQpc();
     uint32_t acpi = GetConsistentAcpiPmTimer();

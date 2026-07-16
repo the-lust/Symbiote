@@ -43,9 +43,9 @@ symbiote/
 │   ├── handshake_test/           # Magic CPUID handshake protocol verification
 │   ├── capture/                  # Standalone fingerprint capture tool (5-min loop)
 │   ├── msr_reader/               # MSR register reader (via semav6msr64 kernel driver)
-│   └── test_sections.ps1         # Section-by-section bisect test script for game compatibility
+│   └── test_sections.ps1         # Section-by-section bisect test script for application compatibility
 └── src/
-    ├── launcher/                 # launcher.exe — CLI arg parsing, Steam sandbox detection,
+    ├── launcher/                 # launcher.exe — CLI arg parsing,
     │                             #   suspended process creation, engine.dll injection,
     │                             #   Engine_Init, entry point interception
     ├── engine/                   # engine.dll — core engine (40+ WHP files, 24 emu, 17 proxy, ...)
@@ -63,7 +63,7 @@ symbiote/
     │   │                         #   TimingEmu, CryptoEmu, ThreadManager, SectionEmu, ObjectEmu,
     │   │                         #   VirtualState, PeLoader, DeviceIoEmu, ThreadHider, StackSpoofer
     │   ├── proxy/                # IatPatch (IAT/EAT patching, restore), InlineHook (12-byte jmp),
-    │   │                         #   GpuBridge (GPU DLL passthrough), DxvkIntegration (DXVK proxy bypass),
+│   │   #   GpuBridge (GPU DLL passthrough), DxvkIntegration (DXVK proxy passthrough),
     │   │                         #   ModuleCloak (PEB hiding), SyscallBridge
     │   ├── profile/              # GpuProfile, StorageProfile (identity profiles for spoofing)
     │   ├── capture/              # CaptureLogger (structured TSV logging, 100MB auto-rotate)
@@ -108,7 +108,7 @@ Target Process (Ring 3)
   │   ├── Signal EngineReady
   │   └── Idle (Sleep loop)
   │
-  │   Game Main Thread:
+  │   Target Main Thread:
   │   ├── Hits entry-point trampoline → Engine_VcpuEntry()
   │   ├── RtlCaptureContext → BootstrapFromContext()
   │   └── Enters WHP VCPU:
@@ -123,7 +123,7 @@ Target Process (Ring 3)
     │         │     #BP/#DB     → WHP exit   → ExceptionHandler
     │         │     EPT exec    → WHP exit   → IndirectSyscall      → EPT syscall intercept
     │         │                                        └→ StackSpoofer → ret-sled swap
-  │         └── Game runs natively inside VCPU (VMX non-root)
+  │         └── Target runs natively inside VCPU (VMX non-root)
   │
         └── Host ntdll (real kernel):
         ├── Forwarded syscalls → host ntdll function → real kernel
@@ -138,8 +138,8 @@ The Ghost Sandbox enables transparent VCPU execution by migrating the target pro
 1. **Launcher**: `CreateProcess(SUSPENDED)` → inject `engine.dll` → call `Engine_Init()`
 2. **Engine_Init**: enumerate all committed pages of the target process, build 4-level x64 page tables (PML4→PDPT→PD→PT) where every GPA equals its VA, EPT-map every page via `WHvMapGpaRange`, create WHP partition + VCPU #0
 3. **Entry Interception**: read PE header `AddressOfEntryPoint`, write a 12-byte trampoline (`mov rax, Engine_VcpuEntry; jmp rax`) at the original entry point, `ResumeThread()`
-4. **Bootstrap**: game thread hits trampoline → `RtlCaptureContext` → `BootstrapFromContext(0, ctx, pageTable)` sets CR3 = PML4 GPA, LSTAR → HLT page, ring-3 segment registers (CS=0x33, SS=0x2B), enters `WHvRunVirtualProcessor` loop
-5. **VCPU Execution**: game runs at native speed in VMX non-root mode. CPUID, RDTSC, MSR, HLT (syscall), memory faults, and exceptions cause VM exits that the engine handles
+4. **Bootstrap**: target thread hits trampoline → `RtlCaptureContext` → `BootstrapFromContext(0, ctx, pageTable)` sets CR3 = PML4 GPA, LSTAR → HLT page, ring-3 segment registers (CS=0x33, SS=0x2B), enters `WHvRunVirtualProcessor` loop
+5. **VCPU Execution**: target runs at native speed in VMX non-root mode. CPUID, RDTSC, MSR, HLT (syscall), memory faults, and exceptions cause VM exits that the engine handles
 6. **Dynamic Page Mapping**: on first access to dynamically allocated pages, the EPT violation handler calls `MapDynamicPage` for on-demand `WHvMapGpaRange`
 
 ### Syscall Interception
@@ -184,7 +184,7 @@ This is gated behind `m_childThreadMigrationEnabled` (default `false`) and requi
 
 ### Anti-Hypervisor Detection
 
-Several measures hide the presence of the WHP hypervisor from the guest. These are organized into **4 phases** targeting Denuvo anti-tamper detection vectors:
+Several measures hide the presence of the WHP hypervisor from the guest:
 
 **Phase 1 — Syscall / MSR / Register:**
 - **CPUID hypervisor leaf** (0x40000000) returns all zeros — no hypervisor vendor string
@@ -198,7 +198,7 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 
 **Phase 2 — Timing / VEH:**
 - **RDTSC/RDTSCP VM-exit cost compensation**: when `TimingCoordinator::DetectRdtscAfterCpuid` detects a CPUID→RDTSC pattern, the TSC is adjusted by subtracting ~2000 cycles (VM-exit overhead), returning `lastPreExitTsc + 80` to mimic bare-metal CPUID timing
-- **SystemSpoofer VEH stack spoiling defense**: VEH handler saves the top 64 QWORDs (512 bytes) of thread stack on entry and restores them before `CONTINUE_EXECUTION`, defeating Denuvo's stack-integrity checks after exception dispatch
+- **SystemSpoofer VEH stack spoiling defense**: VEH handler saves the top 64 QWORDs (512 bytes) of thread stack on entry and restores them before `CONTINUE_EXECUTION`, defeating stack-integrity checks after exception dispatch
 
 **Phase 3 — WMI / Registry:**
 - **Win32_ComputerSystem WMI spoofing**: `HypervisorPresent=false`, realistic Model/SystemType/Manufacturer (i9-10900K desktop profile). WMI class type is tracked per-object (`WMI_CLASS_PROCESSOR` vs `WMI_CLASS_COMPUTER_SYSTEM`) to disambiguate shared property names like `Manufacturer`
@@ -210,16 +210,11 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 - **Expanded exception bitmap**: `#UD` (invalid opcode), `#PF` (page fault), `#MF` (x87 FP error), `#XM` (SIMD FP error) are now handled in the VCPU exit loop. `#UD` skips 1 byte; `#PF` calls `MapDynamicPage` as EPT violation fallback; `#MF`/`#XM` clear and continue
 - **EPT map coalescing**: contiguous GPA ranges in deferred map/unmap queues are merged into single `WHvMapGpaRange`/`WHvUnmapGpaRange` calls, avoiding ~second-long stalls from page-by-page EPT updates
 
-**Phase 4b — Denuvo state cleanup at exit:**
-- `CleanupDenuvoState()` removes Denuvo cache files from `game_dir`, `%appdata%\Denuvo\`, and `%TEMP%\dns*` before engine shutdown, preventing persistent blacklist state from surviving across launches
-
 **Phase 5 — VEH stack-fault hardening:**
-- All VEH handlers (SystemSpoofer, AllocTracker, Canary) now implement the **64-QWORD stack save/restore** pattern to defeat Denuvo's stack-spoiling detection. Previously only SystemSpoofer had this defense
+- All VEH handlers (SystemSpoofer, AllocTracker, Canary) now implement the **64-QWORD stack save/restore** pattern to defeat stack-spoiling detection
 
-**Phase 6 — Steam sandbox + DXVK passthrough:**
-- **SteamGameDetector**: VDF text parser for `libraryfolders.vdf` and `appmanifest_*.acf`, enumerates all Steam library folders and installed games, scores executables by name-token match / depth / size to find the main game binary
-- **`launcher.exe --steam-launch "Game Name"`**: auto-detects Steam game, resolves best executable via scorer, sets `SteamAppId` env var, launches under WHP
-- **DxvkIntegration**: detects DXVK DLLs (d3d9, d3d10, d3d10_1, d3d10core, d3d11, dxgi) alongside target exe, pre-loads them to initialize before the game hooks, sets `g_dxvkBypassActive` flag so proxy interception skips DXVK modules
+**Phase 6 — DXVK passthrough:**
+- **DxvkIntegration**: detects DXVK DLLs (d3d9, d3d10, d3d10_1, d3d10core, d3d11, dxgi) alongside target exe, pre-loads them, sets `g_dxvkPassthroughActive` flag so proxy interception skips DXVK modules (passthrough mode)
 **Phase 7 — Snapshot/restore:**
 
 - Full WHP state serialization: all 36 VCPU registers (GPRs, CRs, DRs, segments, EFER, STAR/LSTAR/CSTAR, GDTR/IDTR/TR/LDTR), memory region metadata (GPA, size, flags via Partition tracking), and EptExecHook hook list
@@ -228,40 +223,40 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 
 **Phase 8 — Enhanced Anti-Detection (KUSER fields, watchdog, β-time, EPT split-view):**
 
-- **KUSER_SHARED_DATA field expansion**: `ApplyStaticSpoofs()` now writes all DRM-read fields — NtMajorVersion (0x260), NtMinorVersion (0x261), BuildNumber (0x262-0x263), NativeProcessorArchitecture (0x26A-0x26B), ProductTypeIsValid (0x268), SuiteMask (0x26C), NumberOfPhysicalPages (0x2D8), ProcessorFeatures (0x270-0x2CF, five 64-bit feature bitmaps), ActiveProcessorCount (0x3C0). All fields loaded from config or default to Win10 Pro values matching the spoof profile
+- **KUSER_SHARED_DATA field expansion**: `ApplyStaticSpoofs()` now writes all anti-tamper-read fields — NtMajorVersion (0x260), NtMinorVersion (0x261), BuildNumber (0x262-0x263), NativeProcessorArchitecture (0x26A-0x26B), ProductTypeIsValid (0x268), SuiteMask (0x26C), NumberOfPhysicalPages (0x2D8), ProcessorFeatures (0x270-0x2CF, five 64-bit feature bitmaps), ActiveProcessorCount (0x3C0). All fields loaded from config or default to Win10 Pro values matching the spoof profile
 - **Leaf-specific CPUID timing costs**: `RdtscHandler::CplLeafCost()` returns per-leaf bare-metal TSC cycle counts (80-600 cycles depending on leaf complexity) — used to calculate VM-exit cost compensation more precisely than the previous single 80-cycle constant
 - **RDTSCP VCPU-aware RCX**: `HandleRdtscp()` sets RCX to the actual VCPU index (`m_vpIndex`) instead of hardcoded 1 — prevents topology-based timing fingerprints
-- **WatchdogTracker** (`WatchdogTracker.h/.cpp`): detects Denuvo threaded integrity watchdogs by intercepting `NtCreateThreadEx` in `OnThreadCreate()`, checks if the start RIP is from non-image memory (Denuvo JIT/decrypted pages), registers EPT exec hooks on watchdog GPA pages via `EptExecHook::RegisterPageHook()`. The static callback `OnWatchdogExec()` fires on each execution hit. `SimulateIntegrityCheck()` re-registers hooks to simulate periodic verification. Hooked pages are saved/restored across snapshot boundaries
+- **WatchdogTracker** (`WatchdogTracker.h/.cpp`): detects threaded integrity watchdogs by intercepting `NtCreateThreadEx` in `OnThreadCreate()`, checks if the start RIP is from non-image memory (JIT/decrypted pages), registers EPT exec hooks on watchdog GPA pages via `EptExecHook::RegisterPageHook()`. The static callback `OnWatchdogExec()` fires on each execution hit. `SimulateIntegrityCheck()` re-registers hooks to simulate periodic verification. Hooked pages are saved/restored across snapshot boundaries
 - **β-time clock correlation**: `TimingCoordinator` upgraded from struct to class with `SnapshotBaseClocks()` and `GetConsistent*()` methods (GetConsistentQpc, GetConsistentTsc, GetConsistentSysTime, GetConsistentTickCount, GetConsistentTimeGetTime) — all time sources reference a shared base snapshot, ensuring correlated drifts that match bare-metal clock behavior. `NtQuerySystemTime` handler returns consistent values derived from the same base
 - **WMI surface expansion**: `wbem_proxy` now spoofs `Win32_BaseBoard` (Manufacturer, Product, Version, SerialNumber), `Win32_BIOS` (SMBIOSBIOSVersion, ReleaseDate, SerialNumber), `Win32_DiskDrive` (Model, SerialNumber, InterfaceType, MediaType, Size, BytesPerSector, Partitions). `Win32_ComputerSystem` expanded with Domain, PrimaryOwnerName, TotalPhysicalMemory, NumberOfProcessors
-- **NtQueryVirtualMemory PE header spoofing**: `SyscallDispatch::HandleNtQueryVirtualMemory()` intercepts `MemoryBasicInformation` queries for ntdll/.engine pages — forwards to real NtQueryVirtualMemory, then overwrites the output: ensures .text pages show as clean `PAGE_EXECUTE_READ` with `PAGE_GUARD/NOCACHE/WRITECOMBINE` cleared and `Type = MEM_IMAGE`. Defeats Denuvo's PE header integrity verification that detects EAT/IAT patches
+- **NtQueryVirtualMemory PE header spoofing**: `SyscallDispatch::HandleNtQueryVirtualMemory()` intercepts `MemoryBasicInformation` queries for ntdll/.engine pages — forwards to real NtQueryVirtualMemory, then overwrites the output: ensures .text pages show as clean `PAGE_EXECUTE_READ` with `PAGE_GUARD/NOCACHE/WRITECOMBINE` cleared and `Type = MEM_IMAGE`. Defeats PE header integrity verification that detects EAT/IAT patches
 - **EAT patching enabled**: `[eat] enabled = true` in config activates `IatPatch::PatchEAT()` — patches the Export Address Table of all loaded DLLs to route exports through proxy DLLs. Previously disabled by default due to detection risk; combined with NtQueryVirtualMemory spoofing, PE header reads now show clean exports
 - **EPT split-view (process cloaking)**: `EptSplitView` (`EptSplitView.h/.cpp`) implements per-VCPU memory view switching — registers GPA ranges with visible/hidden host VAs. `RegisterHiddenRange()` stores page metadata; `SetPageVisibility()` records per-VCPU overrides; `ApplyViewForVcpu()` unmaps and remaps GPA ranges to the appropriate VA based on the target VCPU. Used to hide engine DLL pages from child process VCPU instances while keeping them visible to the parent VCPU. Works by swapping `WHvMapGpaRange` mappings atomically before resuming the target VCPU
-- **SMBIOS/DMI table masking**: `HandleNtQuerySystemInformation()` now intercepts info class `0x1D` (SystemFirmwareTableInformation / 29) — returns `STATUS_INFO_LENGTH_MISMATCH` with zero return length, preventing DRM from reading real SMBIOS tables that would leak the host hardware identity
+- **SMBIOS/DMI table masking**: `HandleNtQuerySystemInformation()` now intercepts info class `0x1D` (SystemFirmwareTableInformation / 29) — returns `STATUS_INFO_LENGTH_MISMATCH` with zero return length, preventing anti-tamper from reading real SMBIOS tables that would leak the host hardware identity
 
 **Phase 9 — Comprehensive Anti-Detection (512-leaf CPUID, CounterUpdater, ACPI/HPET, IOCTL Hook, WMI/SMBIOS/Registry expansion, Thread Hider, EPT perf):**
 
-- **512-leaf CPUID pre-population**: `GetComprehensiveCpuidResultList()` enumerates all standard leaves (0x00-0xFF), extended leaves (0x80000000-0x800000FF), and hypervisor leaves (0x40000000-0x400000FF) via `__cpuidex`, applies feature masking, and loads ALL leaves into the WHP result list via `WHvSetPartitionProperty(WHvPartitionPropertyCodeCpuidResultList)`. **This eliminates VM-exits for unlisted leaves** — Denuvo's RDTSC→CPUID→RDTSC timing delta is measured on exits, and since no exits occur for any standard leaf, the timing vector is neutralized
+- **512-leaf CPUID pre-population**: `GetComprehensiveCpuidResultList()` enumerates all standard leaves (0x00-0xFF), extended leaves (0x80000000-0x800000FF), and hypervisor leaves (0x40000000-0x400000FF) via `__cpuidex`, applies feature masking, and loads ALL leaves into the WHP result list via `WHvSetPartitionProperty(WHvPartitionPropertyCodeCpuidResultList)`. **This eliminates VM-exits for unlisted leaves** — RDTSC→CPUID→RDTSC timing delta is measured on exits, and since no exits occur for any standard leaf, the timing vector is neutralized
 - **CounterUpdater synthetic TSC thread**: Background thread (`RdtscHandler::CounterUpdaterThread`) advances a synthetic TSC at configured frequency (~3GHz) at ~100us intervals. RDTSC/RDTSCP handlers use `s_counterTsc` instead of real TSC + offset. Since the synthetic counter runs continuously and independently of VM-exit events, TSC deltas across CPUID calls show bare-metal timing — no VM-exit overhead visible
 - **Realistic CPU noise model**: `AddRealisticNoise()` with per-vendor profiles (Intel: mean=40, amp=20, min=60; AMD: mean=80, amp=40, min=120) and rare ~0.2ms cache-miss spikes
 - **Expanded CplLeafCost**: from 11 leaves to 26+ leaves covering all common CPUID leaves with measured bare-metal cycle costs
 - **NtDeviceIoControlFile hook**: `DeviceIoEmu` installs a 12-byte inline hook on `ntdll!NtDeviceIoControlFile` to intercept WHP IOCTL calls. `IOCTL_WHV_GET_PARTITION_PROPERTY` is intercepted for `ProcessorCount` (returns spoofed count). All WHP IOCTLs are logged for analysis
-- **ACPI PM Timer / HPET synthetic timers**: `AcpiTimerHandler` generates synthetic ACPI PM timer (port 0x608, 3.579545 MHz, 24-bit) and HPET counter (0xFED00000 + offset, ~10MHz). These alternative clock sources are cross-referenced with the spoofed TSC to maintain consistency — prevents Denuvo from reading raw hardware timers as a TSC bypass
+- **ACPI PM Timer / HPET synthetic timers**: `AcpiTimerHandler` generates synthetic ACPI PM timer (port 0x608, 3.579545 MHz, 24-bit) and HPET counter (0xFED00000 + offset, ~10MHz). These alternative clock sources are cross-referenced with the spoofed TSC to maintain consistency — prevents anti-tamper from reading raw hardware timers as a TSC bypass
 - **Expanded WMI (10+ new classes)**: `wbem_proxy` now spoofs `Win32_VideoController` (NVIDIA RTX 3080 identity), `Win32_NetworkAdapter` (Intel I225-V, Dell OUI MAC), `Win32_PhysicalMemory` (Kingston DDR4-2666 16GB), `Win32_USBController` (Intel xHCI), `CIM_Sensor`, `Win32_TemperatureProbe` (45C reading), `Win32_Fan`, `Win32_VoltageProbe` (1.2V). Sensors return realistic values instead of empty — prevents VM detection via missing hardware sensors
 - **Expanded SMBIOS (10 types → 17 types)**: Added Type 7 (L1/L2/L3 cache with proper sizes matching CPU profile), Type 17 (DDR4-2666 16GB SODIMM memory devices), Type 19 (memory array mapping), Type 21 (PS/2 trackpoint), Type 22 (Li-Ion 66WH battery), Type 11 (OEM strings), Type 13 (BIOS language). Buffer expanded from 0x800 to 0x1000 bytes
 - **Hyper-V registry artifact blocking**: `RegistryEmu::IsSensitiveKey()` expanded from 5 patterns to 18 patterns — blocks `hyper-v`, `hyperv`, `vmbus`, `vmics`, `vmide`, `vms3`, `msvm`, `vmwp`, `vmgencounter`, `qemu`, `virtual`, `HARDWARE\DESCRIPTION\System\BIOS`, `HARDWARE\DEVICEMAP\Scsi`, `Services\VMBus`, `Services\HyperV`
 - **Thread Hider**: `ThreadHider` registers engine threads for filtering from `CreateToolhelp32Snapshot`/`Thread32First`/`Thread32Next` enumeration. Integrated with `NtQuerySystemInformation(SystemProcessInformation)` handler to filter hidden threads from process lists
-- **EPT split-view optimizations**: View generation tracking skips redundant `WHvMapGpaRange`/`WHvUnmapGpaRange` calls when view hasn't changed. 2MB large page support for contiguous regions (`GetOptimalPageSize()`). `ReadHiddenMemory()`/`WriteHiddenMemory()` direct access without view switching. `ProtectMemoryRange()` for RX-only EPT mapping (blocks Denuvo write-verify integrity checks)
-- **INT3 anti-memory-scanning camouflage**: `SystemSpoofer::ApplyCamouflage()` replaces INT3 (0xCC) breakpoints with multi-byte NOP instructions (66 90, 0F 1F 00, etc.) when patches are not actively triggered. `RestorePatches()` re-applies INT3 before execution. Prevents Denuvo memory CRC scans from detecting VEH patches
+- **EPT split-view optimizations**: View generation tracking skips redundant `WHvMapGpaRange`/`WHvUnmapGpaRange` calls when view hasn't changed. 2MB large page support for contiguous regions (`GetOptimalPageSize()`). `ReadHiddenMemory()`/`WriteHiddenMemory()` direct access without view switching. `ProtectMemoryRange()` for RX-only EPT mapping (blocks anti-tamper write-verify integrity checks)
+- **INT3 anti-memory-scanning camouflage**: `SystemSpoofer::ApplyCamouflage()` replaces INT3 (0xCC) breakpoints with multi-byte NOP instructions (66 90, 0F 1F 00, etc.) when patches are not actively triggered. `RestorePatches()` re-applies INT3 before execution. Prevents anti-tamper memory CRC scans from detecting VEH patches
 - **Enhanced TimingCoordinator**: `JITTER_REALISTIC` strategy replaces `JITTER_UNIFORM` as default. `CpuJitterProfile` struct provides per-CPU-model jitter parameters (i9/i7/i5/Xeon/Ryzen). `GetConsistentAcpiPmTimer()` and `GetConsistentHpetCounter()` provide cross-correlated values. `VerifyClockConsistency()` placeholder for multi-source consistency checks
 - **Windows version compatibility**: Syscall numbers read from running ntdll at runtime — same engine binary works across Win10 22H2, Win11 24H2, and future builds
 
 **Phase B — HW-Level Anti-Detection (EPT syscall interception, call-stack spoofing, PEB anti-debug, HWBP countermeasures, synthetic timing, consistency verification):**
 
-- **Call-stack spoofing (SilentMoonwalk-style)**: `StackSpoofer` finds a `ret` sled in ntdll (e.g., `KiFastSystemCallRet`), saves the original return address on the stack before syscall dispatch, replaces it with the ret sled address, and restores it after the syscall returns. Prevents anti-cheat stack walkers from detecting non-ntdll return addresses above syscall frames
-- **Indirect syscall via EPT**: `IndirectSyscall` searches ntdll `.text` for the `syscall; ret` pattern (0F 05 C3), registers the containing page as an EPT execute-disable hook via `EptExecHook`. Any code executing a raw `syscall` from any module triggers a WHP memory-access exit, allowing the engine to intercept the call at the EPT level — detects embedded syscall stubs in obfuscated/packed binaries bypassing INT3 hooks
-- **PEB anti-debug fields**: `ntdll_proxy` clears `BeingDebugged` (offset 0x02), `NtGlobalFlag` (offset 0xBC x64), and `ProcessHeap.Flags`/`ForceFlags` (offsets 0x44/0x48 x64) on `DLL_PROCESS_ATTACH`. `NtSetInformationProcess(ProcessInstrumentationCallback)` is intercepted and blocked (returns `STATUS_ACCESS_DENIED`), preventing EAC/BattlEye from registering per-syscall-return callbacks
-- **Hardware breakpoint countermeasures**: `ThreadManager::HandleNtGetContextThread` zeros DR0-DR3, DR6, DR7 in outgoing context before returning. `HandleNtSetContextThread` clears all debug registers from the incoming context before applying. Prevents anti-cheat from setting/reading HW breakpoints as thread-context manipulation
+- **Call-stack spoofing (SilentMoonwalk-style)**: `StackSpoofer` finds a `ret` sled in ntdll (e.g., `KiFastSystemCallRet`), saves the original return address on the stack before syscall dispatch, replaces it with the ret sled address, and restores it after the syscall returns. Prevents stack walkers from detecting non-ntdll return addresses above syscall frames
+- **Indirect syscall via EPT**: `IndirectSyscall` searches ntdll `.text` for the `syscall; ret` pattern (0F 05 C3), registers the containing page as an EPT execute-disable hook via `EptExecHook`. Any code executing a raw `syscall` from any module triggers a WHP memory-access exit, allowing the engine to intercept the call at the EPT level — detects embedded syscall stubs in obfuscated/packed binaries intercepting INT3 hooks
+- **PEB anti-debug fields**: `ntdll_proxy` clears `BeingDebugged` (offset 0x02), `NtGlobalFlag` (offset 0xBC x64), and `ProcessHeap.Flags`/`ForceFlags` (offsets 0x44/0x48 x64) on `DLL_PROCESS_ATTACH`. `NtSetInformationProcess(ProcessInstrumentationCallback)` is intercepted and blocked (returns `STATUS_ACCESS_DENIED`), preventing integrity checkers from registering per-syscall-return callbacks
+- **Hardware breakpoint countermeasures**: `ThreadManager::HandleNtGetContextThread` zeros DR0-DR3, DR6, DR7 in outgoing context before returning. `HandleNtSetContextThread` clears all debug registers from the incoming context before applying. Prevents integrity verifiers from setting/reading HW breakpoints as thread-context manipulation
 - **Synthetic QPC/timing cross-correlation**: `TimingEmu` now derives QPC, `GetTickCount64`, `GetSystemTime`, and `GetSystemTimeAdjustment` from the same synthetic TSC base (`CounterUpdater` thread → 3.7 GHz synthetic counter). QPC frequency set to 10 MHz consistent with TSC-derived ticks. All time APIs return values correlated to the synthetic clock, preventing timing-based VM detection via multi-API cross-referencing
 - **ConsistencyVerifier (11 real checks, zero unconditional passes)**: `VerifyCpuCount()` cross-references CPUID leaf 0xB with KUSER `ActiveProcessorCount` and `GetNativeSystemInfo` (max-min spread ≤1, fixed self-comparison bug); `VerifyCacheSizes()` computes L2 (128KB–8MB) / L3 (0–64MB) from CPUID leaf 4; `VerifyTscFrequency()` correlates CPUID leaf 0x15 with measured TSC+QPC delta (10% tolerance, double-measurement fallback); `VerifyBrandString()`/`VerifyManufacturer()` cross-reference CPUID vendor/brand with registry; `VerifyBiosVersion()` validates vendor against OEM allowlist; `VerifyChassisInfo()` validates SystemManufacturer against OEM allowlist; `VerifyDiskInfo()` validates filesystem (NTFS/FAT32/exFAT); `VerifyNetworkInfo()` validates non-empty adapter descriptions; `VerifyTimingConsistency()` correlates TSC and QPC deltas; `VerifyMemorySize()` validates KUSER physical pages against `GlobalMemoryStatusEx`. `VerifySensorData` removed (impossible without kernel/WMI).
 - **ThreadHider (real hooks, wired to ProcessEmu)**: 12-byte inline hooks on `kernel32!CreateToolhelp32Snapshot`, `Thread32First`, `Thread32Next` filter hidden threads from all toolhelp enumeration. `HandleSystemProcessInformation()` walks `SYSTEM_PROCESS_INFORMATION` chain, removes hidden thread entries, and compacts the output buffer — now called from ProcessEmu's `SystemProcessInformation` case, applying thread filtering to the synthetic process list. Engine threads auto-registered at init via `HideThread(GetCurrentThreadId())` + snapshot enumeration. Trampoline bug fixed: `InstallTrampolineHook` allocates RX trampoline with `mov rax, target+12; jmp rax` instead of storing patched address (fixes infinite recursion)
@@ -295,12 +290,11 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 | **TimingCoordinator** | `whp/TimingCoordinator.h` | Cross-handler RDTSC→CPUID→RDTSC pattern detection with 3 jitter strategies (uniform/constant/linear) |
 | **SystemSpoofer** | `whp/SystemSpoofer.cpp/.h` | VEH-based interception of SGDT/SIDT/SLDT/STR/XGETBV — gated behind config (default off) |
 | **EptExecHook** | `whp/EptExecHook.cpp/.h` | EPT-based execution hook single-step system — strips EXEC from EPT, catches exec faults, arms #DB single-step, re-strips. Supersedes AllocTracker when WHP available |
-| **WatchdogTracker** | `whp/WatchdogTracker.cpp/.h` | Denuvo threaded integrity watchdog detection — intercepts NtCreateThreadEx, registers EPT exec hooks on watchdog pages, periodic `SimulateIntegrityCheck()` |
+| **WatchdogTracker** | `whp/WatchdogTracker.cpp/.h` | Threaded integrity watchdog detection — intercepts NtCreateThreadEx, registers EPT exec hooks on watchdog pages, periodic `SimulateIntegrityCheck()` |
 | **EptSplitView** | `whp/EptSplitView.cpp/.h` | Per-VCPU memory view switching for process cloaking — registers GPA ranges with visible/hidden VAs, `ApplyViewForVcpu()` swaps mappings atomically |
 | **KernelLock (BEL)** | `whp/KernelLock.cpp/.h` | CRITICAL_SECTION-based mutex with owner-tracking — serializes C++ handler code, released during guest execution for parallel VCPU execution |
 | **Snapshot** | `whp/Snapshot.cpp/.h` | Full WHP state serialization (36 VCPU registers, memory regions, EptExecHook hooks) with file I/O and restore |
-| **DxvkIntegration** | `proxy/DxvkIntegration.cpp/.h` | DXVK passthrough — detects DXVK DLLs, pre-loads them, sets bypass flag so proxy hooks skip DXVK modules |
-| **SteamGameDetector** | `launcher/SteamGameDetector.cpp/.h` | VDF parser for libraryfolders.vdf + appmanifest.acf, executable scoring heuristic, `--steam-launch` mode |
+| **DxvkIntegration** | `proxy/DxvkIntegration.cpp/.h` | DXVK passthrough — detects DXVK DLLs, pre-loads them, sets passthrough flag so proxy hooks skip DXVK modules |
 | **ThreadScheduler** | `whp/ThreadScheduler.cpp/.h` | Round-robin multi-VCPU coordinator with BEL: MarkReady/PickNextVcpu, SyncBarrier, ExitCoordinator |
 | **ExitDispatcher** | `whp/ExitDispatcher.cpp/.h` | WHP exit reason dispatch routing |
 | **ExceptionHandler** | `whp/ExceptionHandler.cpp/.h` | WHP VP exception handling (#BP, #DB) |
@@ -394,7 +388,7 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 | CPUID→RDTSCP leaf-specific timing | RdtscHandler::CplLeafCost — 80-600 cycle per-leaf costs | Done |
 | RDTSCP RCX processor ID per-VCPU | HandleRdtscp sets RCX = m_vpIndex | Done |
 | β-time multi-source clock correlation | TimingCoordinator SnapshotBaseClocks + GetConsistent* | Done |
-| Denuvo watchdog thread detection | WatchdogTracker OnThreadCreate + EPT exec hook | Done |
+| Threaded integrity watchdog detection | WatchdogTracker OnThreadCreate + EPT exec hook | Done |
 | Win32_BaseBoard WMI | wbem_proxy SpoofedBaseBoard class | Done |
 | Win32_BIOS WMI | wbem_proxy SpoofedBIOS class | Done |
 | Win32_DiskDrive WMI | wbem_proxy SpoofedDiskDrive class | Done |
@@ -433,10 +427,10 @@ Default: `config/config.ini` (relative to launcher binary). Config profiles spec
 
 ```ini
 [hypervisor_hiding]  alloc_tracker = false  ; AllocTracker (VEH guard pages — off by default; EptExecHook supersedes)
-[hypervisor_hiding]  system_spoofer = false ; SystemSpoofer VEH (SGDT/SIDT/SLDT/STR/XGETBV — off for Denuvo)
+[hypervisor_hiding]  system_spoofer = false ; SystemSpoofer VEH (SGDT/SIDT/SLDT/STR/XGETBV — off by default)
 [system_spoofer]     enabled = false        ; Legacy fallback (same as hypervisor_hiding.system_spoofer)
 [eat]                enabled = true         ; Export Address Table patching (Phase 8)
-[watchdog]           enabled = true         ; Denuvo watchdog detection (WatchdogTracker)
+[watchdog]           enabled = true         ; Integrity watchdog detection (WatchdogTracker)
 [ept_split_view]     enabled = true         ; EPT split-view (process cloaking)
 [forwarding]         enabled = true      ; Syscall forwarding (Ghost Sandbox)
 [stack_spoofer]      enabled = true      ; StackSpoofer ret-sled call-stack spoofing
@@ -541,7 +535,7 @@ ws2_32.dll            Proxy DLL (clean system DLL name)
 | **handshake_test.exe** | Verifies the Magic CPUID 15-leaf handshake protocol (HELLO/ACK, GPA exchange, PID registration, etc.) |
 | **capture_tool.exe** | Standalone capture tool — logs all fingerprint queries for 5 minutes without spoofing, output as TSV |
 | **msr_reader.exe** | Reads MSR registers via the `semav6msr64` kernel driver IOCTL protocol |
-| **test_sections.ps1** | PowerShell bisect test script — tests each spoofing section in isolation against a target game, automates config generation and log analysis |
+| **test_sections.ps1** | PowerShell bisect test script — tests each spoofing section in isolation against a target application, automates config generation and log analysis |
 
 ---
 
@@ -573,16 +567,16 @@ WHP uses Intel VT-x hardware virtualization. When `WHvRunVp` is called, the CPU 
 - **KUSER_SHARED_DATA at `0x7FFE0000`** works via EPT (WHP) only; VEH fallback available but less transparent
 - **IAT/EAT patching** applies to modules loaded after engine init; pre-loaded system DLLs use proxy DLL shims
 - **GPU-intensive workloads** pass through via GpuBridge (always fall through to real GPU)
-- **Denuvo hardening (Phases 1-4)**: syscall, MSR, CR4, RDTSC, VEH stack, WMI, registry, and config-gating measures are implemented to defeat Denuvo's hypervisor detection. Phase 3b (registry path filtering) reads guest memory directly — requires identity-mapped GPA=VA layout. Phase 2a (RDTSC compensation) uses a fixed 80-cycle bare-metal CPUID cost, which may need per-SKU tuning
-- **SystemSpoofer VEH** uses INT3 patches for SGDT/SIDT/SLDT/STR/XGETBV — may be detected by anti-tamper (gated behind config, off by default for Denuvo)
+- **Anti-tamper hardening (Phases 1-4)**: syscall, MSR, CR4, RDTSC, VEH stack, WMI, registry, and config-gating measures are implemented to defeat hypervisor detection. Phase 3b (registry path filtering) reads guest memory directly — requires identity-mapped GPA=VA layout. Phase 2a (RDTSC compensation) uses a fixed 80-cycle bare-metal CPUID cost, which may need per-SKU tuning
+- **SystemSpoofer VEH** uses INT3 patches for SGDT/SIDT/SLDT/STR/XGETBV — may be detected by anti-tamper (gated behind config, off by default)
 - **Forward table arg counts** — unknown syscalls default to 4 args; if a >4-arg syscall is missing from the table, the forwarded call will read garbage from the stack
-- **Context capture via RtlCaptureContext** captures at Engine_VcpuEntry, not at the original game entry point. RSP is inside Engine_VcpuEntry's frame, not the loader's initial stack. For modern MSVC CRT startups using PEB-based init this works; if issues arise, an assembly register-save stub is needed
-- **Denuvo persistent blacklist** — after WHP is detected once, Denuvo persists state across launches. Cleanup functions delete cache files in `game_dir`, `%appdata%\Denuvo\`, and `%TEMP%\dns*`
+- **Context capture via RtlCaptureContext** captures at Engine_VcpuEntry, not at the original entry point. RSP is inside Engine_VcpuEntry's frame, not the loader's initial stack. For modern MSVC CRT startups using PEB-based init this works; if issues arise, an assembly register-save stub is needed
+- **Anti-tamper persistent blacklist** — after WHP is detected once, some anti-tamper systems persist state across launches. Cleanup functions delete cache files in `appdata` and `temp` directories
 - **Proxy DLLs use clean system names** loaded with absolute paths via `LoadLibraryW`; GetProcAddress hook uses engine-registered function table
-- **WHP-only host machines** — game must have WHP available. No fallback to pure emulation
+- **WHP-only host machines** — target must have WHP available. No fallback to pure emulation
 - **BEL is always active** — KernelLock is acquired/released around every HandleExit call. The lock is non-recursive; asserts in debug builds catch accidental re-acquisition. Single-VCPU workloads see zero contention
 - **EptExecHook snapshot serialization** saves only GPA lists; callbacks (std::function) are not serializable — they must be re-registered by the owning code after Restore
-- **DXVK passthrough** only pre-loads DXVK DLLs — the actual DXVK binaries must be present in the game directory or provided via `InstallDxvkDlls()`. Does not bundle DXVK itself
+- **DXVK passthrough** only pre-loads DXVK DLLs — the actual DXVK binaries must be present in the application directory or provided via `InstallDxvkDlls()`. Does not bundle DXVK itself
 - **Snapshot memory regions** save only metadata (GPA, size, flags) — page content is not included. On restore, EPT is rebuilt on-demand by MapDynamicPage. Full memory content snapshot would require 2× memory usage and is not implemented
 - **Single VCPU by default** — child thread VCPU migration (Phase 6) is code-complete but gated behind `cpu_count > 1` in config and `SetChildThreadMigrationEnabled(true)`. Without these, child threads run as native host threads outside WHP
 - **Syscall number stability** — SSNs vary across Windows builds; dynamic detection from ntdll handles this, but any run-time resolution failure causes the engine to fall back to forwarding
@@ -590,11 +584,11 @@ WHP uses Intel VT-x hardware virtualization. When `WHvRunVp` is called, the CPU 
 - **EptSplitView** unmaps/remaps GPA ranges via `WHvMapGpaRange` on each VCPU switch — the ~5000 cycle remap cost adds latency to VCPU migration. For typical 2-4 VCPU workloads this is negligible, but 16+ VCPU configurations may see scheduler latency
 - **#VE (Virtualization Exception)** not supported by WHP — requires custom kernel-mode hypervisor driver (SimpleVisor/HyperPlatform pattern) for direct-to-ring-3 EPT violation delivery. Out of ring-3 scope
 - **β-time clock correlation** uses a single `SnapshotBaseClocks()` taken at init — long-running sessions (>24h) may accumulate skew between the base reference and real clocks. Future work: periodic re-snapshot or drift compensation from RDTSC reference
-- **ThreadHider toolhelp hooks** are inline patches on kernel32 exports — if Denuvo/EAC verifies module code pages via CRC, the hooks may be detected. The camouflage system (ApplyCamouflage) does not yet cover toolhelp hooks
-- **StackSpoofer** relies on `WriteProcessMemory(GetCurrentProcess())` which itself is an observable syscall. EAC monitors `NtWriteVirtualMemory` calls; the write-back for ret-sled restore may be logged. Future work: direct RSP-relative MOV in assembly segments
+- **ThreadHider toolhelp hooks** are inline patches on kernel32 exports — if anti-tamper verifies module code pages via CRC, the hooks may be detected. The camouflage system (ApplyCamouflage) does not yet cover toolhelp hooks
+- **StackSpoofer** relies on `WriteProcessMemory(GetCurrentProcess())` which itself is an observable syscall. Integrity monitors may track `NtWriteVirtualMemory` calls; the write-back for ret-sled restore may be logged. Future work: direct RSP-relative MOV in assembly segments
 - **IndirectSyscall** marks the entire 4KB ntdll page as execute-disabled in EPT — if multiple syscall stubs share the same page, all will trigger exits. On Windows 11 ntdll, syscall stubs are typically spread across 2+ pages, so only ~50% coverage may be achieved
 - **ConsistencyVerifier** runs all 8 checks on init; failing checks are logged but do not halt execution. No runtime re-verification is performed
-- **PEB anti-debug fields** are set once in `DLL_PROCESS_ATTACH` — an anti-cheat could re-set `BeingDebugged` after the proxy DLL loads. Future work: timed PEB restoration thread
+- **PEB anti-debug fields** are set once in `DLL_PROCESS_ATTACH` — an integrity checker could re-set `BeingDebugged` after the proxy DLL loads. Future work: timed PEB restoration thread
 - **HWBP countermeasures** only apply to `GetThreadContext`/`SetThreadContext` — they do not intercept `NtRaiseHardError` or `#DB` exception delivery directly. VEH-based `#DB` handler with DR6 clearing is future work
 - **Synthetic timing cross-correlation** uses a fixed 3.7 GHz TSC frequency — mismatch with the actual host TSC frequency could cause detectable drift in long-running sessions. Future work: auto-detect host TSC freq and set synthetic clock to match
 

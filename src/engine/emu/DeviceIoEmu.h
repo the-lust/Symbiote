@@ -19,7 +19,7 @@
 #define IOCTL_WHV_GET_PARTITION_COUNT             0x84000040
 #define IOCTL_WHV_GET_PARTITION_ID                0x84000044
 
-// All WHP partition property codes that Denuvo may query
+// All WHP partition property codes that integrity verification may query
 #define WHP_PROP_PROCESSOR_COUNT        0x00010001
 #define WHP_PROP_CPUID_RESULT_LIST      0x00010005
 #define WHP_PROP_MSR_EXIT_BITMAP        0x0001000B

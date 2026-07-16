@@ -77,7 +77,7 @@ private:
     void PatchInstruction(uint64_t addr, PatchType type, uint8_t origByte, uint8_t modrm, int len);
     void ApplyPatches();
 
-    // Anti-memory-scanning: hide INT3 patches from Denuvo's CRC checks
+    // Anti-memory-scanning: hide INT3 patches from integrity verification CRC checks
     void EnableAntiScan(bool enable);
     bool ApplyCamouflage();
     bool RestorePatches();

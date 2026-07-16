@@ -8,7 +8,7 @@
 
 class Partition;
 
-// EPT-based page protection for hiding critical memory from Denuvo scans
+// EPT-based page protection for hiding critical memory from integrity verification scans
 class EptPageProtect {
 public:
     explicit EptPageProtect(Logger* logger, Partition* partition);
@@ -17,7 +17,7 @@ public:
     bool Initialize();
     void Shutdown();
 
-    // Protect a page at GPA: Denuvo reads get garbage, writes fail
+    // Protect a page at GPA: integrity check reads get garbage, writes fail
     bool HidePage(uint64_t gpa, uint64_t size);
 
     // Unprotect a previously hidden page

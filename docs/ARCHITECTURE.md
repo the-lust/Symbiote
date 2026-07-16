@@ -4,7 +4,7 @@
 
 ## Problem Statement
 
-Executable-binaries protection systems bind license tokens to composite hardware fingerprints (CPUID, KUSER_SHARED_DATA, MSRs, timing, syscalls, disk/registry, PEB). Traditional bypass approaches load **unsigned kernel drivers** and intercept at VMX/SVM layer.
+Executable-binaries protection systems bind license tokens to composite hardware fingerprints (CPUID, KUSER_SHARED_DATA, MSRs, timing, syscalls, disk/registry, PEB). Traditional interception approaches load **unsigned kernel drivers** and intercept at VMX/SVM layer.
 
 This project uses Microsofts Hyper-V (Ring -1) via the **Windows Hypervisor Platform (WHP) API** from **Ring 3**, with no custom kernel driver required.
 
@@ -51,7 +51,7 @@ This project uses Microsofts Hyper-V (Ring -1) via the **Windows Hypervisor Plat
 | Aspect | Custom Ring -1/-2 Hypervisor | Symbiote (WHP path) |
 |--------|-------------------------------|-------------------|
 | Kernel driver | Required (unsigned) | None |
-| DSE / PatchGuard bypass | Often required | Not required |
+| DSE / PatchGuard interception | Often required | Not required |
 | BSOD risk from HV bugs | High (Ring 0/-1) | Lower (user-mode + Hyper-V) |
 | GPU | Native | Native (GpuBridge fallthrough) |
 | Auditability | Obfuscated scene binaries | Full source in Ring 3 |

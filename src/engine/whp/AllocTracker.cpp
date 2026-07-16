@@ -279,7 +279,7 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
     uint64_t rip = (uint64_t)ep->ContextRecord->Rip;
 
     // Stack-spoiling defense: save top of stack before processing, restore after.
-    // Denuvo stores critical values in high unused stack space before triggering
+    // Integrity verification stores critical values in high unused stack space before triggering
     // exceptions; Windows' exception dispatch overwrites those values.
     uint64_t savedStackBackup[64];
     uint64_t rsp = ep->ContextRecord->Rsp;

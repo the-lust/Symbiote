@@ -6,7 +6,7 @@
 #include <intrin.h>
 
 // Structured fingerprint capture logger.
-// Writes tab-separated capture.log with every hardware/software query the game makes.
+// Writes tab-separated capture.log with every hardware/software query the target makes.
 // Format (one line per event):
 //   VECTOR<TAB>timestamp<TAB>tid<TAB>callerRip<TAB>field1<TAB>field2<...>
 // Vectors: CPUID, RDTSC, RDTSCP, MSR_READ, MSR_WRITE, KUSER, SYSCALL, REGISTRY,
