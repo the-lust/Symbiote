@@ -24,7 +24,7 @@ typedef enum _MEMORY_INFORMATION_CLASS {
     MemoryPrivilegedBasicInformation = 8,
 } MEMORY_INFORMATION_CLASS;
 
-// Real fucntion pointrs loaded from ntdll
+// Real function pointers loaded from ntdll
 typedef NTSTATUS (NTAPI* RealNtAllocateVirtualMemory_t)(
     HANDLE, PVOID*, ULONG_PTR, PSIZE_T, ULONG, ULONG);
 typedef NTSTATUS (NTAPI* RealNtFreeVirtualMemory_t)(

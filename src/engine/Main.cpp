@@ -82,6 +82,12 @@ static StackSpoofer* g_stackSpoofer = nullptr;
 static IndirectSyscall* g_indirectSyscall = nullptr;
 static Snapshot* g_snapshot = nullptr;
 
+// PEB anti-debug restoration thread: continuously monitors BeingDebugged
+// (offset 0x02) and NtGlobalFlag (offset 0xBC) for overwrite by protection
+// threads, restoring them to safe values every 500ms.
+static std::thread g_pebRestoreThread;
+static std::atomic<bool> g_pebRestoreRunning{false};
+
 static HANDLE g_engineReadyEvent = nullptr;
 static HANDLE g_engineActiveEvent = nullptr;
 
@@ -162,8 +168,29 @@ static void CleanupDenuvoState()
     }
 }
 
+// PEB restoration thread: background monitor that restores anti-debug fields
+static void PebRestoreLoop()
+{
+    while (g_pebRestoreRunning.load()) {
+        uint8_t* peb = (uint8_t*)__readgsqword(0x60);
+        if (peb) {
+            peb[0x02] = 0; // BeingDebugged = FALSE
+            *(uint32_t*)(peb + 0xBC) = 0; // NtGlobalFlag = 0
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+}
+
 static void CleanupAll()
 {
+    // Stop PEB restoration thread
+    if (g_pebRestoreRunning.load()) {
+        g_pebRestoreRunning.store(false);
+        if (g_pebRestoreThread.joinable()) {
+            g_pebRestoreThread.join();
+        }
+    }
+
     CleanupDenuvoState();
     delete g_vcpuManager; g_vcpuManager = nullptr;
     delete g_minimalKernel; g_minimalKernel = nullptr;
@@ -666,8 +693,14 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         if (peb) {
             peb[0x02] = 0; // BeingDebugged = FALSE
             *(uint32_t*)(peb + 0xBC) = 0; // NtGlobalFlag = 0
-            g_logger.Trace(LOG_INFO, "PEB: BeingDebugged=0, NtGlobalFlag=0 set");
+            g_logger.Trace(LOG_INFO, "PEB: BeingDebugged=0, NtGlobalFlag=0 set (spoofProcess)");
         }
+
+        // PEB restoration thread: background monitor that restores anti-debug
+        // fields every 500ms in case a protection thread overwrites them.
+        g_pebRestoreRunning.store(true);
+        g_pebRestoreThread = std::thread(PebRestoreLoop);
+        g_logger.Trace(LOG_INFO, "PEB: restoration thread started (500ms interval)");
     }
 
     // Init SystemSpoofer for SGDT/SIDT/SLDT/STR/XGETBV interception
@@ -745,7 +778,14 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     // Phase B: Wire synthetic TSC source to TimingEmu and SystemSpoofer
     // Both derive from the same CounterUpdater TSC for coherent timing
     if (g_minimalKernel && g_minimalKernel->GetTimingEmu()) {
-        g_minimalKernel->GetTimingEmu()->SetSyntheticTscSource(RdtscHandler::GetCounterUpdaterTscPtr());
+        TimingEmu* timingEmu = g_minimalKernel->GetTimingEmu();
+        timingEmu->SetSyntheticTscSource(RdtscHandler::GetCounterUpdaterTscPtr());
+        // Use detected host TSC frequency instead of hardcoded 3.7 GHz default
+        uint64_t detectedFreq = g_systemProfile->GetTscFrequency();
+        if (detectedFreq > 100000000 && detectedFreq < 10000000000ULL) {
+            timingEmu->SetSyntheticTscFreq(detectedFreq);
+            g_logger.Trace(LOG_INFO, "TimingEmu: synthetic TSC freq set to %llu Hz", detectedFreq);
+        }
         g_logger.Trace(LOG_INFO, "TimingEmu: synthetic TSC source set to CounterUpdater");
     }
     if (g_systemSpoofer) {

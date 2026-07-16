@@ -8,6 +8,8 @@ public:
     explicit TimingEmu(Logger* logger);
 
     void SetSyntheticTscSource(uint64_t* tscPtr);
+    void SetSyntheticTscFreq(uint64_t freq) { m_syntheticTscFreq = freq; }
+    uint64_t GetSyntheticTscFreq() const { return m_syntheticTscFreq; }
 
     bool HandleNtQueryPerformanceCounter(uint64_t* args, uint64_t* result);
     bool HandleNtSetTimerResolution(uint64_t* args, uint64_t* result);

@@ -664,6 +664,4 @@ bool SyscallDispatch::HandleNtQuerySystemTime(uint64_t* args, uint64_t& result)
     return true;
 }
 
-bool SyscallDispatch::HandleNtQueryValueKey(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }
-bool SyscallDispatch::HandleNtClose(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }
-bool SyscallDispatch::HandleNtCreateFile(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }
+

@@ -107,5 +107,5 @@ bool GpuBridge::IsGpuFunction(const char* dllName, const char* funcName) const
         if (strcmp(funcName, gpuFuncs[i]) == 0) return true;
     }
 
-    return true;
+    return false;
 }
