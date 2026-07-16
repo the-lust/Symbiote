@@ -2,12 +2,11 @@
 
 ## 1. WHP-Based Hardware Virtualization
 
-The Windows Hypervisor Platform (WHP) provides a userspace API to Hyper-V's
-VMX/SVM virtualization capabilities. Symbiote uses WHP to:
+The Windows Hypervisor Platform (WHP) provides a userspace API to Hyper-V VMX/SVM virtualization capabilities. Symbiote uses WHP to:
 
 - Create a lightweight sidecar VM partition
 - Intercept CPUID, RDTSC/RDTSCP, and MSR accesses via VM exits
-- Map spoofed physical pages (EPT) for KUSER_SHARED_DATA interception
+- Map physical pages (EPT) for KUSER_SHARED_DATA interception
 - Operate entirely from Ring 3 with no kernel driver
 
 ## 2. Vectored Exception Handling (VEH) Fallback
@@ -15,61 +14,61 @@ VMX/SVM virtualization capabilities. Symbiote uses WHP to:
 When WHP is unavailable, VEH provides instruction-level interception:
 
 - CodePatcher overwrites CPUID/RDTSC/MSR instructions with UD2
-- VEH handler catches #UD exceptions, emulates the instruction with spoofed values
+- VEH handler catches #UD exceptions, emulates the instruction
 - Guard-page VEH catches first access to allocated (JIT) memory pages
-- AllocTracker manages 50ms re-arm timer for decrypt→execute→re-encrypt cycles
 
-## 3. IAT Patching & Proxy DLL Shims
+## 3. IAT/EAT Patching
 
-13 proxy DLLs intercept IAT-bound API calls:
+Proxy DLLs intercept API calls at the import/export table level:
 
-- ntdll, kernel32, kernelbase, advapi32, user32, wbem
-- wtsapi32, secur32, crypt32, winhttp, dnsapi, iphlpapi, ws2_32
-- Each forwards benign calls to the real system
-- Sensitive calls route through engine.dll for spoofed responses
+- 13 proxy DLLs with clean system DLL names (kernel32, ntdll, advapi32, etc.)
+- IAT patching redirects imports to proxy functions
+- EAT patching redirects exports to proxy functions
+- Bound import and delay-load import handling
+- ApiSet-aware DLL name resolution
 
-## 4. Inline Hooks & Syscall Emulation
+## 4. Inline Hooks
 
-InlineHook provides 12-byte `mov rax,imm64; jmp rax` hooks at function
-prologues. The trampoline uses a table-driven x64 instruction decoder to
-copy only complete instructions (covering ≥12 bytes). Hooked functions:
+12-byte `mov rax, imm64; jmp rax` hooks with instruction decoder for trampoline generation.
 
-- NtQuerySystemInformation — spoofs kernel debugger, module list, CI policy
-- NtQueryInformationProcess — spoofs debug port, flags, object handle
+## 5. MSR Shadowing
 
-MinimalKernel owns all emulator instances (Process, Memory, File, Timing,
-Registry, Crypto, Thread, Section, Object, VirtualState) and dispatches
-syscalls via a static DispatchThunk.
+Model-Specific Register access interception via WHP exit handlers. Configurable return values for known MSR indices.
 
-## 5. MSR Shadowing & Stealth Model
+## 6. KUSER_SHARED_DATA Analysis
 
-- FEATURE_CONTROL returns 0x4 (locked, VMX=0, SMX=0, SGX=0)
-- CPUID leaf 1 ECX[31] (hypervisor) and ECX[6] (SMX) masked
-- IA32_VMX MSRs (0x480-0x493) cached at init; reads return real HW values
-- Hyper-V TLFS MSRs (0x40000000-0x40000FFF): reads/writes inject #GP
-- Timing jitter (0-200µs MSR, 0-500µs CPUID) masks VM exit side-channels
+The KUSER_SHARED_DATA page at `0x7FFE0000` contains system-wide shared data. Interception via EPT (WHP) or shared memory overlay (VEH) allows observation of which fields protection systems read.
 
-## 6. Anti-Detection Considerations (Defensive Research)
+## 7. Anti-Detection Research (Defensive)
 
-| Detection Vector | Mitigation |
-|-----------------|------------|
-| CPUID hypervisor leaf | Zeroed (0x40000000 range) |
-| CPUID brand string | Config-driven via CpuidHandler + MagicCpuid enhanced mode |
-| CPUID per-process tracking | MagicCpuid PID registration limits spoofing to target only |
-| EPT hook timing | RDTSC spoofing + noise injection + TimingCoordinator delta normalization |
-| RDTSC→CPUID→RDTSC delta | TimingCoordinator cross-handler pattern detection + 3 jitter strategies |
-| WHP module presence | KuserHook hides artifacts |
-| Driver enumeration | Empty module list in syscalls |
-| Debugger detection | ProcessDebugPort/Flags/Handle clean |
-| Memory scan detection | Canary guard-page VEH callback logs scans |
-| VEH stack trace | Not addressed (high risk) |
-| Timing correlation | TSC noise + offset (configurable) |
-| Handshake protocol detection | Magic leaves only respond inside WHP partition; passthrough on bare metal |
+### Observed Detection Vectors
 
-## 7. Future Research Directions
+- **CPUID 0x40000000**: Hypervisor presence detection via vendor string
+- **EPT hook timing**: Timing side-channel through EPT-mapped pages
+- **RDTSC/CPUID/RDTSC deltas**: VM-exit overhead measurement
+- **Memory pattern scanning**: Detection of guard pages and hooks
+- **Registry artifacts**: Hyper-V service keys and BIOS information
+- **WMI queries**: Win32_Processor, Win32_ComputerSystem, SMBIOS
 
-- Python bindings for scriptable spoof profiles
-- State serialization for snapshot/restore of emulated environments
-- Process cloning for full execution isolation
-- GDB protocol stub for debugging under emulation
-- Multi-WHP partition for sidecar + main process isolation
+### Mitigation Techniques Studied
+
+Each of these detection vectors has corresponding mitigation approaches documented in the codebase, configurable through feature toggles.
+
+## 8. Multi-VCPU Architecture (BEL)
+
+The Big Emulator Lock pattern serializes emulator state access across VCPUs while allowing parallel guest execution.
+
+## 9. Per-VCPU Memory Views
+
+EPT split-view provides per-VCPU memory visibility control for analyzing process isolation behaviors.
+
+## 10. Fingerprint Capture Mode
+
+Passive capture mode logs all fingerprint queries without modification for analysis and profile creation.
+
+## 11. Related Academic Work
+
+- Hypervisor-based introspection techniques
+- Ring-3 only virtualization using WHP API
+- Timing side-channel analysis in virtualized environments
+- IAT/EAT interception for API monitoring

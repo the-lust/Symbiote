@@ -35,7 +35,7 @@ bool Canary::Initialize()
     hs->magic = 0x584D5942;
     hs->flags = 0;
 
-    // Install VEH for guard page detection
+    // Install VEH for guard page
     s_instance = this;
     m_vehHandle = AddVectoredExceptionHandler(1, VectoredHandler);
     if (!m_vehHandle) {

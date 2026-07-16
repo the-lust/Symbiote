@@ -15,7 +15,7 @@ bool StackSpoofer::Initialize()
 {
     if (m_initialized) return true;
 
-    // Find a ret sled in a legitimate module
+    // Find a ret sled in a module
     if (!FindRetSled()) {
         m_logger->Trace(LOG_WARNING, "StackSpoofer: no ret sled found, using ntdll fallback");
     }

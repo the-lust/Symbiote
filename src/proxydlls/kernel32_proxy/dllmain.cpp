@@ -46,12 +46,11 @@ extern "C" BOOL WINAPI Proxy_WriteProcessMemory(
 
 extern "C" BOOL WINAPI Proxy_GetComputerNameW(LPWSTR lpBuffer, LPDWORD nSize)
 {
-    // capture: log before spoofing
     typedef BOOL (WINAPI* Real_t)(LPWSTR, LPDWORD);
     static Real_t real = (Real_t)GetRealProc("GetComputerNameW");
     g_logger.Trace(LOG_PROXY, "CAPTURE GetComputerNameW called");
 
-    // spoof computer name to hide real hostname
+    // return configured computer name
     static const wchar_t spoofed[] = L"DESKTOP-ABCDEFG";
     DWORD len = (DWORD)wcslen(spoofed);
     if (*nSize < len + 1) {
@@ -65,12 +64,11 @@ extern "C" BOOL WINAPI Proxy_GetComputerNameW(LPWSTR lpBuffer, LPDWORD nSize)
 
 extern "C" BOOL WINAPI Proxy_GetUserNameW(LPWSTR lpBuffer, LPDWORD pcbBuffer)
 {
-    // capture: log before spoofing
-    typedef BOOL (WINAPI* Real_t)(LPWSTR, LPDWORD);
+    typedef BOOL (WINAPI* Real_t)(LPWSTR, PULONG);
     static Real_t real = (Real_t)GetRealProc("GetUserNameW");
     g_logger.Trace(LOG_PROXY, "CAPTURE GetUserNameW called");
 
-    // spoof username
+    // return configured username
     static const wchar_t spoofed[] = L"User";
     DWORD len = (DWORD)wcslen(spoofed);
     if (*pcbBuffer < len + 1) {

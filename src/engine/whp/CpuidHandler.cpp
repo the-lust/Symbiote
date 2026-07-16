@@ -115,11 +115,11 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
         m_timingCoordinator->DetectCpuidAfterRdtsc(leaf, (uint64_t)now.QuadPart);
     }
 
-    // Per-process tracking: if a target PID is registered, only spoof for that process
+    // Per-process tracking: if a PID is registered, only override for that process
     if (m_magicCpuid && m_magicCpuid->HasTargetPid()) {
         uint64_t currentPid = (uint64_t)GetCurrentProcessId();
         if (currentPid != m_magicCpuid->GetTargetPid()) {
-            // Not the target process - pass through without spoofing
+            // Not the registered process - pass through without override
             int cpuInfo[4] = {0};
             __cpuidex(cpuInfo, leaf, subleaf);
             *rax = (uint32_t)cpuInfo[0];
@@ -131,7 +131,7 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
         }
     }
 
-    // hide hypervisor leaves
+    // zero hypervisor leaves
     if (leaf >= 0x40000000 && leaf <= 0x4000FFFF) {
         *rax = 0;
         *rbx = 0;
@@ -166,7 +166,7 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
         *rdx = (uint32_t)cpuInfo[3];
     }
 
-    // Apply universal feature masking to hide host-specific CPU features
+    // Apply universal feature masking
     ApplyUniversalMask(leaf, subleaf, rax, rbx, rcx, rdx);
 
     // Clear hypervisor present bit + SMX/TXT bit in leaf 1 ECX
@@ -208,8 +208,7 @@ void CpuidHandler::GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count,
 {
     int idx = 0;
 
-    // WHP CPUID result list pre-populates known spoof values so WHP
-    // doesn't need to VM-exit for these leaves (from libkrun pattern).
+    // WHP CPUID result list pre-populates values so WHP doesn't need to VM-exit for these leaves.
     auto add = [&](uint32_t leaf, uint32_t, uint32_t eax,
                    uint32_t ebx, uint32_t ecx, uint32_t edx) {
         if (idx >= maxCount) return;
@@ -263,7 +262,7 @@ void CpuidHandler::GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count,
     // Leaf 0xA: PMU — zeroed
     add(0xA, 0, 0, 0, 0, 0);
 
-    // Leaves 0x80000000-0x80000008 (extended): spoofed from backend or generic
+    // Leaves 0x80000000-0x80000008 (extended): from backend or generic
     if (m_backend && m_backend->HandleCpuid(0x80000000, 0, cr)) {
         add(0x80000000, 0, cr.eax, cr.ebx, cr.ecx, cr.edx);
     } else {
@@ -328,7 +327,7 @@ void CpuidHandler::GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results
         uint32_t ecx = (uint32_t)cpuInfo[2];
         uint32_t edx = (uint32_t)cpuInfo[3];
 
-        // Apply feature masking to hide virtualization hints
+        // Apply feature masking
         if (leaf == 1) {
             ecx &= ~CPUID_ECX_HYPERVISOR_BIT;
             ecx &= ~CPUID_ECX_SMX_BIT;
@@ -387,7 +386,7 @@ void CpuidHandler::GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results
         uint32_t edx = (uint32_t)cpuInfo[3];
 
         if (leaf >= 0x80000002 && leaf <= 0x80000004) {
-            // Brand string — use our spoofed brand
+            // Brand string — use configured brand
             uint64_t ra, rb, rc, rd;
             if (HandleBrandStringLeaf(leaf, &ra, &rb, &rc, &rd)) {
                 eax = (uint32_t)ra; ebx = (uint32_t)rb;

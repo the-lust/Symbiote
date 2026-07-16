@@ -38,7 +38,7 @@ public:
     bool Run(uint32_t vcpuIndex);
     void Stop(uint32_t vcpuIndex);
 
-    // Ghost Sandbox: bootstrap VCPU from captured thread context
+    // Bootstrap VCPU from captured thread context
     bool BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& ctx, GuestPageTable* pageTable);
 
     void SetMagicCpuid(MagicCpuid* magic) {
@@ -60,7 +60,7 @@ public:
     // BEL (Big Emulator Lock) — serializes all C++ handler code
     KernelLock* GetKernelLock() { return &m_kernelLock; }
 
-    // Stack spoofer for return-address anti-walker
+    // Stack spoofer for return-address handling
     void SetStackSpoofer(StackSpoofer* spoofer) { m_stackSpoofer = spoofer; }
     StackSpoofer* GetStackSpoofer() const { return m_stackSpoofer; }
 
@@ -68,7 +68,7 @@ public:
     void SetIndirectSyscall(IndirectSyscall* isc) { m_indirectSyscall = isc; }
     IndirectSyscall* GetIndirectSyscall() const { return m_indirectSyscall; }
 
-    // SystemSpoofer for EPT-based instruction interception
+    // SystemSpoofer for EPT-based instruction handling
     void SetSystemSpoofer(SystemSpoofer* spoofer) { m_systemSpoofer = spoofer; }
     SystemSpoofer* GetSystemSpoofer() const { return m_systemSpoofer; }
 
@@ -136,8 +136,7 @@ private:
     IndirectSyscall* m_indirectSyscall = nullptr;
     SystemSpoofer* m_systemSpoofer = nullptr;
 
-    // Per-VCPU GDTs — each VCPU gets its own GDT at a unique GPA so that
-    // WOW64 threads on different VCPUs don't share FS-segment bases
+    // Per-VCPU GDTs — each VCPU gets its own GDT at a unique GPA
     static constexpr uint64_t PER_VCPU_GDT_BASE = 0x200000;
     static constexpr uint32_t PER_VCPU_GDT_SIZE = 0x1000;
     bool SetupPerVcpuGdt(uint32_t vcpuIndex);

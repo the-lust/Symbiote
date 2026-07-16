@@ -8,7 +8,7 @@
 
 class Partition;
 
-// EPT-based page protection for hiding critical memory from integrity verification scans
+// EPT-based page protection for memory isolation
 class EptPageProtect {
 public:
     explicit EptPageProtect(Logger* logger, Partition* partition);
@@ -17,19 +17,19 @@ public:
     bool Initialize();
     void Shutdown();
 
-    // Protect a page at GPA: integrity check reads get garbage, writes fail
+    // Protect a page at GPA: reads return shadow data, writes fail
     bool HidePage(uint64_t gpa, uint64_t size);
 
     // Unprotect a previously hidden page
     bool UnhidePage(uint64_t gpa);
 
-    // Hide all pages belonging to a module (by base address)
+    // Protect all pages belonging to a module (by base address)
     bool HideModulePages(uint64_t moduleBase, uint64_t moduleSize);
 
-    // Set up engine DLL self-protection
+    // Set up engine DLL protection
     bool ProtectEngineDll();
 
-    // Handle EPT violation for protected pages
+    // Handle EPT violation
     bool HandleViolation(uint64_t gpa, uint64_t rip, WHV_MEMORY_ACCESS_TYPE accessType);
 
     // Get shadow page content for a GPA (returns fake data for hidden pages)
@@ -43,7 +43,7 @@ private:
     struct ProtectedPage {
         uint64_t gpa;
         uint64_t size;
-        void* shadowVa;     // Shadow memory with fake/spoofed content
+        void* shadowVa;     // Shadow memory with custom content
         void* realVa;       // Real host VA (original content)
         bool active;
     };

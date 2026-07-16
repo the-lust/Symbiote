@@ -61,7 +61,7 @@ public:
     void UnregisterWhpHandle(void* handle);
     bool IsWhpHandle(void* handle) const;
 
-    // Property spoofing configuration
+    // Property value configuration
     void SetSpoofedProcessorCount(uint32_t count) { m_spoofedProcCount = count; }
     void SetSpoofedTscFrequency(uint64_t freq) { m_spoofedTscFreq = freq; }
 
@@ -81,7 +81,7 @@ private:
     uint8_t m_originalBytes[12];
     bool m_hookInstalled;
 
-    // Spoofed property values
+    // Configured property values
     uint32_t m_spoofedProcCount;
     uint64_t m_spoofedTscFreq;
 

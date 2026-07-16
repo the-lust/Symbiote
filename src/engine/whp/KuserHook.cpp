@@ -19,7 +19,7 @@ bool KuserHook::TryProtectKuserPage()
 {
     // KUSER page is kernel-managed, can't be made writable from user mode.
     // writing to it causes STATUS_GUARD_PAGE_VIOLATION and crashes the process.
-    // the target reads from our shared memory "Symbiote_KuserSpoof" instead.
+    // reads from our shared memory "Symbiote_KuserSpoof" instead.
     m_logger->Trace(LOG_WARNING, "KuserHook: cant modify KUSER page (kernel owns it)");
     return false;
 }
@@ -137,7 +137,7 @@ void KuserHook::SyncTimeFields()
 
 bool KuserHook::Initialize()
 {
-    // Allocate the spoofed KUSER buffer
+    // Allocate the override KUSER buffer
     m_spoofedKuser = VirtualAlloc(NULL, KUSER_PAGE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!m_spoofedKuser) {
         m_logger->Trace(LOG_ERROR, "KuserHook: failed to allocate spoofed KUSER buffer");

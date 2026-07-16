@@ -5,8 +5,8 @@
 #include <cstring>
 #include <intrin.h>
 
-// Structured fingerprint capture logger.
-// Writes tab-separated capture.log with every hardware/software query the target makes.
+// Structured query capture logger.
+// Writes tab-separated capture.log with every hardware/software query.
 // Format (one line per event):
 //   VECTOR<TAB>timestamp<TAB>tid<TAB>callerRip<TAB>field1<TAB>field2<...>
 // Vectors: CPUID, RDTSC, RDTSCP, MSR_READ, MSR_WRITE, KUSER, SYSCALL, REGISTRY,
@@ -117,7 +117,7 @@ public:
               leaf, subleaf, eax, ebx, ecx, edx, pageAddr);
     }
 
-    // Capture re-encrypt cycle detection
+    // Capture re-encrypt cycle
     void CaptureReencrypt(uint64_t callerRip, void* addr, uint32_t oldProtect, uint32_t newProtect)
     {
         Write("REENCRYPT", callerRip, "%p\t%08X\t%08X", addr, oldProtect, newProtect);
@@ -219,5 +219,5 @@ private:
     }
 };
 
-// Global capture logger (set to nullptr for normal spoof mode)
+// Global capture logger (set to nullptr for normal profile mode)
 extern CaptureLogger* g_captureLogger;

@@ -64,7 +64,7 @@ private:
     static const uint32_t MSR_IA32_FS_BASE       = 0xC0000100;
     static const uint32_t MSR_IA32_GS_BASE       = 0xC0000101;
     static const uint32_t MSR_IA32_KERNEL_GS_BASE = 0xC0000102;
-    // Hyper-V TLFS MSRs (must all return 0/garbage to hide hypervisor)
+    // Hyper-V TLFS MSRs (must all return 0)
     static const uint32_t MSR_HV_GUEST_OS_ID     = 0x40000000;
     static const uint32_t MSR_HV_HYPERCALL       = 0x40000001;
     static const uint32_t MSR_HV_VP_INDEX        = 0x40000002;

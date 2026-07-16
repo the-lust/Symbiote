@@ -71,7 +71,7 @@ bool MagicCpuid::HandleMagicCpuid(uint32_t leaf, uint32_t subleaf, uint64_t* rax
             m_quitRequested = true;
             return true;
 
-        // REGISTER_PID: target announces itself with its PID in RDX
+        // REGISTER_PID: process announces itself with its PID in RDX
         case MAGIC_REGISTER_PID:
             m_targetPid = *rdx;
             m_logger->Trace(LOG_INFO, "Magic REGISTER_PID: target PID=%llu", m_targetPid);
@@ -81,7 +81,7 @@ bool MagicCpuid::HandleMagicCpuid(uint32_t leaf, uint32_t subleaf, uint64_t* rax
             *rdx = 0;
             return true;
 
-        // REGISTER_SYSCALL: target registers its syscall handler base in RCX
+        // REGISTER_SYSCALL: registers syscall handler base in RCX
         case MAGIC_REGISTER_SYSCALL:
             m_syscallHandler = *rcx;
             m_logger->Trace(LOG_INFO, "Magic REGISTER_SYSCALL: handler=0x%llX", m_syscallHandler);
@@ -100,7 +100,7 @@ bool MagicCpuid::HandleMagicCpuid(uint32_t leaf, uint32_t subleaf, uint64_t* rax
             m_logger->Trace(LOG_INFO, "Magic GET_SYSCALL_HANDLER: 0x%llX", m_syscallHandler);
             return true;
 
-        // ENHANCED_MODE: toggle enhanced CPUID/profile spoofing
+        // ENHANCED_MODE: toggle enhanced CPUID/profile mode
         case MAGIC_ENHANCED_MODE:
             m_enhancedMode = (subleaf != 0);
             m_logger->Trace(LOG_INFO, "Magic ENHANCED_MODE: %s (subleaf=0x%X)",

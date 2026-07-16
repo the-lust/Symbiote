@@ -16,7 +16,7 @@ struct PatchEntry {
 static std::unordered_map<uint64_t, PatchEntry> g_patches;
 static std::vector<uint64_t> g_patchAddrs;
 
-// EPT-hidden patches tracker for anti-memory-scanning
+// EPT-hidden patches tracker
 struct HiddenPatch {
     uint64_t addr;
     uint8_t camouflageBytes[12]; // Random bytes that replace INT3 when hidden
@@ -373,7 +373,7 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
     uint64_t newRip = rip + pe.instrLen;
     CONTEXT* ctx = ep->ContextRecord;
 
-    // Stack-spoiling defense: integrity check stores critical values in high unused
+    // Stack-spoiling: integrity check stores critical values in high unused
     // stack space before CPUID/SYSCALL/RDMSR operations, then causes an
     // exception. Windows writes EXCEPTION_RECORD + CONTEXT to the thread
     // stack, overwriting those values. Save and restore the top of stack
@@ -441,7 +441,7 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
             break;
     }
 
-    // Restore stack top to prevent stack-spoiling detection
+    // Restore stack top
     memcpy((void*)rsp, savedStackBackup, sizeof(savedStackBackup));
 
     ctx->Rip = newRip;
@@ -555,7 +555,7 @@ bool SystemSpoofer::HandleEptRdmsrIntercept(uint64_t rip, uint32_t msr, uint64_t
     s_instance->m_logger->Trace(LOG_EPT,
         "EPT RDMSR intercept: RIP=0x%llX MSR=0x%X", rip, msr);
 
-    // Return spoofed values consistent with the hypervisor environment
+    // Return configured values
     switch (msr) {
         case 0x10: // IA32_TIME_STAMP_COUNTER
             if (s_instance->m_syntheticTsc) {
