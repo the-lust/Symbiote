@@ -37,6 +37,11 @@ public:
     // was triggered by the guest (pass through).
     bool HandleSingleStepComplete(WHV_PARTITION_HANDLE partition, uint32_t vpIndex);
 
+    // Serialization for snapshot (saves GPA list only — callbacks are re-registered)
+    bool Serialize(std::vector<uint8_t>& buffer) const;
+    bool Deserialize(const uint8_t* data, size_t size);
+    size_t GetSerializedSize() const;
+
 private:
     struct PageHook {
         uint64_t gpa;

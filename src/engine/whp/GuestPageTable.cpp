@@ -2,10 +2,8 @@
 #include "Partition.h"
 #include <cstring>
 
-static Logger g_guestPtLogger;
-
-#define GPT_LOG(fmt, ...) g_guestPtLogger.Trace(LOG_WHP, "GuestPT: " fmt, ##__VA_ARGS__)
-#define GPT_ERR(fmt, ...) g_guestPtLogger.Trace(LOG_ERROR, "GuestPT: " fmt, ##__VA_ARGS__)
+#define GPT_LOG(fmt, ...) m_logger->Trace(LOG_WHP, "GuestPT: " fmt, ##__VA_ARGS__)
+#define GPT_ERR(fmt, ...) m_logger->Trace(LOG_ERROR, "GuestPT: " fmt, ##__VA_ARGS__)
 
 GuestPageTable::GuestPageTable(Logger* logger, Partition* partition)
     : m_logger(logger), m_partition(partition),

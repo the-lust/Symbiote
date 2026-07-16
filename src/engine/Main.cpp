@@ -557,17 +557,25 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
 
 
-    // Init AllocTracker for allocated-memory CPUID interception (gated by hypervisor_hiding config)
+    // AllocTracker for allocated-memory CPUID interception (gated by hypervisor_hiding config)
     bool allocTrackerEnabled = configParser.GetBool("hypervisor_hiding", "alloc_tracker", false);
     if (allocTrackerEnabled) {
-        g_allocTracker = new AllocTracker(&g_logger);
-        if (g_captureLogger) g_allocTracker->SetCaptureLogger(g_captureLogger);
-        if (g_allocTracker->Initialize()) {
-            g_logger.Trace(LOG_INFO, "AllocTracker initialized - tracking executable allocations");
+        // EptExecHook supersedes AllocTracker — EPT-based execution interception is more
+        // efficient and undetectable than VEH guard pages. Warn and skip if EPT hooks active.
+        if (g_eptExecHook) {
+            g_logger.Trace(LOG_WARNING,
+                "AllocTracker requested but EptExecHook is active — superseding. "
+                "Set hypervisor_hiding.alloc_tracker=false in config to suppress this warning.");
         } else {
-            g_logger.Trace(LOG_WARNING, "AllocTracker failed to initialize");
-            delete g_allocTracker;
-            g_allocTracker = nullptr;
+            g_allocTracker = new AllocTracker(&g_logger);
+            if (g_captureLogger) g_allocTracker->SetCaptureLogger(g_captureLogger);
+            if (g_allocTracker->Initialize()) {
+                g_logger.Trace(LOG_INFO, "AllocTracker initialized - tracking executable allocations");
+            } else {
+                g_logger.Trace(LOG_WARNING, "AllocTracker failed to initialize");
+                delete g_allocTracker;
+                g_allocTracker = nullptr;
+            }
         }
     } else {
         g_logger.Trace(LOG_DEBUG, "AllocTracker disabled by config (hypervisor_hiding.alloc_tracker=false)");
@@ -597,8 +605,12 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
     }
 
-    // Init SystemSpoofer for SGDT/SIDT/SLDT/STR/XGETBV interception (gated by config)
-    bool spoofSystemSpoofer = configParser.GetBool("system_spoofer", "enabled", false);
+    // Init SystemSpoofer for SGDT/SIDT/SLDT/STR/XGETBV interception
+    // Primary check: hypervisor_hiding.system_spoofer; fallback: system_spoofer.enabled
+    bool spoofSystemSpoofer = configParser.GetBool("hypervisor_hiding", "system_spoofer", false);
+    if (!spoofSystemSpoofer) {
+        spoofSystemSpoofer = configParser.GetBool("system_spoofer", "enabled", false);
+    }
     if (spoofSystemSpoofer) {
         g_logger.Trace(LOG_INFO, "SystemSpoofer: creating instance...");
         g_systemSpoofer = new SystemSpoofer(&g_logger);
