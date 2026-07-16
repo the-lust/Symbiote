@@ -215,13 +215,26 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 - **SteamGameDetector**: VDF text parser for `libraryfolders.vdf` and `appmanifest_*.acf`, enumerates all Steam library folders and installed games, scores executables by name-token match / depth / size to find the main game binary
 - **`launcher.exe --steam-launch "Game Name"`**: auto-detects Steam game, resolves best executable via scorer, sets `SteamAppId` env var, launches under WHP
 - **DxvkIntegration**: detects DXVK DLLs (d3d9, d3d10, d3d10_1, d3d10core, d3d11, dxgi) alongside target exe, pre-loads them to initialize before the game hooks, sets `g_dxvkBypassActive` flag so proxy interception skips DXVK modules
-
 **Phase 7 — Snapshot/restore:**
+
 - Full WHP state serialization: all 36 VCPU registers (GPRs, CRs, DRs, segments, EFER, STAR/LSTAR/CSTAR, GDTR/IDTR/TR/LDTR), memory region metadata (GPA, size, flags via Partition tracking), and EptExecHook hook list
 - `Snapshot::Create()` captures state to binary buffer; `WriteToFile()` saves as `.snap`; `LoadFromFile()` validates magic/version; `Restore()` re-sets VCPU registers and re-registers EPT hooks
 - Format: magic `SYMBIOTE` + version 1 + QPC timestamp + VCPU register blocks + memory region blocks + handler data
 
-The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartitionProperty`) cannot be mitigated from user mode — these require Ring-0 access and are inherent to the WHP architecture.
+**Phase 8 — Enhanced Anti-Detection (KUSER fields, watchdog, β-time, EPT split-view):**
+
+- **KUSER_SHARED_DATA field expansion**: `ApplyStaticSpoofs()` now writes all DRM-read fields — NtMajorVersion (0x260), NtMinorVersion (0x261), BuildNumber (0x262-0x263), NativeProcessorArchitecture (0x26A-0x26B), ProductTypeIsValid (0x268), SuiteMask (0x26C), NumberOfPhysicalPages (0x2D8), ProcessorFeatures (0x270-0x2CF, five 64-bit feature bitmaps), ActiveProcessorCount (0x3C0). All fields loaded from config or default to Win10 Pro values matching the spoof profile
+- **Leaf-specific CPUID timing costs**: `RdtscHandler::CplLeafCost()` returns per-leaf bare-metal TSC cycle counts (80-600 cycles depending on leaf complexity) — used to calculate VM-exit cost compensation more precisely than the previous single 80-cycle constant
+- **RDTSCP VCPU-aware RCX**: `HandleRdtscp()` sets RCX to the actual VCPU index (`m_vpIndex`) instead of hardcoded 1 — prevents topology-based timing fingerprints
+- **WatchdogTracker** (`WatchdogTracker.h/.cpp`): detects Denuvo threaded integrity watchdogs by intercepting `NtCreateThreadEx` in `OnThreadCreate()`, checks if the start RIP is from non-image memory (Denuvo JIT/decrypted pages), registers EPT exec hooks on watchdog GPA pages via `EptExecHook::RegisterPageHook()`. The static callback `OnWatchdogExec()` fires on each execution hit. `SimulateIntegrityCheck()` re-registers hooks to simulate periodic verification. Hooked pages are saved/restored across snapshot boundaries
+- **β-time clock correlation**: `TimingCoordinator` upgraded from struct to class with `SnapshotBaseClocks()` and `GetConsistent*()` methods (GetConsistentQpc, GetConsistentTsc, GetConsistentSysTime, GetConsistentTickCount, GetConsistentTimeGetTime) — all time sources reference a shared base snapshot, ensuring correlated drifts that match bare-metal clock behavior. `NtQuerySystemTime` handler returns consistent values derived from the same base
+- **WMI surface expansion**: `wbem_proxy` now spoofs `Win32_BaseBoard` (Manufacturer, Product, Version, SerialNumber), `Win32_BIOS` (SMBIOSBIOSVersion, ReleaseDate, SerialNumber), `Win32_DiskDrive` (Model, SerialNumber, InterfaceType, MediaType, Size, BytesPerSector, Partitions). `Win32_ComputerSystem` expanded with Domain, PrimaryOwnerName, TotalPhysicalMemory, NumberOfProcessors
+- **NtQueryVirtualMemory PE header spoofing**: `SyscallDispatch::HandleNtQueryVirtualMemory()` intercepts `MemoryBasicInformation` queries for ntdll/.engine pages — forwards to real NtQueryVirtualMemory, then overwrites the output: ensures .text pages show as clean `PAGE_EXECUTE_READ` with `PAGE_GUARD/NOCACHE/WRITECOMBINE` cleared and `Type = MEM_IMAGE`. Defeats Denuvo's PE header integrity verification that detects EAT/IAT patches
+- **EAT patching enabled**: `[eat] enabled = true` in config activates `IatPatch::PatchEAT()` — patches the Export Address Table of all loaded DLLs to route exports through proxy DLLs. Previously disabled by default due to detection risk; combined with NtQueryVirtualMemory spoofing, PE header reads now show clean exports
+- **EPT split-view (process cloaking)**: `EptSplitView` (`EptSplitView.h/.cpp`) implements per-VCPU memory view switching — registers GPA ranges with visible/hidden host VAs. `RegisterHiddenRange()` stores page metadata; `SetPageVisibility()` records per-VCPU overrides; `ApplyViewForVcpu()` unmaps and remaps GPA ranges to the appropriate VA based on the target VCPU. Used to hide engine DLL pages from child process VCPU instances while keeping them visible to the parent VCPU. Works by swapping `WHvMapGpaRange` mappings atomically before resuming the target VCPU
+- **SMBIOS/DMI table masking**: `HandleNtQuerySystemInformation()` now intercepts info class `0x1D` (SystemFirmwareTableInformation / 29) — returns `STATUS_INFO_LENGTH_MISMATCH` with zero return length, preventing DRM from reading real SMBIOS tables that would leak the host hardware identity
+
+The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartitionProperty`) cannot be mitigated from user mode — these require Ring-0 access and are inherent to the WHP architecture. #VE (Virtualization Exceptions) for direct-to-ring-3 EPT violation delivery is not supported by WHP and would require a custom kernel-mode hypervisor driver (SimpleVisor/HyperPlatform pattern).
 
 ---
 
@@ -247,6 +260,8 @@ The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartit
 | **TimingCoordinator** | `whp/TimingCoordinator.h` | Cross-handler RDTSC→CPUID→RDTSC pattern detection with 3 jitter strategies (uniform/constant/linear) |
 | **SystemSpoofer** | `whp/SystemSpoofer.cpp/.h` | VEH-based interception of SGDT/SIDT/SLDT/STR/XGETBV — gated behind config (default off) |
 | **EptExecHook** | `whp/EptExecHook.cpp/.h` | EPT-based execution hook single-step system — strips EXEC from EPT, catches exec faults, arms #DB single-step, re-strips. Supersedes AllocTracker when WHP available |
+| **WatchdogTracker** | `whp/WatchdogTracker.cpp/.h` | Denuvo threaded integrity watchdog detection — intercepts NtCreateThreadEx, registers EPT exec hooks on watchdog pages, periodic `SimulateIntegrityCheck()` |
+| **EptSplitView** | `whp/EptSplitView.cpp/.h` | Per-VCPU memory view switching for process cloaking — registers GPA ranges with visible/hidden VAs, `ApplyViewForVcpu()` swaps mappings atomically |
 | **KernelLock (BEL)** | `whp/KernelLock.cpp/.h` | CRITICAL_SECTION-based mutex with owner-tracking — serializes C++ handler code, released during guest execution for parallel VCPU execution |
 | **Snapshot** | `whp/Snapshot.cpp/.h` | Full WHP state serialization (36 VCPU registers, memory regions, EptExecHook hooks) with file I/O and restore |
 | **DxvkIntegration** | `proxy/DxvkIntegration.cpp/.h` | DXVK passthrough — detects DXVK DLLs, pre-loads them, sets bypass flag so proxy hooks skip DXVK modules |
@@ -273,6 +288,7 @@ The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartit
 | **GpuBridge** | `proxy/GpuBridge.cpp/.h` | GPU DLL passthrough — GPU-intensive calls always go to real system |
 | **ModuleCloak** | `proxy/ModuleCloak.cpp/.h` | Module hiding from PEB/LDR |
 | **SyscallBridge** | `proxy/SyscallBridge.cpp/.h` | Syscall forwarding bridge |
+| **TimingCoordinator** | `whp/TimingCoordinator.h/.cpp` | Cross-clock β-time correlation — `SnapshotBaseClocks()`, `GetConsistent*()` methods ensure consistent drift across QPC/TSC/SysTime/TickCount/timeGetTime |
 | **CaptureLogger** | `capture/CaptureLogger.cpp/.h` | Structured tab-separated capture log (100MB auto-rotate) for all fingerprint queries |
 | **GpuProfile** | `profile/GpuProfile.cpp/.h` | GPU identity profile for WMI spoofing |
 | **StorageProfile** | `profile/StorageProfile.cpp/.h` | Storage device profile (model, serial, size) |
@@ -332,6 +348,18 @@ The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartit
 | Win32_ComputerSystem WMI (HypervisorPresent) | wbem_proxy → SpoofedComputerSystem class | Done |
 | Registry hypervisor service keys | NtOpenKey path filter → STATUS_OBJECT_NAME_NOT_FOUND | Done |
 | AllocTracker inline hooks (config-gated) | hypervisor_hiding.alloc_tracker=false (off by default) | Done |
+| KUSER_SHARED_DATA all fields (0x260-0x3C0) | KuserSync ApplyStaticSpoofs — 12 fields from config | Done |
+| CPUID→RDTSCP leaf-specific timing | RdtscHandler::CplLeafCost — 80-600 cycle per-leaf costs | Done |
+| RDTSCP RCX processor ID per-VCPU | HandleRdtscp sets RCX = m_vpIndex | Done |
+| β-time multi-source clock correlation | TimingCoordinator SnapshotBaseClocks + GetConsistent* | Done |
+| Denuvo watchdog thread detection | WatchdogTracker OnThreadCreate + EPT exec hook | Done |
+| Win32_BaseBoard WMI | wbem_proxy SpoofedBaseBoard class | Done |
+| Win32_BIOS WMI | wbem_proxy SpoofedBIOS class | Done |
+| Win32_DiskDrive WMI | wbem_proxy SpoofedDiskDrive class | Done |
+| NtQueryVirtualMemory PE header spoofing | SyscallDispatch HandleNtQueryVirtualMemory | Done |
+| EAT patching | IatPatch::PatchEAT + config [eat] enabled=true | Done |
+| EPT split-view (process cloaking) | EptSplitView per-VCPU GPA swap | Done |
+| SMBIOS/DMI table masking | SyscallDispatch HandleNtQuerySystemInformation 0x1D | Done |
 
 ---
 
@@ -345,7 +373,9 @@ Default: `config/config.ini` (relative to launcher binary). Config profiles spec
 [hypervisor_hiding]  alloc_tracker = false  ; AllocTracker (VEH guard pages — off by default; EptExecHook supersedes)
 [hypervisor_hiding]  system_spoofer = false ; SystemSpoofer VEH (SGDT/SIDT/SLDT/STR/XGETBV — off for Denuvo)
 [system_spoofer]     enabled = false        ; Legacy fallback (same as hypervisor_hiding.system_spoofer)
-[eat]                enabled = false        ; Export Address Table patching
+[eat]                enabled = true         ; Export Address Table patching (Phase 8)
+[watchdog]           enabled = true         ; Denuvo watchdog detection (WatchdogTracker)
+[ept_split_view]     enabled = true         ; EPT split-view (process cloaking)
 [forwarding]         enabled = true      ; Syscall forwarding (Ghost Sandbox)
 [cpuid]              status = 0          ; CPUID spoofing (0=disabled)
 [rdtsc]              status = 0          ; RDTSC spoofing
@@ -487,6 +517,10 @@ WHP uses Intel VT-x hardware virtualization. When `WHvRunVp` is called, the CPU 
 - **Snapshot memory regions** save only metadata (GPA, size, flags) — page content is not included. On restore, EPT is rebuilt on-demand by MapDynamicPage. Full memory content snapshot would require 2× memory usage and is not implemented
 - **Single VCPU by default** — child thread VCPU migration (Phase 6) is code-complete but gated behind `cpu_count > 1` in config and `SetChildThreadMigrationEnabled(true)`. Without these, child threads run as native host threads outside WHP
 - **Syscall number stability** — SSNs vary across Windows builds; dynamic detection from ntdll handles this, but any run-time resolution failure causes the engine to fall back to forwarding
+- **WatchdogTracker** relies on non-image memory detection (`IsLikelyWatchdog` returns true for any `MEM_PRIVATE` region) — may generate false positives for legitimate JIT allocators (e.g., .NET, JS engines). Future work: CRC32/checksum pattern matching on watchdog page contents
+- **EptSplitView** unmaps/remaps GPA ranges via `WHvMapGpaRange` on each VCPU switch — the ~5000 cycle remap cost adds latency to VCPU migration. For typical 2-4 VCPU workloads this is negligible, but 16+ VCPU configurations may see scheduler latency
+- **#VE (Virtualization Exception)** not supported by WHP — requires custom kernel-mode hypervisor driver (SimpleVisor/HyperPlatform pattern) for direct-to-ring-3 EPT violation delivery. Out of ring-3 scope
+- **β-time clock correlation** uses a single `SnapshotBaseClocks()` taken at init — long-running sessions (>24h) may accumulate skew between the base reference and real clocks. Future work: periodic re-snapshot or drift compensation from RDTSC reference
 
 ---
 

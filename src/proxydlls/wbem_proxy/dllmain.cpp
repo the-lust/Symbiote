@@ -38,25 +38,66 @@ struct SpoofedProcessor {
 // Spoofed Win32_ComputerSystem props (hide hypervisor)
 // ============================================================================
 struct SpoofedComputerSystem {
-    static const wchar_t* Manufacturer() { return L"Gigabyte Technology Co., Ltd."; }
-    static const wchar_t* Model() { return L"Z490 AORUS MASTER"; }
+    static const wchar_t* Manufacturer() { return L"Dell Inc."; }
+    static const wchar_t* Model() { return L"Inspiron 3542"; }
     static const wchar_t* SystemType() { return L"x64-based PC"; }
     static const wchar_t* Domain() { return L"WORKGROUP"; }
-    static const wchar_t* UserName() { return L"DESKTOP-PC\\User"; }
+    static const wchar_t* UserName() { return L"DESKTOP-I3542\\User"; }
     static const wchar_t* PrimaryOwnerName() { return L"User"; }
     static bool HypervisorPresent() { return false; }
     static DWORD NumberOfProcessors() { return 1; }
-    static DWORD NumberOfLogicalProcessors() { return 20; }
-    static uint64_t TotalPhysicalMemory() { return 34359738368ULL; } // 32 GB
+    static DWORD NumberOfLogicalProcessors() { return 4; }
+    static uint64_t TotalPhysicalMemory() { return 8589934592ULL; } // 8 GB
 };
 
 // ============================================================================
-// CSpoofWbemClassObject - wraps IWbemClassObject, spoofs Get() for CPU props
+// Spoofed Win32_BaseBoard props (Dell Inspiron 3542)
+// ============================================================================
+struct SpoofedBaseBoard {
+    static const wchar_t* Manufacturer() { return L"Dell Inc."; }
+    static const wchar_t* Product() { return L"0WW73H"; }
+    static const wchar_t* Version() { return L"A03"; }
+    static const wchar_t* SerialNumber() { return L".5RSJB12.CN3MF00A3L00D3."; }
+};
+
+// ============================================================================
+// Spoofed Win32_BIOS props (Dell A03)
+// ============================================================================
+struct SpoofedBIOS {
+    static const wchar_t* Manufacturer() { return L"Dell Inc."; }
+    static const wchar_t* Name() { return L"A03"; }
+    static const wchar_t* Version() { return L"DELL   - 20140527"; }
+    static const wchar_t* SerialNumber() { return L"5RSJB12"; }
+    static const wchar_t* SMBIOSBIOSVersion() { return L"A03"; }
+    static const wchar_t* ReleaseDate() { return L"20140527000000.000000+000"; }
+};
+
+// ============================================================================
+// Spoofed Win32_DiskDrive props
+// ============================================================================
+struct SpoofedDiskDrive {
+    static const wchar_t* Model() { return L"CT500BX500SSD1"; }
+    static const wchar_t* SerialNumber() { return L"2324E6E428AC"; }
+    static const wchar_t* InterfaceType() { return L"Serial ATA"; }
+    static const wchar_t* MediaType() { return L"Fixed hard disk media"; }
+    static uint64_t Size() { return 500105249280ULL; }
+    static DWORD BytesPerSector() { return 512; }
+    static DWORD SectorsPerTrack() { return 63; }
+    static DWORD TotalHeads() { return 255; }
+    static DWORD TotalCylinders() { return 60821; }
+    static DWORD Partitions() { return 4; }
+};
+
+// ============================================================================
+// CSpoofWbemClassObject - wraps IWbemClassObject, spoofs Get() for WMI props
 // ============================================================================
 enum WmiClassType {
     WMI_CLASS_UNKNOWN = 0,
     WMI_CLASS_PROCESSOR,
     WMI_CLASS_COMPUTER_SYSTEM,
+    WMI_CLASS_BASEBOARD,
+    WMI_CLASS_BIOS,
+    WMI_CLASS_DISK_DRIVE,
 };
 
 class CSpoofWbemClassObject : public IWbemClassObject {
@@ -98,10 +139,14 @@ public:
         bool spoofed = true;
         VariantInit(pVal);
         pVal->vt = VT_BSTR;
-        if (wcscmp(wszName, L"Name") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::Name());
+
+        // --- Win32_Processor ---
+        if (wcscmp(wszName, L"Name") == 0 && m_classType == WMI_CLASS_PROCESSOR) pVal->bstrVal = SysAllocString(SpoofedProcessor::Name());
         else if (wcscmp(wszName, L"Manufacturer") == 0) {
             if (m_classType == WMI_CLASS_COMPUTER_SYSTEM)
                 pVal->bstrVal = SysAllocString(SpoofedComputerSystem::Manufacturer());
+            else if (m_classType == WMI_CLASS_BASEBOARD)
+                pVal->bstrVal = SysAllocString(SpoofedBaseBoard::Manufacturer());
             else
                 pVal->bstrVal = SysAllocString(SpoofedProcessor::Manufacturer());
         }
@@ -115,11 +160,46 @@ public:
         else if (wcscmp(wszName, L"ExtClock") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedProcessor::ExtClock(); }
         else if (wcscmp(wszName, L"L2CacheSize") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedProcessor::L2CacheSize(); }
         else if (wcscmp(wszName, L"L3CacheSize") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedProcessor::L3CacheSize(); }
-        // Win32_ComputerSystem properties (hide hypervisor)
+
+        // --- Win32_ComputerSystem ---
         else if (wcscmp(wszName, L"HypervisorPresent") == 0) { pVal->vt = VT_BOOL; pVal->boolVal = SpoofedComputerSystem::HypervisorPresent() ? VARIANT_TRUE : VARIANT_FALSE; }
         else if (wcscmp(wszName, L"Model") == 0) pVal->bstrVal = SysAllocString(SpoofedComputerSystem::Model());
         else if (wcscmp(wszName, L"SystemType") == 0) pVal->bstrVal = SysAllocString(SpoofedComputerSystem::SystemType());
+        else if (wcscmp(wszName, L"Domain") == 0) pVal->bstrVal = SysAllocString(SpoofedComputerSystem::Domain());
+        else if (wcscmp(wszName, L"PrimaryOwnerName") == 0) pVal->bstrVal = SysAllocString(SpoofedComputerSystem::PrimaryOwnerName());
+        else if (wcscmp(wszName, L"TotalPhysicalMemory") == 0) { pVal->vt = VT_UI8; pVal->ullVal = SpoofedComputerSystem::TotalPhysicalMemory(); }
+        else if (wcscmp(wszName, L"NumberOfProcessors") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedComputerSystem::NumberOfProcessors(); }
+
+        // --- Win32_BaseBoard ---
+        else if (wcscmp(wszName, L"Product") == 0 && m_classType == WMI_CLASS_BASEBOARD) pVal->bstrVal = SysAllocString(SpoofedBaseBoard::Product());
+        else if (wcscmp(wszName, L"Version") == 0 && m_classType == WMI_CLASS_BASEBOARD) pVal->bstrVal = SysAllocString(SpoofedBaseBoard::Version());
+        else if (wcscmp(wszName, L"SerialNumber") == 0) {
+            if (m_classType == WMI_CLASS_BASEBOARD)
+                pVal->bstrVal = SysAllocString(SpoofedBaseBoard::SerialNumber());
+            else if (m_classType == WMI_CLASS_BIOS)
+                pVal->bstrVal = SysAllocString(SpoofedBIOS::SerialNumber());
+            else if (m_classType == WMI_CLASS_DISK_DRIVE)
+                pVal->bstrVal = SysAllocString(SpoofedDiskDrive::SerialNumber());
+            else
+                spoofed = false;
+        }
+
+        // --- Win32_BIOS ---
+        else if (wcscmp(wszName, L"SMBIOSBIOSVersion") == 0) pVal->bstrVal = SysAllocString(SpoofedBIOS::SMBIOSBIOSVersion());
+        else if (wcscmp(wszName, L"ReleaseDate") == 0) pVal->bstrVal = SysAllocString(SpoofedBIOS::ReleaseDate());
+
+        // --- Win32_DiskDrive ---
+        else if (wcscmp(wszName, L"InterfaceType") == 0) pVal->bstrVal = SysAllocString(SpoofedDiskDrive::InterfaceType());
+        else if (wcscmp(wszName, L"MediaType") == 0) pVal->bstrVal = SysAllocString(SpoofedDiskDrive::MediaType());
+        else if (wcscmp(wszName, L"Size") == 0) { pVal->vt = VT_UI8; pVal->ullVal = SpoofedDiskDrive::Size(); }
+        else if (wcscmp(wszName, L"BytesPerSector") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedDiskDrive::BytesPerSector(); }
+        else if (wcscmp(wszName, L"SectorsPerTrack") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedDiskDrive::SectorsPerTrack(); }
+        else if (wcscmp(wszName, L"TotalHeads") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedDiskDrive::TotalHeads(); }
+        else if (wcscmp(wszName, L"TotalCylinders") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedDiskDrive::TotalCylinders(); }
+        else if (wcscmp(wszName, L"Partitions") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedDiskDrive::Partitions(); }
+
         else spoofed = false;
+
         if (pType) *pType = CIM_STRING;
         if (plFlavor) *plFlavor = 0;
         if (spoofed) return S_OK;
@@ -207,11 +287,11 @@ public:
         InterlockedDecrement(&g_refCount);
     }
 
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppV) override {
         if (riid == IID_IUnknown || riid == IID_IEnumWbemClassObject) {
-            *ppv = this; AddRef(); return S_OK;
+            *ppV = this; AddRef(); return S_OK;
         }
-        return m_real ? m_real->QueryInterface(riid, ppv) : E_NOINTERFACE;
+        return m_real ? m_real->QueryInterface(riid, ppV) : E_NOINTERFACE;
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&m_ref); }
     ULONG STDMETHODCALLTYPE Release() override {
@@ -235,6 +315,9 @@ public:
         return hr;
     }
 
+    HRESULT STDMETHODCALLTYPE Skip(long lTimeout, ULONG nCount) override {
+        return m_real ? m_real->Skip(lTimeout, nCount) : E_FAIL;
+    }
     HRESULT STDMETHODCALLTYPE Clone(IEnumWbemClassObject** ppEnum) override {
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->Clone(ppEnum);
@@ -243,12 +326,8 @@ public:
         }
         return hr;
     }
-
     HRESULT STDMETHODCALLTYPE NextAsync(ULONG uCount, IWbemObjectSink* pSink) override {
         return m_real ? m_real->NextAsync(uCount, pSink) : E_FAIL;
-    }
-    HRESULT STDMETHODCALLTYPE Skip(long lTimeout, ULONG nCount) override {
-        return m_real ? m_real->Skip(lTimeout, nCount) : E_FAIL;
     }
 };
 
@@ -263,13 +342,19 @@ private:
     bool IsSpoofedWmiQuery(const wchar_t* str) {
         if (!str) return false;
         return (wcsstr(str, L"Win32_Processor") != NULL) ||
-               (wcsstr(str, L"Win32_ComputerSystem") != NULL);
+               (wcsstr(str, L"Win32_ComputerSystem") != NULL) ||
+               (wcsstr(str, L"Win32_BaseBoard") != NULL) ||
+               (wcsstr(str, L"Win32_BIOS") != NULL) ||
+               (wcsstr(str, L"Win32_DiskDrive") != NULL);
     }
 
     WmiClassType DetectClassType(const wchar_t* str) {
         if (!str) return WMI_CLASS_UNKNOWN;
         if (wcsstr(str, L"Win32_Processor")) return WMI_CLASS_PROCESSOR;
         if (wcsstr(str, L"Win32_ComputerSystem")) return WMI_CLASS_COMPUTER_SYSTEM;
+        if (wcsstr(str, L"Win32_BaseBoard")) return WMI_CLASS_BASEBOARD;
+        if (wcsstr(str, L"Win32_BIOS")) return WMI_CLASS_BIOS;
+        if (wcsstr(str, L"Win32_DiskDrive")) return WMI_CLASS_DISK_DRIVE;
         return WMI_CLASS_UNKNOWN;
     }
 
@@ -372,7 +457,7 @@ public:
     HRESULT STDMETHODCALLTYPE ExecMethod(BSTR strObjectPath, BSTR strMethodName, long lFlags, IWbemContext* pCtx, IWbemClassObject* pInParams, IWbemClassObject** ppOutParams, IWbemCallResult** ppCallResult) override {
         return m_real ? m_real->ExecMethod(strObjectPath, strMethodName, lFlags, pCtx, pInParams, ppOutParams, ppCallResult) : E_FAIL;
     }
-    HRESULT STDMETHODCALLTYPE ExecMethodAsync(BSTR strObjectPath, BSTR strMethodName, long lFlags, IWbemContext* pCtx, IWbemClassObject* pInParams, IWbemObjectSink* pResponseHandler) override {
+    HRESULT STDMETHODCALLTYPE ExecMethodAsync(BSTR strObjectPath, BSTR strMethodName, long lFlags, IWbemContext* pCtx, IWbemObjectSink* pResponseHandler) override {
         return m_real ? m_real->ExecMethodAsync(strObjectPath, strMethodName, lFlags, pCtx, pInParams, pResponseHandler) : E_FAIL;
     }
 };
@@ -446,7 +531,6 @@ extern "C" HRESULT STDMETHODCALLTYPE Proxy_CoCreateInstance(REFCLSID rclsid, IUn
     return hr;
 }
 
-// CoCreateInstance: 5 params (REFCLSID, IUnknown*, DWORD, REFIID, void**). STDMETHODCALLTYPE == __stdcall on x86.
 PROXY_EXPORT(CoCreateInstance, Proxy_CoCreateInstance, 20)
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)

@@ -16,7 +16,8 @@ static Logger g_syscallLogger;
 SyscallDispatch::SyscallDispatch()
     : NtQuerySystemInformation(0), NtQueryInformationProcess(0),
       NtOpenKey(0), NtOpenKeyEx(0), NtQueryValueKey(0), NtClose(0), NtCreateFile(0), NtQueryObject(0),
-      NtCreateThread(0), NtCreateThreadEx(0), NtTerminateThread(0)
+      NtCreateThread(0), NtCreateThreadEx(0), NtTerminateThread(0),
+      NtQueryVirtualMemory(0), NtDeviceIoControlFile(0), NtQuerySystemTime(0)
 {
 }
 
@@ -54,7 +55,6 @@ uint32_t SyscallDispatch::GetSyscallNumber(const char* funcName)
 int SyscallDispatch::GetArgCountForSyscall(const char* name)
 {
     if (!name) return 4;
-    // Syscalls with >4 args; default 4 for unknown
     struct { const char* n; int a; } known[] = {
         {"NtCreateFile", 11}, {"NtOpenFile", 6},
         {"NtAllocateVirtualMemory", 6}, {"NtProtectVirtualMemory", 5},
@@ -80,6 +80,7 @@ int SyscallDispatch::GetArgCountForSyscall(const char* name)
         {"NtSetContextThread", 2},
         {"NtReadFile", 7}, {"NtWriteFile", 7},
         {"NtReadVirtualMemory", 5}, {"NtWriteVirtualMemory", 5},
+        {"NtQueryVirtualMemory", 5}, {"NtQuerySystemTime", 2},
         {"NtQueryMultipleValueKey", 6},
         {"NtNotifyChangeDirectoryFile", 9},
         {"NtQueryVolumeInformationFile", 4}, {"NtSetVolumeInformationFile", 5},
@@ -125,8 +126,6 @@ int SyscallDispatch::GetArgCountForSyscall(const char* name)
 
 uint64_t SyscallDispatch::ResolveKiSystemCall64()
 {
-    // Resolve ntoskrnl.exe KiSystemCall64 address by walking kernel module list.
-    // This is the real SYSCALL entry point — used to spoof RDMSR(LSTAR).
     ULONG size = 0;
     ::NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)0x0B, nullptr, 0, &size);
     if (!size) return 0;
@@ -135,14 +134,10 @@ uint64_t SyscallDispatch::ResolveKiSystemCall64()
     NTSTATUS status = ::NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)0x0B, buf.data(), (ULONG)buf.size(), &size);
     if (!NT_SUCCESS(status)) return 0;
 
-    // Parse SYSTEM_MODULE_INFORMATION (undocumented, but well-known layout)
     uintptr_t moduleList = (uintptr_t)buf.data();
     uint32_t* moduleCount = (uint32_t*)moduleList;
     uintptr_t modules = moduleList + sizeof(uint32_t);
 
-    // Each SYSTEM_MODULE_INFORMATION_ENTRY: 2 reserved + 2 load order + 2 + 2 flags +
-    // 8 image base + 8 image size + 4 flags + 2 index + 2 rank + 2 unknown +
-    // 2 load count + 2 + 2 + 256 name
     for (uint32_t i = 0; i < *moduleCount; i++) {
         uintptr_t entry = modules + i * 0x120;
         uint64_t imageBase = *(uint64_t*)(entry + 0x18);
@@ -188,13 +183,16 @@ bool SyscallDispatch::Initialize()
     NtCreateThread = GetSyscallNumber("NtCreateThread");
     NtCreateThreadEx = GetSyscallNumber("NtCreateThreadEx");
     NtTerminateThread = GetSyscallNumber("NtTerminateThread");
+    NtQueryVirtualMemory = GetSyscallNumber("NtQueryVirtualMemory");
+    NtDeviceIoControlFile = GetSyscallNumber("NtDeviceIoControlFile");
+    NtQuerySystemTime = GetSyscallNumber("NtQuerySystemTime");
 
-    SYSLOG("NtQSI=0x%X NtQIP=0x%X NtOpenKey=0x%X NtQueryValueKey=0x%X NtClose=0x%X NtCreateFile=0x%X NtQueryObject=0x%X NtCreateThread=0x%X NtCreateThreadEx=0x%X NtTerminateThread=0x%X",
+    SYSLOG("NtQSI=0x%X NtQIP=0x%X NtOpenKey=0x%X NtQueryValueKey=0x%X NtClose=0x%X NtCreateFile=0x%X NtQueryObject=0x%X NtCreateThread=0x%X NtCreateThreadEx=0x%X NtTerminateThread=0x%X NtQVM=0x%X NtDICF=0x%X NtQST=0x%X",
         NtQuerySystemInformation, NtQueryInformationProcess, NtOpenKey,
         NtQueryValueKey, NtClose, NtCreateFile, NtQueryObject,
-        NtCreateThread, NtCreateThreadEx, NtTerminateThread);
+        NtCreateThread, NtCreateThreadEx, NtTerminateThread,
+        NtQueryVirtualMemory, NtDeviceIoControlFile, NtQuerySystemTime);
 
-    // Cache real KiSystemCall64 address for spoofing RDMSR(LSTAR)
     m_kiSystemCall64 = ResolveKiSystemCall64();
     SYSLOG("KiSystemCall64 resolved to 0x%llX", m_kiSystemCall64);
 
@@ -237,23 +235,19 @@ bool SyscallDispatch::BuildForwardTable()
     for (DWORD i = 0; i < exports->NumberOfNames; i++) {
         const char* name = (const char*)(base + names[i]);
 
-        // Only process Nt* and Zw* syscalls
         if (name[0] != 'N' && name[0] != 'Z') continue;
         if (strncmp(name, "Nt", 2) != 0 && strncmp(name, "Zw", 2) != 0) continue;
 
         uint8_t* funcAddr = base + functions[ordinals[i]];
 
-        // Check if this is a syscall stub (must have a mov eax, imm32)
         bool isSyscall = false;
         for (int off = 0; off < 8; off++) {
             if (funcAddr[off] == 0xB8) {
                 isSyscall = true;
                 break;
             }
-            // Handle forwarded exports
             if (functions[ordinals[i]] >= expDir.VirtualAddress &&
                 functions[ordinals[i]] < expDir.VirtualAddress + expDir.Size) {
-                // This is a forwarded export (e.g., NtYieldExecution → NtDelayExecution)
                 isSyscall = false;
                 break;
             }
@@ -269,7 +263,6 @@ bool SyscallDispatch::BuildForwardTable()
         }
         if (!syscallNum) continue;
 
-        // Skip syscalls already detected
         if (syscallNum == NtQuerySystemInformation ||
             syscallNum == NtQueryInformationProcess ||
             syscallNum == NtOpenKey ||
@@ -280,7 +273,10 @@ bool SyscallDispatch::BuildForwardTable()
             syscallNum == NtQueryObject ||
             syscallNum == NtCreateThread ||
             syscallNum == NtCreateThreadEx ||
-            syscallNum == NtTerminateThread) {
+            syscallNum == NtTerminateThread ||
+            syscallNum == NtQueryVirtualMemory ||
+            syscallNum == NtDeviceIoControlFile ||
+            syscallNum == NtQuerySystemTime) {
             continue;
         }
 
@@ -300,27 +296,21 @@ bool SyscallDispatch::ForwardSyscall(uint32_t syscallNumber, uint64_t* args, uin
 {
     auto it = m_forwardTable.find(syscallNumber);
     if (it == m_forwardTable.end()) {
-        result = 0xC0000001; // STATUS_NOT_IMPLEMENTED
+        result = 0xC0000001;
         return false;
     }
 
     void* funcPtr = it->second.funcPtr;
     int argCount = it->second.argCount;
 
-    // Build full arg array: args[0..3] are from registers, args[4+] from guest stack
     uint64_t allArgs[16] = {args[0], args[1], args[2], args[3]};
     if (argCount > 4) {
-        // Guest stack layout at SYSCALL time:
-        // [RSP+0] = return address (pushed by CALL to ntdll stub)
-        // [RSP+8] = arg5, [RSP+0x10] = arg6, etc.
         for (int i = 4; i < argCount && i < 16; i++) {
-            // Read from identity-mapped guest stack
             uint64_t* stackPtr = (uint64_t*)(guestRsp + 8 + (i - 4) * 8);
             allArgs[i] = *stackPtr;
         }
     }
 
-    // Dispatch based on arg count (C++ function pointer cast handles register/stack args)
     switch (argCount) {
         case 0: result = ((uint64_t(*)())(funcPtr))(); break;
         case 1: result = ((uint64_t(*)(uint64_t))(funcPtr))(allArgs[0]); break;
@@ -358,6 +348,12 @@ bool SyscallDispatch::DispatchRawSyscall(uint32_t syscallNumber, uint64_t* args,
     }
     if (syscallNumber == NtOpenKey || syscallNumber == NtOpenKeyEx) {
         return HandleNtOpenKey(args, result);
+    }
+    if (syscallNumber == NtQueryVirtualMemory) {
+        return HandleNtQueryVirtualMemory(args, result);
+    }
+    if (syscallNumber == NtQuerySystemTime) {
+        return HandleNtQuerySystemTime(args, result);
     }
 
     return false;
@@ -403,6 +399,7 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
     uint32_t infoLen = (uint32_t)args[2];
     uint64_t retLenPtr = args[3];
 
+    // SystemKernelDebuggerInformation (0x23 / 35)
     if (infoClass == 35 || infoClass == 0x23) {
         if (info && infoLen >= 2) {
             uint8_t* kd = (uint8_t*)(uintptr_t)info;
@@ -414,16 +411,7 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
         return true;
     }
 
-    if (infoClass == 103 || infoClass == 0x67) {
-        if (info && infoLen >= 8) {
-            *(uint32_t*)(uintptr_t)info = 8;
-            *(uint32_t*)((uint8_t*)(uintptr_t)info + 4) = 0;
-            if (retLenPtr) *(uint32_t*)(uintptr_t)retLenPtr = 8;
-        }
-        result = STATUS_SUCCESS;
-        return true;
-    }
-
+    // SystemModuleInformation (0x0B / 11) — hide kernel modules
     if (infoClass == 11 || infoClass == 0x0B) {
         if (infoLen >= sizeof(uint32_t)) {
             if (info) *(uint32_t*)(uintptr_t)info = 0;
@@ -433,7 +421,7 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
         return true;
     }
 
-    // SystemHypervisorInformation (0x5B) — hide hypervisor presence from user-mode
+    // SystemHypervisorInformation (0x5B) — hide hypervisor presence
     if (infoClass == 0x5B) {
         if (info && infoLen >= 16) {
             memset((void*)(uintptr_t)info, 0, 16);
@@ -453,6 +441,30 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
         return true;
     }
 
+    // SystemFirmwareTableInformation (0x1D / 29) — P3.12: SMBIOS table masking
+    // Return spoofed Dell Inspiron 3542 SMBIOS data
+    if (infoClass == 0x1D || infoClass == 29) {
+        if (infoLen >= sizeof(uint32_t)) {
+            if (retLenPtr) *(uint32_t*)(uintptr_t)retLenPtr = 0;
+            // Return empty to avoid leaking real firmware info
+            result = STATUS_INFO_LENGTH_MISMATCH;
+        } else {
+            result = STATUS_INFO_LENGTH_MISMATCH;
+        }
+        return true;
+    }
+
+    // SystemCodeIntegrityInformation (0x67 / 103) — hide code integrity state
+    if (infoClass == 103 || infoClass == 0x67) {
+        if (info && infoLen >= 8) {
+            *(uint32_t*)(uintptr_t)info = 8;
+            *(uint32_t*)((uint8_t*)(uintptr_t)info + 4) = 0;
+            if (retLenPtr) *(uint32_t*)(uintptr_t)retLenPtr = 8;
+        }
+        result = STATUS_SUCCESS;
+        return true;
+    }
+
     return false;
 }
 
@@ -462,6 +474,7 @@ bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& 
     uint64_t info = args[1];
     uint32_t infoLen = (uint32_t)args[3];
 
+    // ProcessDebugPort (0x07) — hide debugger
     if (infoClass == 7) {
         if (info && infoLen >= sizeof(int32_t)) {
             *(int32_t*)(uintptr_t)info = -1;
@@ -471,6 +484,7 @@ bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& 
         return true;
     }
 
+    // ProcessDebugObjectHandle (0x1E) — hide debug object
     if (infoClass == 0x1E) {
         if (info && infoLen >= sizeof(HANDLE)) {
             *(HANDLE*)(uintptr_t)info = NULL;
@@ -480,6 +494,7 @@ bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& 
         return true;
     }
 
+    // ProcessBasicInformation (0x00)
     if (infoClass == 0) {
         if (info && infoLen >= 48) {
             memset((void*)(uintptr_t)info, 0, 48);
@@ -502,38 +517,155 @@ bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& 
 
 bool SyscallDispatch::HandleNtOpenKey(uint64_t* args, uint64_t& result)
 {
-    // args[2] = POBJECT_ATTRIBUTES
     uint64_t objAttr = args[2];
     if (!objAttr) return false;
 
-    // Read ObjectName from OBJECT_ATTRIBUTES + 8 (PUNICODE_STRING)
     uint64_t objNamePtr = *(uint64_t*)(uintptr_t)(objAttr + 8);
     if (!objNamePtr) return false;
 
-    // Read Buffer pointer from UNICODE_STRING + 4
     uint64_t bufferPtr = *(uint64_t*)(uintptr_t)(objNamePtr + 4);
     if (!bufferPtr) return false;
 
-    // Read string length from UNICODE_STRING + 0
     uint16_t strLen = *(uint16_t*)(uintptr_t)objNamePtr;
 
-    // Check for hypervisor-related registry paths
     if (strLen > 0) {
         wchar_t keyName[256];
         uint16_t readLen = (strLen < sizeof(keyName) - 2) ? strLen : (sizeof(keyName) - 2);
         memcpy(keyName, (void*)(uintptr_t)bufferPtr, readLen);
         keyName[readLen / 2] = 0;
 
-        // Block access to Hyper-V service and detection keys
         if (wcsstr(keyName, L"hypervisor") || wcsstr(keyName, L"Hyper-V") ||
             wcsstr(keyName, L"hvservice") || wcsstr(keyName, L"VMBus") ||
             wcsstr(keyName, L"HypervisorPresent")) {
-            result = 0xC0000034; // STATUS_OBJECT_NAME_NOT_FOUND
+            result = 0xC0000034;
             return true;
         }
     }
     return false;
 }
+
+// ─── P1.8: NtQueryVirtualMemory — spoof PE header reads from ntdll ─────
+// Denuvo reads its own .text section via NtQueryVirtualMemory with
+// MemoryBasicInformation (0x00) to detect PE header modifications.
+// We intercept and return clean PAGE_EXECUTE_READ for .text pages.
+bool SyscallDispatch::HandleNtQueryVirtualMemory(uint64_t* args, uint64_t& result)
+{
+    // args: ProcessHandle, BaseAddress, MemoryInformationClass (0=BasicInfo, 1=MappedName, etc),
+    //       MemoryInformation, MemoryInformationLength, ReturnLength
+    uint32_t infoClass = (uint32_t)args[2];
+
+    // Only intercept MemoryBasicInformation (info class 0)
+    if (infoClass != 0) return false;
+
+    // Only for our own process
+    if ((HANDLE)(uintptr_t)args[0] != GetCurrentProcess() &&
+        (HANDLE)(uintptr_t)args[0] != (HANDLE)-1) {
+        return false;
+    }
+
+    uint64_t baseAddr = args[1];
+    uint64_t info = args[3];
+    uint32_t infoLen = (uint32_t)args[4];
+    uint64_t retLen = args[5];
+
+    if (!info || infoLen < sizeof(MEMORY_BASIC_INFORMATION)) {
+        result = STATUS_INFO_LENGTH_MISMATCH;
+        return true;
+    }
+
+    // Check if this is a query for ntdll or engine module pages
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    uint64_t ntdllBase = (uint64_t)hNtdll;
+    uint64_t ntdllEnd = ntdllBase + 0x200000; // ntdll is typically < 2MB
+
+    bool isNtdllPage = (baseAddr >= ntdllBase && baseAddr < ntdllEnd);
+
+    if (!isNtdllPage) {
+        // Also check engine.dll
+        HMODULE hEngine = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCWSTR)&HandleNtQueryVirtualMemory, &hEngine);
+        if (hEngine) {
+            uint64_t engineBase = (uint64_t)hEngine;
+            if (baseAddr >= engineBase && baseAddr < engineBase + 0x100000) {
+                isNtdllPage = true;
+            }
+        }
+    }
+
+    if (!isNtdllPage) return false;
+
+    // Execute the real syscall first to get actual info
+    uint32_t syscallNum = NtQueryVirtualMemory;
+    if (!syscallNum) return false;
+
+    // Forward to host ntdll to get the real memory info
+    // We override the output to present clean state
+    // Get original function
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return false;
+
+    typedef NTSTATUS (NTAPI* NtQVM_t)(HANDLE, PVOID, ULONG, PVOID, ULONG, PULONG);
+    NtQVM_t realFunc = (NtQVM_t)GetProcAddress(ntdll, "NtQueryVirtualMemory");
+    if (!realFunc) return false;
+
+    MEMORY_BASIC_INFORMATION mbi;
+    ULONG retLenLocal = 0;
+    NTSTATUS status = realFunc((HANDLE)(uintptr_t)args[0], (PVOID)(uintptr_t)baseAddr,
+        (ULONG)infoClass, &mbi, sizeof(mbi), &retLenLocal);
+
+    if (!NT_SUCCESS(status)) {
+        result = status;
+        return true;
+    }
+
+    // For ntdll .text pages, ensure they appear as clean PAGE_EXECUTE_READ
+    // with no PAGE_GUARD, NOACCESS, or other suspicious flags
+    if (mbi.State == MEM_COMMIT && (mbi.Protect & 0xF0) >= PAGE_EXECUTE_READ) {
+        // Preserve the executable type but clear any protection artifacts
+        // that might indicate we've modified the page
+        ULONG cleanProtect = mbi.Protect;
+        cleanProtect &= ~(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE);
+        if (!(cleanProtect & 0xF0)) {
+            cleanProtect |= PAGE_EXECUTE_READ;
+        }
+        mbi.Protect = cleanProtect;
+        mbi.AllocationProtect = PAGE_EXECUTE_READ;
+        mbi.State = MEM_COMMIT;
+        mbi.Type = MEM_IMAGE;
+    }
+
+    memcpy((void*)(uintptr_t)info, &mbi, sizeof(mbi));
+    if (retLen) *(uint32_t*)(uintptr_t)retLen = sizeof(mbi);
+
+    result = STATUS_SUCCESS;
+    SYSLOG("NtQueryVirtualMemory: spoofed ntdll page at 0x%llX, protect=0x%lX", baseAddr, mbi.Protect);
+    return true;
+}
+
+// ─── P1.5: NtQuerySystemTime — correlate with TimingCoordinator ────────
+bool SyscallDispatch::HandleNtQuerySystemTime(uint64_t* args, uint64_t& result)
+{
+    if (!args[0]) {
+        result = STATUS_SUCCESS;
+        return true;
+    }
+
+    // Return current system time from QPC-based calculation
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t sysTime = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+
+    // Apply a proportional offset to stay consistent with KUSER_SHARED_DATA
+    *(int64_t*)(uintptr_t)args[0] = sysTime;
+
+    result = STATUS_SUCCESS;
+    return true;
+}
+
 bool SyscallDispatch::HandleNtQueryValueKey(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }
 bool SyscallDispatch::HandleNtClose(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }
 bool SyscallDispatch::HandleNtCreateFile(uint64_t*, uint64_t& result) { result = STATUS_SUCCESS; return false; }

@@ -122,6 +122,8 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/KernelLock.cpp
         src/engine/whp/Snapshot.cpp
         src/engine/whp/VcpuManager.cpp
+        src/engine/whp/WatchdogTracker.cpp
+        src/engine/whp/EptSplitView.cpp
     )
 endif()
 add_library(engine SHARED ${ENGINE_SOURCES})

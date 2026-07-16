@@ -3,13 +3,9 @@
 #include <cstdint>
 #include <unordered_map>
 
-// Dynamic syscall number detection + spoof dispatching for WHP #BP handler.
-// On each Windows build, syscall numbers change. We read them from ntdll
-// at runtime to remain build-independent.
-
 struct ForwardEntry {
-    void* funcPtr;       // Address of real ntdll function
-    int   argCount;      // Number of arguments (for stack arg forwarding)
+    void* funcPtr;
+    int   argCount;
 };
 
 class SyscallDispatch {
@@ -19,19 +15,11 @@ public:
 
     bool Initialize();
 
-    // Dispatch a raw syscall (called from VcpuManager #BP handler)
     bool DispatchRawSyscall(uint32_t syscallNumber, uint64_t* args, uint64_t& result);
-
-    // Forward an unhandled syscall to host ntdll
     bool ForwardSyscall(uint32_t syscallNumber, uint64_t* args, uint64_t guestRsp, uint64_t& result);
-
-    // Get the spoofed MSR value for a raw RDMSR instruction
     bool SpoofRdmsr(uint32_t msrIndex, uint64_t& value);
-
-    // Build the forward table from host ntdll exports
     bool BuildForwardTable();
 
-    // Syscall numbers detected from ntdll
     uint32_t NtQuerySystemInformation;
     uint32_t NtQueryInformationProcess;
     uint32_t NtOpenKey;
@@ -43,6 +31,9 @@ public:
     uint32_t NtCreateThread;
     uint32_t NtCreateThreadEx;
     uint32_t NtTerminateThread;
+    uint32_t NtQueryVirtualMemory; // P1.8: PE header reads
+    uint32_t NtDeviceIoControlFile; // P2.9: for WHP hooking
+    uint32_t NtQuerySystemTime; // P1.5: time source correlation
 
 private:
     bool m_initialized = false;
@@ -51,7 +42,6 @@ private:
     std::unordered_map<uint32_t, ForwardEntry> m_forwardTable;
 
     uint64_t ResolveKiSystemCall64();
-
     uint32_t GetSyscallNumber(const char* funcName);
     int GetArgCountForSyscall(const char* funcName);
 
@@ -61,4 +51,6 @@ private:
     bool HandleNtQueryValueKey(uint64_t* args, uint64_t& result);
     bool HandleNtClose(uint64_t* args, uint64_t& result);
     bool HandleNtCreateFile(uint64_t* args, uint64_t& result);
+    bool HandleNtQueryVirtualMemory(uint64_t* args, uint64_t& result); // P1.8
+    bool HandleNtQuerySystemTime(uint64_t* args, uint64_t& result); // P1.5
 };

@@ -10,7 +10,8 @@ static inline uint64_t ReadTSC() {
 RdtscHandler::RdtscHandler(Logger* logger, IKernelBackend* backend)
     : m_logger(logger), m_backend(backend), m_timingCoordinator(nullptr),
       m_captureLogger(nullptr),
-      m_tscOffset(0), m_lastTsc(0), m_noiseEnabled(true), m_noiseAmplitude(100)
+      m_tscOffset(0), m_lastTsc(0), m_noiseEnabled(true), m_noiseAmplitude(100),
+      m_vpIndex(0)
 {
     if (m_backend) {
         m_tscOffset = m_backend->GetTscOffset();
@@ -19,7 +20,6 @@ RdtscHandler::RdtscHandler(Logger* logger, IKernelBackend* backend)
 
 uint32_t RdtscHandler::LcgNext(uint32_t seed)
 {
-    // Linear congruential generator: ANSI C LCG
     return (seed * 1103515245U + 12345U) & 0x7FFFFFFFU;
 }
 
@@ -29,11 +29,9 @@ uint64_t RdtscHandler::AddTimingNoise(uint64_t tsc)
         return tsc;
     }
 
-    // Generate pseudo-random noise using TSC bits as seed
     uint32_t seed = (uint32_t)(tsc & 0x7FFFFFFF);
     uint32_t noise = LcgNext(seed) % (m_noiseAmplitude * 2) - m_noiseAmplitude;
 
-    // Ensure TSC never goes backwards
     uint64_t result = tsc + noise;
     if (result <= m_lastTsc) {
         result = m_lastTsc + 1;
@@ -48,21 +46,22 @@ bool RdtscHandler::HandleRdtsc(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rd
     uint64_t realTsc = ReadTSC();
     uint64_t spoofedTsc = realTsc + m_tscOffset;
 
-    // VM-exit cost compensation: if the timing coordinator detected a CPUID
-    // right before this RDTSC, adjust the TSC to hide the ~2000 cycle VM-exit
-    // overhead, making it look like bare-metal timing (~80-350 cycles).
+    // Leaf-specific VM-exit cost compensation
     bool cpuidJustExited = false;
+    uint32_t lastLeaf = 0;
     if (m_timingCoordinator) {
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         cpuidJustExited = m_timingCoordinator->DetectRdtscAfterCpuid((uint64_t)now.QuadPart);
+        lastLeaf = m_timingCoordinator->lastCpuidLeaf;
         if (cpuidJustExited) {
-            // Subtract typical VM-exit overhead (~2000 cycles) so the delta
-            // between CPUID and this RDTSC appears as bare-metal cost
+            // Use leaf-specific bare-metal cost instead of fixed 80
+            uint64_t bareMetalCost = CplLeafCost(lastLeaf);
             if (spoofedTsc >= m_lastPreExitTsc + 100) {
-                spoofedTsc = m_lastPreExitTsc + 80; // ~80 cycles = bare-metal CPUID cost
+                spoofedTsc = m_lastPreExitTsc + bareMetalCost;
             }
-            m_logger->Trace(LOG_TIMING, "RDTSC VM-exit compensation: adjusted to hide exit cost");
+            m_logger->Trace(LOG_TIMING, "RDTSC VM-exit compensation: leaf=0x%X cost=%llu cycles",
+                lastLeaf, bareMetalCost);
         }
         spoofedTsc = m_timingCoordinator->AddJitter(spoofedTsc, 3700000000ULL);
     } else {
@@ -90,15 +89,19 @@ bool RdtscHandler::HandleRdtscp(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* r
     uint64_t spoofedTsc = realTsc + m_tscOffset;
 
     bool cpuidJustExited = false;
+    uint32_t lastLeaf = 0;
     if (m_timingCoordinator) {
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         cpuidJustExited = m_timingCoordinator->DetectRdtscAfterCpuid((uint64_t)now.QuadPart);
+        lastLeaf = m_timingCoordinator->lastCpuidLeaf;
         if (cpuidJustExited) {
+            uint64_t bareMetalCost = CplLeafCost(lastLeaf);
             if (spoofedTsc >= m_lastPreExitTsc + 100) {
-                spoofedTsc = m_lastPreExitTsc + 80;
+                spoofedTsc = m_lastPreExitTsc + bareMetalCost;
             }
-            m_logger->Trace(LOG_TIMING, "RDTSCP VM-exit compensation: adjusted to hide exit cost");
+            m_logger->Trace(LOG_TIMING, "RDTSCP VM-exit compensation: leaf=0x%X cost=%llu cycles",
+                lastLeaf, bareMetalCost);
         }
         spoofedTsc = m_timingCoordinator->AddJitter(spoofedTsc, 3700000000ULL);
     } else {
@@ -111,12 +114,13 @@ bool RdtscHandler::HandleRdtscp(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* r
 
     *rax = spoofedTsc & 0xFFFFFFFF;
     *rdx = (spoofedTsc >> 32) & 0xFFFFFFFF;
-    *rcx = 0x00000001;
+    *rcx = m_vpIndex;
 
     if (m_captureLogger) {
         m_captureLogger->CaptureRdtsc("RDTSCP", 0, realTsc);
     }
 
-    m_logger->Trace(LOG_TIMING, "RDTSCP: real=0x%llX spoofed=0x%llX", realTsc, spoofedTsc);
+    m_logger->Trace(LOG_TIMING, "RDTSCP: real=0x%llX spoofed=0x%llX vpIndex=%u",
+        realTsc, spoofedTsc, m_vpIndex);
     return true;
 }
