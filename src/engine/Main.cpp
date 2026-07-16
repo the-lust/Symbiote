@@ -629,7 +629,8 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     // start thread scheduler for multi-VCPU if WHP available
     if (whpAvailable && g_vcpuManager) {
         uint32_t cpuCount = (uint32_t)configParser.GetUint64("vm", "cpu_count", 1);
-        g_threadScheduler = new ThreadScheduler(&g_logger, g_vcpuManager, (int)cpuCount);
+        g_threadScheduler = new ThreadScheduler(&g_logger, g_vcpuManager, (int)cpuCount,
+            g_vcpuManager ? g_vcpuManager->GetKernelLock() : nullptr);
         g_threadScheduler->Start();
     }
 

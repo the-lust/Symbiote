@@ -5,7 +5,8 @@
 #include <algorithm>
 
 Partition::Partition(Logger* logger)
-    : m_logger(logger), m_handle(nullptr), m_initialized(false), m_guestPageTable(nullptr)
+    : m_logger(logger), m_handle(nullptr), m_initialized(false),
+      m_vcpuCount(0), m_guestPageTable(nullptr)
 {
 }
 
@@ -165,6 +166,7 @@ bool Partition::SetupCpuCount(uint32_t count)
         m_logger->Trace(LOG_ERROR, "WHvSetPartitionProperty(ProcessorCount) failed: 0x%08X, count=%u", hr, count);
         return false;
     }
+    m_vcpuCount = count;
     m_logger->Trace(LOG_WHP, "CPU count set to %u", count);
     return true;
 }
@@ -325,6 +327,13 @@ bool Partition::MapGpaRange(void* hostVa, WHV_GUEST_PHYSICAL_ADDRESS guestPa, ui
         m_logger->Trace(LOG_ERROR, "WHvMapGpaRange(guestPa=0x%llX, size=%llu) failed: 0x%08X", guestPa, sizeInBytes, hr);
         return false;
     }
+
+    // Track region for snapshot/restore
+    TrackedMemoryRegion region;
+    region.gpa = guestPa;
+    region.size = sizeInBytes;
+    region.flags = (uint32_t)flags;
+    m_trackedRegions.push_back(region);
 
     m_logger->Trace(LOG_WHP, "GPA range mapped: hostVa=%p guestPa=0x%llX size=%llu flags=0x%X", hostVa, guestPa, sizeInBytes, (uint32_t)flags);
     return true;

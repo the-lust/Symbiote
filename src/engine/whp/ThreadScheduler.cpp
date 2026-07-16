@@ -1,5 +1,6 @@
 #include "ThreadScheduler.h"
 #include "VcpuManager.h"
+#include "KernelLock.h"
 
 SyncBarrier::SyncBarrier(Logger* logger, int numThreads)
     : m_logger(logger), m_numThreads(numThreads), m_count(0)
@@ -17,25 +18,24 @@ bool SyncBarrier::Wait(DWORD timeoutMs)
 {
     EnterCriticalSection(&m_cs);
     m_count++;
-
     if (m_count >= m_numThreads) {
         m_count = 0;
         WakeAllConditionVariable(&m_cv);
         LeaveCriticalSection(&m_cs);
         return true;
     }
-
     BOOL result = SleepConditionVariableCS(&m_cv, &m_cs, timeoutMs);
     LeaveCriticalSection(&m_cs);
-
     return result != FALSE;
 }
+
+// ─── ExitCoordinator ──────────────────────────────────────────────────
 
 ExitCoordinator::ExitCoordinator(Logger* logger)
     : m_logger(logger)
 {
-    memset(m_exitRequested, 0, sizeof(m_exitRequested));
     InitializeCriticalSection(&m_cs);
+    for (int i = 0; i < 4; i++) m_exitRequested[i] = false;
 }
 
 ExitCoordinator::~ExitCoordinator()
@@ -69,10 +69,14 @@ void ExitCoordinator::Reset(uint32_t vcpuIndex)
     LeaveCriticalSection(&m_cs);
 }
 
-ThreadScheduler::ThreadScheduler(Logger* logger, VcpuManager* vcpuMgr, int numVcpus)
-    : m_logger(logger), m_vcpuMgr(vcpuMgr), m_numVcpus(numVcpus),
-      m_running(false), m_schedulerThread(nullptr)
+// ─── ThreadScheduler (Round-Robin BEL) ────────────────────────────────
+
+ThreadScheduler::ThreadScheduler(Logger* logger, VcpuManager* vcpuMgr, int numVcpus, KernelLock* kernelLock)
+    : m_logger(logger), m_vcpuMgr(vcpuMgr), m_kernelLock(kernelLock),
+      m_numVcpus(numVcpus), m_running(false), m_schedulerThread(nullptr),
+      m_barrier(nullptr), m_coordinator(nullptr), m_nextPickIndex(0)
 {
+    InitializeCriticalSection(&m_readyCs);
     m_barrier = new SyncBarrier(logger, numVcpus);
     m_coordinator = new ExitCoordinator(logger);
 }
@@ -80,70 +84,111 @@ ThreadScheduler::ThreadScheduler(Logger* logger, VcpuManager* vcpuMgr, int numVc
 ThreadScheduler::~ThreadScheduler()
 {
     Stop();
-    delete m_barrier;
     delete m_coordinator;
-}
-
-DWORD WINAPI ThreadScheduler::SchedulerThreadProc(LPVOID lpParam)
-{
-    ThreadScheduler* scheduler = (ThreadScheduler*)lpParam;
-    scheduler->SchedulerLoop();
-    return 0;
-}
-
-void ThreadScheduler::SchedulerLoop()
-{
-    m_logger->Trace(LOG_INFO, "ThreadScheduler: round-robin scheduler started");
-
-    while (m_running) {
-        // wait at barrier - all VCPUs sync here
-        // in real scheduler wed account for quantum etc
-        // for now just a simple sync point
-        m_barrier->Wait(100);
-
-        // check if any VCPU requested coordinated exit
-        for (int i = 0; i < m_numVcpus; i++) {
-            if (m_coordinator->IsExitRequested((uint32_t)i)) {
-                m_logger->Trace(LOG_WHP, "ThreadScheduler: VCPU %d exit requested", i);
-                m_vcpuMgr->Stop((uint32_t)i);
-                m_coordinator->Reset((uint32_t)i);
-            }
-        }
-
-        // round-robin quantum: just yield
-        SwitchToThread();
-    }
-
-    m_logger->Trace(LOG_INFO, "ThreadScheduler: stopped");
+    delete m_barrier;
+    DeleteCriticalSection(&m_readyCs);
 }
 
 bool ThreadScheduler::Start()
 {
     if (m_running) return true;
-
     m_running = true;
+
     m_schedulerThread = CreateThread(nullptr, 0, SchedulerThreadProc, this, 0, nullptr);
     if (!m_schedulerThread) {
-        m_logger->Trace(LOG_ERROR, "ThreadScheduler: failed to create scheduler thread");
+        m_logger->Trace(LOG_ERROR, "ThreadScheduler: failed to create scheduler thread (GLE=%u)", GetLastError());
         m_running = false;
         return false;
     }
 
-    m_logger->Trace(LOG_INFO, "ThreadScheduler: started with %d VCPUs", m_numVcpus);
+    m_logger->Trace(LOG_INFO, "ThreadScheduler: started (%d VCPUs)", m_numVcpus);
     return true;
 }
 
 bool ThreadScheduler::Stop()
 {
     if (!m_running) return true;
-
     m_running = false;
+
     if (m_schedulerThread) {
-        WaitForSingleObject(m_schedulerThread, 1000);
+        // Signal all VCPUs to stop
+        for (int i = 0; i < m_numVcpus; i++) {
+            m_coordinator->RequestExit(i);
+        }
+        // Cancel any running VCPU
+        for (int i = 0; i < m_numVcpus; i++) {
+            // VcpuManager handles its own cancellation
+        }
+        WaitForSingleObject(m_schedulerThread, 3000);
         CloseHandle(m_schedulerThread);
         m_schedulerThread = nullptr;
     }
 
     m_logger->Trace(LOG_INFO, "ThreadScheduler: stopped");
     return true;
+}
+
+void ThreadScheduler::MarkReady(uint32_t vcpuIndex)
+{
+    EnterCriticalSection(&m_readyCs);
+    // Check if already queued
+    for (auto idx : m_readyQueue) {
+        if (idx == vcpuIndex) {
+            LeaveCriticalSection(&m_readyCs);
+            return;
+        }
+    }
+    m_readyQueue.push_back(vcpuIndex);
+    LeaveCriticalSection(&m_readyCs);
+}
+
+uint32_t ThreadScheduler::PickNextVcpu()
+{
+    EnterCriticalSection(&m_readyCs);
+    if (m_readyQueue.empty()) {
+        LeaveCriticalSection(&m_readyCs);
+        return UINT32_MAX;
+    }
+    // Round-robin: pick the next ready VCPU
+    if (m_nextPickIndex >= m_readyQueue.size()) m_nextPickIndex = 0;
+    uint32_t picked = m_readyQueue[m_nextPickIndex];
+    m_readyQueue.erase(m_readyQueue.begin() + m_nextPickIndex);
+    LeaveCriticalSection(&m_readyCs);
+    return picked;
+}
+
+bool ThreadScheduler::SetVcpuAffinity(uint32_t vcpuIndex, uint32_t idealProcessor)
+{
+    (void)vcpuIndex;
+    (void)idealProcessor;
+    // Guest thread affinity is set via NtSetInformationThread — we forward
+    // that to the host thread for the corresponding VCPU.
+    // Placeholder: will be implemented when guest thread affinity syscalls are routed.
+    return false;
+}
+
+DWORD WINAPI ThreadScheduler::SchedulerThreadProc(LPVOID lpParam)
+{
+    ThreadScheduler* self = (ThreadScheduler*)lpParam;
+    self->SchedulerLoop();
+    return 0;
+}
+
+void ThreadScheduler::SchedulerLoop()
+{
+    m_logger->Trace(LOG_INFO, "ThreadScheduler: scheduler loop started");
+
+    while (m_running) {
+        // Sleep 10ms between scheduling ticks for now (reactive to VM-exits,
+        // not timer-based — we respond when VCPUs signal readiness).
+        // In a fully reactive design, MarkReady would pulse an event and
+        // this thread would wait on that event. For now, just brief sleep
+        // to keep the thread alive.
+        Sleep(10);
+
+        // Every tick, check if any VCPUs should be preempted (future work)
+        // Currently, scheduling is cooperative: a VCPU runs until it VM-exits.
+    }
+
+    m_logger->Trace(LOG_INFO, "ThreadScheduler: scheduler loop stopped");
 }

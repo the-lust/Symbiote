@@ -94,6 +94,7 @@ set(ENGINE_SOURCES
     # Capture logger
     src/engine/capture/CaptureLogger.cpp
     # Proxy/IAT support
+    src/engine/proxy/DxvkIntegration.cpp
     src/engine/proxy/Fallthrough.cpp
     src/engine/proxy/GpuBridge.cpp
     src/engine/proxy/IatPatch.cpp
@@ -118,6 +119,8 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/RdtscHandler.cpp
         src/engine/whp/ThreadScheduler.cpp
         src/engine/whp/GuestPageTable.cpp
+        src/engine/whp/KernelLock.cpp
+        src/engine/whp/Snapshot.cpp
         src/engine/whp/VcpuManager.cpp
     )
 endif()

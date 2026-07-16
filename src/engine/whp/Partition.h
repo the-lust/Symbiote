@@ -41,10 +41,21 @@ public:
     void* AllocateGuestMemory(uint64_t sizeInBytes);
     void FreeGuestMemory(void* ptr);
 
+public:
+    // Memory region tracking for snapshot/restore
+    struct TrackedMemoryRegion {
+        WHV_GUEST_PHYSICAL_ADDRESS gpa;
+        uint64_t size;
+        uint32_t flags;
+    };
+    const std::vector<TrackedMemoryRegion>& GetTrackedMemoryRegions() const { return m_trackedRegions; }
+    uint32_t GetVcpuCount() const { return m_vcpuCount; }
+
 private:
     Logger* m_logger;
     WHV_PARTITION_HANDLE m_handle;
     bool m_initialized;
+    uint32_t m_vcpuCount;
 
     struct GuestMemBlock {
         void* hostVa;
@@ -52,6 +63,7 @@ private:
     };
     std::vector<GuestMemBlock> m_guestMemory;
     GuestPageTable* m_guestPageTable;
+    std::vector<TrackedMemoryRegion> m_trackedRegions;
 
     struct DeferredMap {
         WHV_MAP_GPA_RANGE_FLAGS flags;

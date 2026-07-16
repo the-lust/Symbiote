@@ -6,6 +6,7 @@
 #include "SystemSpoofer.h"
 #include "SyscallDispatch.h"
 #include "EptExecHook.h"
+#include "KernelLock.h"
 #include <unordered_map>
 
 class Partition;
@@ -53,6 +54,9 @@ public:
     // EPT-based execution hooks (single-step mechanism)
     void SetEptExecHook(EptExecHook* hook) { m_eptExecHook = hook; }
     EptExecHook* GetEptExecHook() const { return m_eptExecHook; }
+
+    // BEL (Big Emulator Lock) — serializes all C++ handler code
+    KernelLock* GetKernelLock() { return &m_kernelLock; }
 
     // Singleton access for ThreadBootstrapEntry (static thread proc)
     static VcpuManager* GetInstance() { return s_instance; }
@@ -112,7 +116,14 @@ private:
     SyscallHandler* m_syscallHandler;
     ExceptionHandler* m_exceptionHandler;
     SyscallDispatch m_syscallDispatch;
+    KernelLock m_kernelLock;
     EptExecHook* m_eptExecHook = nullptr;
+
+    // Per-VCPU GDTs — each VCPU gets its own GDT at a unique GPA so that
+    // WOW64 threads on different VCPUs don't share FS-segment bases
+    static constexpr uint64_t PER_VCPU_GDT_BASE = 0x200000;
+    static constexpr uint32_t PER_VCPU_GDT_SIZE = 0x1000;
+    bool SetupPerVcpuGdt(uint32_t vcpuIndex);
 
     struct VcpuContext {
         WHV_RUN_VP_EXIT_CONTEXT exitCtx;
