@@ -405,9 +405,9 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 | HWBP DR0-DR3 via GetThreadContext/SetThreadContext | ThreadManager zero debug registers in both paths | Done (Phase B) |
 | QPC/GetTickCount/GetSystemTime cross-correlation | TimingEmu synthetic TSC-based timing (CounterUpdater-backed) | Done (Phase B) |
 | GetSystemTimeAdjustment synthetic | TimingEmu HandleGetSystemTimeAdjustment | Done (Phase B) |
-| Thread enumeration hiding (toolhelp) | ThreadHider 12-byte inline hooks on CreateToolhelp32Snapshot/Thread32First/Thread32Next | Done (Phase B) |
+| Thread enumeration hiding (toolhelp) | ThreadHider 12-byte hooks + engine thread auto-registration at init | Done (Phase B) |
 | Thread filtering in NtQuerySystemInformation | ThreadHider HandleSystemProcessInformation compact walk | Done (Phase B) |
-| Environment consistency cross-referencing (8 checks) | ConsistencyVerifier CPUID/KUSER/registry/WMI correlation | Done (Phase B) |
+| Environment consistency cross-referencing (11 checks) | ConsistencyVerifier CPUID/KUSER/registry/BIOS/network/disk cross-validation | Done (Phase B) |
 | EPT-based SGDT/SIDT/SLDT/STR/XGETBV emulation | SystemSpoofer HandleEptSysInstrIntercept (no INT3) | Done (Phase B) |
 | EPT-based RDMSR per-MSR spoofed values | SystemSpoofer HandleEptRdmsrIntercept (TSC, APIC, MC banks) | Done (Phase B) |
 | Auto-detecting host TSC frequency | HwDetect 3-tier detection wired to TimingEmu + RdtscHandler | Done (Phase B) |

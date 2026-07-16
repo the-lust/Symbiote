@@ -15,12 +15,10 @@ public:
 
     void HideThread(uint32_t threadId);
     void UnhideThread(uint32_t threadId);
+    void HideProcess(uint32_t processId);
+    void UnhideProcess(uint32_t processId);
 
     bool HandleSystemProcessInformation(uint64_t infoBuffer, uint32_t infoLength, uint64_t* returnLength, uint64_t* result);
-
-    static bool WINAPI HookCreateToolhelp32Snapshot(uint32_t dwFlags, uint32_t th32ProcessID, uint64_t* result);
-    static bool WINAPI HookThread32First(void* hSnapshot, void* lpte, uint64_t* result);
-    static bool WINAPI HookThread32Next(void* hSnapshot, void* lpte, uint64_t* result);
 
     bool IsThreadHidden(uint32_t threadId) const;
     bool IsProcessHidden(uint32_t processId) const;

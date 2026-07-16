@@ -45,6 +45,7 @@
 #include "kernel/SystemProfile.h"
 #include "kernel/KernelBackend.h"
 #include "util/HwDetect.h"
+#include <tlhelp32.h>
 #include "capture/CaptureLogger.h"
 
 static Logger g_logger;
@@ -803,6 +804,27 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     g_threadHider = new ThreadHider(&g_logger);
     if (g_threadHider) {
         g_threadHider->Initialize();
+        // Hide engine's own threads from toolhelp32 enumeration
+        g_threadHider->HideThread(GetCurrentThreadId());
+        // Also enumerate and hide all threads in the current process
+        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, GetCurrentProcessId());
+        if (hSnap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te;
+            te.dwSize = sizeof(te);
+            if (Thread32First(hSnap, &te)) {
+                do {
+                    if (te.dwSize >= FIELD_OFFSET(THREADENTRY32, th32OwnerProcessID) +
+                            sizeof(te.th32OwnerProcessID)) {
+                        if (te.th32OwnerProcessID == GetCurrentProcessId()) {
+                            g_threadHider->HideThread(te.th32ThreadID);
+                        }
+                    }
+                    te.dwSize = sizeof(te);
+                } while (Thread32Next(hSnap, &te));
+            }
+            CloseHandle(hSnap);
+        }
+        g_logger.Trace(LOG_INFO, "ThreadHider: engine threads registered as hidden");
     }
 
     // Initialize EPT page protection (hide engine/patch pages from Denuvo)

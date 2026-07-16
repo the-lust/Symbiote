@@ -56,6 +56,21 @@ void ThreadHider::UnhideThread(uint32_t threadId)
     m_hiddenThreads.erase(it, m_hiddenThreads.end());
 }
 
+void ThreadHider::HideProcess(uint32_t processId)
+{
+    if (processId == 0) return;
+    for (auto id : m_hiddenProcesses) {
+        if (id == processId) return;
+    }
+    m_hiddenProcesses.push_back(processId);
+}
+
+void ThreadHider::UnhideProcess(uint32_t processId)
+{
+    auto it = std::remove(m_hiddenProcesses.begin(), m_hiddenProcesses.end(), processId);
+    m_hiddenProcesses.erase(it, m_hiddenProcesses.end());
+}
+
 bool ThreadHider::IsThreadHidden(uint32_t threadId) const
 {
     for (auto id : m_hiddenThreads) {

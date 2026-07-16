@@ -24,12 +24,9 @@ public:
     bool VerifyManufacturer();
     bool VerifyBiosVersion();
     bool VerifyTimingConsistency();
-
-    // Optional extended checks
     bool VerifyChassisInfo();
     bool VerifyDiskInfo();
     bool VerifyNetworkInfo();
-    bool VerifySensorData();
 
     const char* GetSummary();
 
