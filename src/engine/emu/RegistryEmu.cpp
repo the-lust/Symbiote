@@ -43,12 +43,36 @@ bool RegistryEmu::IsSensitiveKey(const std::wstring& path) const
     std::wstring lower = path;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
 
-    if (lower.find(L"\\security") != std::wstring::npos) return true;
+    // VM software detection
     if (lower.find(L"vmware") != std::wstring::npos) return true;
     if (lower.find(L"vbox") != std::wstring::npos) return true;
-    if (lower.find(L"xen") != std::wstring::npos) return true;
     if (lower.find(L"virtualbox") != std::wstring::npos) return true;
+    if (lower.find(L"xen") != std::wstring::npos) return true;
+    if (lower.find(L"qemu") != std::wstring::npos) return true;
+    if (lower.find(L"virtual") != std::wstring::npos) return true;
+
+    // Hyper-V specific artifacts
+    if (lower.find(L"hyper-v") != std::wstring::npos) return true;
+    if (lower.find(L"hyperv") != std::wstring::npos) return true;
+    if (lower.find(L"vmbus") != std::wstring::npos) return true;
+    if (lower.find(L"vmics") != std::wstring::npos) return true;
+    if (lower.find(L"vmide") != std::wstring::npos) return true;
+    if (lower.find(L"vms3") != std::wstring::npos) return true;
+    if (lower.find(L"msvm") != std::wstring::npos) return true;
+    if (lower.find(L"vmwp") != std::wstring::npos) return true;
+    if (lower.find(L"vmgencounter") != std::wstring::npos) return true;
+
+    // Registry paths that expose VM in real hardware vs virtualized
+    if (lower.find(L"\\security\\") != std::wstring::npos) return true;
     if (lower.find(L"\\device\\") != std::wstring::npos) return true;
+
+    // Block direct BIOS registry queries that reveal Hyper-V
+    if (lower.find(L"hardware\\description\\system\\bios") != std::wstring::npos) return true;
+    if (lower.find(L"hardware\\devicemap\\scsi") != std::wstring::npos) return true;
+
+    // Block VM-related service entries
+    if (lower.find(L"services\\vmbus") != std::wstring::npos) return true;
+    if (lower.find(L"services\\hyperv") != std::wstring::npos) return true;
 
     return false;
 }

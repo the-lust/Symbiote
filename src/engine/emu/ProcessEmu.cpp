@@ -467,7 +467,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             }
 
             // Build complete SMBIOS 3.2.0 data with proper EPS + Type 0/1/2/3/4/127
-            uint8_t smbiosBuf[0x800];
+            uint8_t smbiosBuf[0x1000];
             memset(smbiosBuf, 0, sizeof(smbiosBuf));
             uint32_t pos = 0;
 
@@ -595,6 +595,165 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             addStr("Intel");
             addStr("Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz");
             smbiosBuf[pos++] = 0; // end of strings
+
+            // SMBIOS Type 7 — Cache Information (19 bytes + strings)
+            smbiosBuf[pos++] = 7;  smbiosBuf[pos++] = 19; // type, length
+            smbiosBuf[pos++] = 5;  smbiosBuf[pos++] = 0;  // handle = 5
+            smbiosBuf[pos++] = 1;                          // socket designation = "L1-Cache"
+            smbiosBuf[pos++] = 0x03;                       // cache configuration
+            smbiosBuf[pos++] = 0x00;
+            smbiosBuf[pos++] = 0x40;                       // max cache size = 64 KB
+            smbiosBuf[pos++] = 0x40;                       // installed size = 64 KB
+            smbiosBuf[pos++] = 0;                          // supported SRAM type
+            smbiosBuf[pos++] = 0;                          // current SRAM type
+            smbiosBuf[pos++] = 0;                          // cache speed = 0 (unknown)
+            smbiosBuf[pos++] = 0x01;                       // error correction = parity
+            smbiosBuf[pos++] = 0x02;                       // system cache type = data
+            smbiosBuf[pos++] = 0x02;                       // associativity = 8-way
+            smbiosBuf[pos] = 0; pos++;                     // reserved
+            smbiosBuf[pos] = 0; pos++;                     // reserved
+            addStr("L1-Cache");
+            smbiosBuf[pos++] = 0;
+
+            // SMBIOS Type 7 — L2 Cache (19 bytes + strings)
+            smbiosBuf[pos++] = 7;  smbiosBuf[pos++] = 19; // type, length
+            smbiosBuf[pos++] = 6;  smbiosBuf[pos++] = 0;  // handle = 6
+            smbiosBuf[pos++] = 1;                          // socket = "L2-Cache"
+            smbiosBuf[pos++] = 0x03; smbiosBuf[pos++] = 0x00;
+            smbiosBuf[pos++] = 0x01;                       // max = 256 KB (code for 256K)
+            smbiosBuf[pos++] = 0x01;                       // installed = 256K
+            smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0x01;                       // ecc = parity
+            smbiosBuf[pos++] = 0x02;                       // type = unified
+            smbiosBuf[pos++] = 0x03;                       // associativity = 12-way
+            smbiosBuf[pos] = 0; pos++;
+            smbiosBuf[pos] = 0; pos++;
+            addStr("L2-Cache");
+            smbiosBuf[pos++] = 0;
+
+            // SMBIOS Type 7 — L3 Cache (19 bytes + strings)
+            smbiosBuf[pos++] = 7;  smbiosBuf[pos++] = 19;
+            smbiosBuf[pos++] = 7;  smbiosBuf[pos++] = 0;  // handle = 7
+            smbiosBuf[pos++] = 1;                          // socket = "L3-Cache"
+            smbiosBuf[pos++] = 0x03; smbiosBuf[pos++] = 0x00;
+            smbiosBuf[pos++] = 0x0A;                       // max = 20 MB
+            smbiosBuf[pos++] = 0x0A;                       // installed = 20 MB
+            smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0x01;                       // ecc = parity
+            smbiosBuf[pos++] = 0x03;                       // type = unified
+            smbiosBuf[pos++] = 0x04;                       // associativity = 20-way
+            smbiosBuf[pos] = 0; pos++;
+            smbiosBuf[pos] = 0; pos++;
+            addStr("L3-Cache");
+            smbiosBuf[pos++] = 0;
+
+            // SMBIOS Type 17 — Memory Device (40 bytes + strings)
+            smbiosBuf[pos++] = 17; smbiosBuf[pos++] = 40;  // type, length
+            smbiosBuf[pos++] = 8;  smbiosBuf[pos++] = 0;   // handle = 8
+            smbiosBuf[pos++] = 9;                           // physical memory array handle
+            smbiosBuf[pos++] = 0;                           // memory error handle = none
+            smbiosBuf[pos++] = 0xFF;                        // total width = unknown
+            smbiosBuf[pos++] = 0xFF;
+            smbiosBuf[pos++] = 0xFF;                        // data width = unknown
+            smbiosBuf[pos++] = 0xFF;
+            smbiosBuf[pos++] = 0x80; pos++;               // size = 16 GB (0x8000 = 16GB, bit 15 = extended)
+            smbiosBuf[pos++] = 0x0A;                        // form factor = SODIMM
+            smbiosBuf[pos++] = 0;                           // device set = 0
+            smbiosBuf[pos++] = 1;                           // device locator = "DIMM0"
+            smbiosBuf[pos++] = 2;                           // bank locator = "BANK 0"
+            smbiosBuf[pos++] = 26;                          // memory type = DDR4
+            smbiosBuf[pos++] = 0;                           // type detail
+            smbiosBuf[pos++] = 0;
+            // speed in MHz
+            *(uint16_t*)(smbiosBuf + pos) = 2666; pos += 2;
+            smbiosBuf[pos++] = 3;                           // manufacturer = "Kingston"
+            smbiosBuf[pos++] = 0;                           // serial number (string 4)
+            smbiosBuf[pos++] = 4;                           // asset tag (string 5)
+            smbiosBuf[pos++] = 5;                           // part number (string 6)
+            smbiosBuf[pos++] = 0;                           // attributes
+            *(uint32_t*)(smbiosBuf + pos) = 0; pos += 4;   // extended size = 0
+            *(uint16_t*)(smbiosBuf + pos) = 2666; pos += 2;// configured clock speed
+            // minimum voltage, maximum voltage, configured voltage
+            *(uint16_t*)(smbiosBuf + pos) = 0; pos += 2;
+            *(uint16_t*)(smbiosBuf + pos) = 0; pos += 2;
+            *(uint16_t*)(smbiosBuf + pos) = 1200; pos += 2; // 1.2V
+            addStr("DIMM0");
+            addStr("BANK 0");
+            addStr("Kingston");
+            addStr("00000000");
+            addStr("Default_String");
+            addStr("KVR26N19D8/16");
+            smbiosBuf[pos++] = 0;
+
+            // SMBIOS Type 19 — Memory Array Mapped Address (16 bytes)
+            smbiosBuf[pos++] = 19; smbiosBuf[pos++] = 16;
+            smbiosBuf[pos++] = 11; smbiosBuf[pos++] = 0;   // handle = 11
+            *(uint32_t*)(smbiosBuf + pos) = 0; pos += 4;   // starting address = 0
+            *(uint32_t*)(smbiosBuf + pos) = 0x03FF; pos += 4; // ending address = 16GB
+            smbiosBuf[pos++] = 9;                           // memory array handle
+            smbiosBuf[pos++] = 0;                           // partition width = 0
+            // Extended starting address
+            *(uint64_t*)(smbiosBuf + pos) = 0; pos += 8;
+            // Extended ending address
+            *(uint64_t*)(smbiosBuf + pos) = 0x400000000ULL; pos += 8; // 16GB in bytes
+
+            // SMBIOS Type 21 — Built-in Pointing Device (7 bytes)
+            smbiosBuf[pos++] = 21; smbiosBuf[pos++] = 7;
+            smbiosBuf[pos++] = 12; smbiosBuf[pos++] = 0;   // handle = 12
+            smbiosBuf[pos++] = 2;                           // type = trackpoint
+            smbiosBuf[pos++] = 3;                           // interface = PS/2
+            smbiosBuf[pos++] = 2;                           // buttons = 2
+
+            // SMBIOS Type 22 — Portable Battery (26 bytes + strings)
+            smbiosBuf[pos++] = 22; smbiosBuf[pos++] = 26;
+            smbiosBuf[pos++] = 13; smbiosBuf[pos++] = 0;   // handle = 13
+            smbiosBuf[pos++] = 1;                           // location = "System"
+            smbiosBuf[pos++] = 2;                           // manufacturer = "Dell Inc."
+            smbiosBuf[pos++] = 0x190;                       // manufacture date
+            smbiosBuf[pos++] = 3;                           // serial number
+            smbiosBuf[pos++] = 4;                           // device name
+            smbiosBuf[pos++] = 0x03;                        // device chemistry = Li-Ion
+            smbiosBuf[pos++] = 0x42;                        // design capacity = 66 mWh (0x42 * 100)
+            smbiosBuf[pos++] = 0;                           // design voltage (0 = unknown)
+            smbiosBuf[pos++] = 0;                           // SBDS version number
+            smbiosBuf[pos++] = 0;                           // maximum error in battery
+            smbiosBuf[pos++] = 0;                           // sbds serial number
+            smbiosBuf[pos++] = 0;                           // sbds manufacture date
+            smbiosBuf[pos++] = 0;                           // sbds device chemistry
+            smbiosBuf[pos++] = 0;                           // design capacity multiplier
+            smbiosBuf[pos+1] = 0; pos += 2;                // OEM specific
+            smbiosBuf[pos++] = 0;                           // battery type
+            addStr("System");
+            addStr("Dell Inc.");
+            addStr("2024/01/15");
+            addStr("DELL_BAT_001");
+            addStr("Li-Ion 66WH");
+            smbiosBuf[pos++] = 0;
+
+            // SMBIOS Type 11 — OEM Strings
+            smbiosBuf[pos++] = 11; smbiosBuf[pos++] = 5;
+            smbiosBuf[pos++] = 14; smbiosBuf[pos++] = 0;   // handle = 14
+            smbiosBuf[pos++] = 1;                           // count = 1 string
+            addStr("Dell System");
+            smbiosBuf[pos++] = 0;
+
+            // SMBIOS Type 13 — BIOS Language
+            smbiosBuf[pos++] = 13; smbiosBuf[pos++] = 22;
+            smbiosBuf[pos++] = 15; smbiosBuf[pos++] = 0;   // handle = 15
+            smbiosBuf[pos++] = 1;                           // installable languages = 1
+            smbiosBuf[pos++] = 0;                           // flags
+            // reserved
+            smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 0; smbiosBuf[pos++] = 0;
+            smbiosBuf[pos++] = 1;                           // current language = string 1
+            addStr("en|US|iso8859-1");
+            smbiosBuf[pos++] = 0;
 
             // SMBIOS Type 127 — End of Table
             smbiosBuf[pos++] = 127;

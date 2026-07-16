@@ -54,12 +54,13 @@ symbiote/
     │   │                         #   KuserSync, MagicCpuid, Canary, AllocTracker,
     │   │                         #   TimingCoordinator, SystemSpoofer, ThreadScheduler,
     │   │                         #   ExitDispatcher, ExceptionHandler, EptExecHook,
-    │   │                         #   KernelLock (BEL), Snapshot
+    │   │                         #   KernelLock (BEL), Snapshot,
+    │   │                         #   WatchdogTracker, EptSplitView, AcpiTimerHandler
     │   ├── kernel/               # MinimalKernel (unified syscall dispatcher),
     │   │                         #   SystemProfile (CPU profiles), KernelBackend (bridge)
     │   ├── emu/                  # Syscall emulators: ProcessEmu, MemoryEmu, FileEmu, RegistryEmu,
     │   │                         #   TimingEmu, CryptoEmu, ThreadManager, SectionEmu, ObjectEmu,
-    │   │                         #   VirtualState, PeLoader
+    │   │                         #   VirtualState, PeLoader, DeviceIoEmu, ThreadHider
     │   ├── proxy/                # IatPatch (IAT/EAT patching, restore), InlineHook (12-byte jmp),
     │   │                         #   GpuBridge (GPU DLL passthrough), DxvkIntegration (DXVK proxy bypass),
     │   │                         #   ModuleCloak (PEB hiding), SyscallBridge
@@ -234,7 +235,24 @@ Several measures hide the presence of the WHP hypervisor from the guest. These a
 - **EPT split-view (process cloaking)**: `EptSplitView` (`EptSplitView.h/.cpp`) implements per-VCPU memory view switching — registers GPA ranges with visible/hidden host VAs. `RegisterHiddenRange()` stores page metadata; `SetPageVisibility()` records per-VCPU overrides; `ApplyViewForVcpu()` unmaps and remaps GPA ranges to the appropriate VA based on the target VCPU. Used to hide engine DLL pages from child process VCPU instances while keeping them visible to the parent VCPU. Works by swapping `WHvMapGpaRange` mappings atomically before resuming the target VCPU
 - **SMBIOS/DMI table masking**: `HandleNtQuerySystemInformation()` now intercepts info class `0x1D` (SystemFirmwareTableInformation / 29) — returns `STATUS_INFO_LENGTH_MISMATCH` with zero return length, preventing DRM from reading real SMBIOS tables that would leak the host hardware identity
 
-The Rule-5 detection surface (CPUID.1:ECX[31], EPT split-view, WHP `WHvGetPartitionProperty`) cannot be mitigated from user mode — these require Ring-0 access and are inherent to the WHP architecture. #VE (Virtualization Exceptions) for direct-to-ring-3 EPT violation delivery is not supported by WHP and would require a custom kernel-mode hypervisor driver (SimpleVisor/HyperPlatform pattern).
+**Phase 9 — Comprehensive Anti-Detection (512-leaf CPUID, CounterUpdater, ACPI/HPET, IOCTL Hook, WMI/SMBIOS/Registry expansion, Thread Hider, EPT perf):**
+
+- **512-leaf CPUID pre-population**: `GetComprehensiveCpuidResultList()` enumerates all standard leaves (0x00-0xFF), extended leaves (0x80000000-0x800000FF), and hypervisor leaves (0x40000000-0x400000FF) via `__cpuidex`, applies feature masking, and loads ALL leaves into the WHP result list via `WHvSetPartitionProperty(WHvPartitionPropertyCodeCpuidResultList)`. **This eliminates VM-exits for unlisted leaves** — Denuvo's RDTSC→CPUID→RDTSC timing delta is measured on exits, and since no exits occur for any standard leaf, the timing vector is neutralized
+- **CounterUpdater synthetic TSC thread**: Background thread (`RdtscHandler::CounterUpdaterThread`) advances a synthetic TSC at configured frequency (~3GHz) at ~100us intervals. RDTSC/RDTSCP handlers use `s_counterTsc` instead of real TSC + offset. Since the synthetic counter runs continuously and independently of VM-exit events, TSC deltas across CPUID calls show bare-metal timing — no VM-exit overhead visible
+- **Realistic CPU noise model**: `AddRealisticNoise()` with per-vendor profiles (Intel: mean=40, amp=20, min=60; AMD: mean=80, amp=40, min=120) and rare ~0.2ms cache-miss spikes
+- **Expanded CplLeafCost**: from 11 leaves to 26+ leaves covering all common CPUID leaves with measured bare-metal cycle costs
+- **NtDeviceIoControlFile hook**: `DeviceIoEmu` installs a 12-byte inline hook on `ntdll!NtDeviceIoControlFile` to intercept WHP IOCTL calls. `IOCTL_WHV_GET_PARTITION_PROPERTY` is intercepted for `ProcessorCount` (returns spoofed count). All WHP IOCTLs are logged for analysis
+- **ACPI PM Timer / HPET synthetic timers**: `AcpiTimerHandler` generates synthetic ACPI PM timer (port 0x608, 3.579545 MHz, 24-bit) and HPET counter (0xFED00000 + offset, ~10MHz). These alternative clock sources are cross-referenced with the spoofed TSC to maintain consistency — prevents Denuvo from reading raw hardware timers as a TSC bypass
+- **Expanded WMI (10+ new classes)**: `wbem_proxy` now spoofs `Win32_VideoController` (NVIDIA RTX 3080 identity), `Win32_NetworkAdapter` (Intel I225-V, Dell OUI MAC), `Win32_PhysicalMemory` (Kingston DDR4-2666 16GB), `Win32_USBController` (Intel xHCI), `CIM_Sensor`, `Win32_TemperatureProbe` (45C reading), `Win32_Fan`, `Win32_VoltageProbe` (1.2V). Sensors return realistic values instead of empty — prevents VM detection via missing hardware sensors
+- **Expanded SMBIOS (10 types → 17 types)**: Added Type 7 (L1/L2/L3 cache with proper sizes matching CPU profile), Type 17 (DDR4-2666 16GB SODIMM memory devices), Type 19 (memory array mapping), Type 21 (PS/2 trackpoint), Type 22 (Li-Ion 66WH battery), Type 11 (OEM strings), Type 13 (BIOS language). Buffer expanded from 0x800 to 0x1000 bytes
+- **Hyper-V registry artifact blocking**: `RegistryEmu::IsSensitiveKey()` expanded from 5 patterns to 18 patterns — blocks `hyper-v`, `hyperv`, `vmbus`, `vmics`, `vmide`, `vms3`, `msvm`, `vmwp`, `vmgencounter`, `qemu`, `virtual`, `HARDWARE\DESCRIPTION\System\BIOS`, `HARDWARE\DEVICEMAP\Scsi`, `Services\VMBus`, `Services\HyperV`
+- **Thread Hider**: `ThreadHider` registers engine threads for filtering from `CreateToolhelp32Snapshot`/`Thread32First`/`Thread32Next` enumeration. Integrated with `NtQuerySystemInformation(SystemProcessInformation)` handler to filter hidden threads from process lists
+- **EPT split-view optimizations**: View generation tracking skips redundant `WHvMapGpaRange`/`WHvUnmapGpaRange` calls when view hasn't changed. 2MB large page support for contiguous regions (`GetOptimalPageSize()`). `ReadHiddenMemory()`/`WriteHiddenMemory()` direct access without view switching. `ProtectMemoryRange()` for RX-only EPT mapping (blocks Denuvo write-verify integrity checks)
+- **INT3 anti-memory-scanning camouflage**: `SystemSpoofer::ApplyCamouflage()` replaces INT3 (0xCC) breakpoints with multi-byte NOP instructions (66 90, 0F 1F 00, etc.) when patches are not actively triggered. `RestorePatches()` re-applies INT3 before execution. Prevents Denuvo memory CRC scans from detecting VEH patches
+- **Enhanced TimingCoordinator**: `JITTER_REALISTIC` strategy replaces `JITTER_UNIFORM` as default. `CpuJitterProfile` struct provides per-CPU-model jitter parameters (i9/i7/i5/Xeon/Ryzen). `GetConsistentAcpiPmTimer()` and `GetConsistentHpetCounter()` provide cross-correlated values. `VerifyClockConsistency()` placeholder for multi-source consistency checks
+- **Windows version compatibility**: Syscall numbers read from running ntdll at runtime — same engine binary works across Win10 22H2, Win11 24H2, and future builds
+
+The Rule-5 detection surface (CPUID.1:ECX[31], WHP `WHvGetPartitionProperty` at the Hyper-V L0 level) still requires a nested type-2 hypervisor (modified WinVisor as L1) for full Ring-3 coverage — this is planned for Phase B.
 
 ---
 

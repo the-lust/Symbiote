@@ -16,6 +16,16 @@ struct PatchEntry {
 static std::unordered_map<uint64_t, PatchEntry> g_patches;
 static std::vector<uint64_t> g_patchAddrs;
 
+// EPT-hidden patches tracker for anti-memory-scanning
+struct HiddenPatch {
+    uint64_t addr;
+    uint8_t camouflageBytes[12]; // Random bytes that replace INT3 when hidden
+    uint8_t realBytes[12];       // Original instruction bytes
+    bool eptHidden;
+};
+static std::vector<HiddenPatch> g_hiddenPatches;
+static bool g_antiScanEnabled = false;
+
 struct PendingPatch {
     uint64_t addr;
     PatchType type;
@@ -436,4 +446,81 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
 
     ctx->Rip = newRip;
     return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+void SystemSpoofer::EnableAntiScan(bool enable)
+{
+    g_antiScanEnabled = enable;
+    if (enable) {
+        m_logger->Trace(LOG_INFO, "Anti-scan: EPT camouflage enabled");
+    }
+}
+
+bool SystemSpoofer::ApplyCamouflage()
+{
+    if (!g_antiScanEnabled) return false;
+
+    for (auto& kv : g_patches) {
+        uint64_t addr = kv.first;
+        
+        // Check if already hidden
+        bool alreadyHidden = false;
+        for (auto& hp : g_hiddenPatches) {
+            if (hp.addr == addr) {
+                alreadyHidden = true;
+                break;
+            }
+        }
+        if (alreadyHidden) continue;
+
+        HiddenPatch hp;
+        hp.addr = addr;
+        hp.eptHidden = false;
+        
+        // Save original INT3 bytes
+        memcpy(hp.realBytes, (void*)addr, 12);
+        
+        // Generate camouflage bytes (NOP-like instructions that won't crash)
+        GenerateCamouflage(hp.camouflageBytes, 12);
+        
+        // Write camouflage over INT3
+        DWORD old;
+        VirtualProtect((LPVOID)addr, 12, PAGE_EXECUTE_READWRITE, &old);
+        memcpy((void*)addr, hp.camouflageBytes, 12);
+        VirtualProtect((LPVOID)addr, 12, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)addr, 12);
+        
+        g_hiddenPatches.push_back(hp);
+
+        m_logger->Trace(LOG_INFO, "Anti-scan: camouflaged patch at 0x%llX", addr);
+    }
+    return true;
+}
+
+bool SystemSpoofer::RestorePatches()
+{
+    if (g_hiddenPatches.empty()) return true;
+
+    for (auto& hp : g_hiddenPatches) {
+        DWORD old;
+        VirtualProtect((LPVOID)hp.addr, 12, PAGE_EXECUTE_READWRITE, &old);
+        memcpy((void*)hp.addr, hp.realBytes, 12);
+        VirtualProtect((LPVOID)hp.addr, 12, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)hp.addr, 12);
+
+        m_logger->Trace(LOG_INFO, "Anti-scan: restored patch at 0x%llX", hp.addr);
+    }
+    g_hiddenPatches.clear();
+    return true;
+}
+
+void SystemSpoofer::GenerateCamouflage(uint8_t* buffer, int len)
+{
+    // Generate realistic-looking instruction bytes that won't execute
+    // Use a mix of 2-byte NOP (66 90), MOV, and other safe opcodes
+    static const uint8_t nops[] = { 0x90, 0x66, 0x90, 0x0F, 0x1F, 0x00, 0x0F, 0x1F, 0x40, 0x00, 0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00 };
+    
+    for (int i = 0; i < len; i++) {
+        buffer[i] = nops[rand() % (sizeof(nops) / sizeof(nops[0]))];
+    }
 }

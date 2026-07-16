@@ -84,6 +84,7 @@ set(ENGINE_SOURCES
     src/engine/emu/ThreadManager.cpp
     src/engine/emu/TimingEmu.cpp
     src/engine/emu/VirtualState.cpp
+    src/engine/emu/DeviceIoEmu.cpp
     # Kernel abstraction
     src/engine/kernel/MinimalKernel.cpp
     src/engine/kernel/SystemProfile.cpp
@@ -124,6 +125,8 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/VcpuManager.cpp
         src/engine/whp/WatchdogTracker.cpp
         src/engine/whp/EptSplitView.cpp
+        src/engine/whp/AcpiTimerHandler.cpp
+        src/engine/emu/ThreadHider.cpp
     )
 endif()
 add_library(engine SHARED ${ENGINE_SOURCES})
