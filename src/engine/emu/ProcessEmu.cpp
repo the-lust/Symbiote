@@ -711,7 +711,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             smbiosBuf[pos++] = 13; smbiosBuf[pos++] = 0;   // handle = 13
             smbiosBuf[pos++] = 1;                           // location = "System"
             smbiosBuf[pos++] = 2;                           // manufacturer = "Dell Inc."
-            smbiosBuf[pos++] = 0x190;                       // manufacture date
+            smbiosBuf[pos++] = 0x19;                        // manufacture date
             smbiosBuf[pos++] = 3;                           // serial number
             smbiosBuf[pos++] = 4;                           // device name
             smbiosBuf[pos++] = 0x03;                        // device chemistry = Li-Ion

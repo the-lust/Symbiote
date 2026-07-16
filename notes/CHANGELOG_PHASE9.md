@@ -1,6 +1,24 @@
 # Symbiote Phase 9 Changelog
 
-## Completed: 2026-07-16
+## Completed: 2026-07-16 (Build Fixes — 2026-07-16)
+
+### Build Fixes (all targets now compile cleanly on MSVC x64)
+- **TimingCoordinator.h**: Changed `class TimingCoordinator` → `struct TimingCoordinator` to match forward declarations in CpuidHandler.h/RdtscHandler.h (C4099)
+- **DeviceIoEmu.cpp**: Replaced `__declspec(naked)` + `__asm { }` trampoline with `extern "C"` function matching NtDeviceIoControlFile signature (MSVC x64 does not support inline asm)
+- **DeviceIoEmu.h**: Moved `InstallHook()`, `RemoveHook()`, `HandleGetPartitionProperty()` to public so the C-linkage trampoline can call them
+- **MinimalKernel.h**: Moved `GetDeviceIoEmu()` from private to public section
+- **Main.cpp**: Added `#include "emu/DeviceIoEmu.h"` for full type definition
+- **SyscallDispatch.cpp**: Replaced `&HandleNtQueryVirtualMemory` bound-member-function address with `GetModuleHandleW(L"engine.dll")` (C2276/C2660)
+- **ProcessEmu.cpp**: Fixed truncation `0x190` → `0x19` (C4305 uint8_t overflow)
+- **AcpiTimerHandler.h**: Removed `static` from `GetSyntheticPmTimer()`/`GetSyntheticHpetCounter()` (C2597 — cannot access non-static members from static methods)
+- **EptSplitView.cpp**: Removed unused `GetOptimalPageSize` variable (C4189)
+- **ThreadHider.cpp**: Added `(void)` casts for unreferenced parameters in `HandleSystemProcessInformation` (C4100)
+- **EptExecHook.h/.cpp**: Added `Serialize()`, `Deserialize()`, `HandleSingleStepComplete()`, `HandleExecFault()` — stubs called by `Snapshot` and `VcpuManager`
+- **EptExecHook.cpp**: Implemented `Serialize()`/`Deserialize()` for hook-state snapshot; `HandleSingleStepComplete()` re-applies EPT execute-disable; `HandleExecFault()` fires callback + temporarily restores EXEC
+- **CpuidHandler.cpp**: Added `(void)subleaf;` for unreferenced lambda capture parameter (C4100)
+- **wbem_proxy/dllmain.cpp**: Fixed `ExecMethodAsync` signature (missing `IWbemClassObject* pInParams` — C3668/C2065); fixed `AdapterRAM()` return value 10GB → 2GB (C4305 uint32_t truncation)
+- **CMakeLists.txt**: Added `TimingCoordinator.cpp` to ENGINE_SOURCES; added `winmm.lib` for `timeGetTime()`
+- **Makefile**: Brought in sync with CMakeLists.txt — added all Phase 9/B source files (TimingCoordinator, SystemSpoofer, SyscallDispatch, EptExecHook, EptSplitView, AcpiTimerHandler, EptPageProtect, VeSimulation, ConsistencyVerifier, Snapshot, GuestPageTable, WatchdogTracker, Canary, KernelLock, DeviceIoEmu, ThreadHider, TimingProfile, CaptureLogger, DxvkIntegration)
 
 ### A1: Comprehensive CPUID Pre-Population
 - **Files**: `CpuidHandler.cpp`, `Partition.cpp`

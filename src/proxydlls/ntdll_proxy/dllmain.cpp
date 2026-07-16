@@ -161,6 +161,64 @@ extern "C" NTSTATUS NTAPI Proxy_NtQueryInformationProcess(
     return STATUS_UNSUCCESSFUL;
 }
 
+// ── PEB anti-debug ──────────────────────────────────────────────────────
+static void FixPebDebugFlags()
+{
+    // Access PEB via TEB (gs:0x60 on x64)
+    uint8_t* peb = (uint8_t*)__readgsqword(0x60);
+    if (!peb) return;
+
+    // BeingDebugged at offset 0x02
+    peb[0x02] = 0;
+
+    // NtGlobalFlag at offset 0xBC (x64), 0x68 (x86)
+#ifdef _WIN64
+    *(uint32_t*)(peb + 0xBC) = 0;
+#else
+    *(uint32_t*)(peb + 0x68) = 0;
+#endif
+
+    // ProcessHeap at offset 0x30 (x64), 0x18 (x86)
+    void* heapPtr = nullptr;
+#ifdef _WIN64
+    heapPtr = *(void**)(peb + 0x30);
+#else
+    heapPtr = *(void**)(peb + 0x18);
+#endif
+    if (heapPtr) {
+        uint8_t* heap = (uint8_t*)heapPtr;
+        // HEAP.Flags at offset 0x44 (x64), 0x0C (x86)
+        // HEAP.ForceFlags at offset 0x48 (x64), 0x10 (x86)
+#ifdef _WIN64
+        *(uint32_t*)(heap + 0x44) = 0x00000002; // HEAP_GROWABLE
+        *(uint32_t*)(heap + 0x48) = 0;
+#else
+        *(uint32_t*)(heap + 0x0C) = 0x00000002;
+        *(uint32_t*)(heap + 0x10) = 0;
+#endif
+    }
+}
+
+// ── NtSetInformationProcess (anti-debug: block instrumentation callback) ─
+extern "C" NTSTATUS NTAPI Proxy_NtSetInformationProcess(
+    HANDLE ProcessHandle, ULONG InfoClass, PVOID Info, ULONG Length)
+{
+    // ProcessInstrumentationCallback = 0x28 (40)
+    if (InfoClass == 0x28) {
+        g_logger.Trace(LOG_PROXY, "NtSetInformationProcess: blocked ProcessInstrumentationCallback");
+        return STATUS_ACCESS_DENIED;
+    }
+
+    static decltype(&Proxy_NtSetInformationProcess) realFunc = nullptr;
+    static bool init = false;
+    if (!init) {
+        init = true;
+        HMODULE realNtdll = GetRealNtdll();
+        if (realNtdll) realFunc = (decltype(&Proxy_NtSetInformationProcess))GetProcAddress(realNtdll, "NtSetInformationProcess");
+    }
+    return realFunc ? realFunc(ProcessHandle, InfoClass, Info, Length) : STATUS_UNSUCCESSFUL;
+}
+
 // ── Registry spoofing for CPU brand string ──────────────────────────────
 static const WCHAR* SPOOFED_BRAND = L"Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz";
 
@@ -265,6 +323,7 @@ extern "C" NTSTATUS NTAPI Proxy_NtQueryValueKey(
 PROXY_EXPORT(NtCreateFile,                Proxy_NtCreateFile,                36) // PHANDLE,ACCESS_MASK,POBJECT_ATTRIBUTES,PIO_STATUS_BLOCK,PLARGE_INTEGER,ULONG,ULONG,ULONG,ULONG
 PROXY_EXPORT(NtQuerySystemInformation,    Proxy_NtQuerySystemInformation,    16) // ULONG,PVOID,ULONG,PULONG
 PROXY_EXPORT(NtQueryInformationProcess,   Proxy_NtQueryInformationProcess,   20) // HANDLE,ULONG,PVOID,ULONG,PULONG
+PROXY_EXPORT(NtSetInformationProcess,     Proxy_NtSetInformationProcess,     16) // HANDLE,ULONG,PVOID,ULONG
 PROXY_EXPORT(NtOpenKey,                   Proxy_NtOpenKey,                   12) // PHANDLE,ACCESS_MASK,POBJECT_ATTRIBUTES
 PROXY_EXPORT(NtQueryValueKey,             Proxy_NtQueryValueKey,             24) // HANDLE,PUNICODE_STRING,ULONG,PVOID,ULONG,PULONG
 
@@ -275,6 +334,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
             g_logger.Init();
             g_logger.Trace(LOG_PROXY, "ntdll_proxy loaded");
             DisableThreadLibraryCalls(hModule);
+            FixPebDebugFlags();
             break;
         }
         case DLL_PROCESS_DETACH:

@@ -35,6 +35,20 @@ ENGINE_SRCS := \
     $(SRC_DIR)/engine/whp/RdtscHandler.cpp \
     $(SRC_DIR)/engine/whp/ThreadScheduler.cpp \
     $(SRC_DIR)/engine/whp/VcpuManager.cpp \
+    $(SRC_DIR)/engine/whp/TimingCoordinator.cpp \
+    $(SRC_DIR)/engine/whp/SystemSpoofer.cpp \
+    $(SRC_DIR)/engine/whp/SyscallDispatch.cpp \
+    $(SRC_DIR)/engine/whp/EptExecHook.cpp \
+    $(SRC_DIR)/engine/whp/EptSplitView.cpp \
+    $(SRC_DIR)/engine/whp/AcpiTimerHandler.cpp \
+    $(SRC_DIR)/engine/whp/EptPageProtect.cpp \
+    $(SRC_DIR)/engine/whp/VeSimulation.cpp \
+    $(SRC_DIR)/engine/whp/ConsistencyVerifier.cpp \
+    $(SRC_DIR)/engine/whp/Snapshot.cpp \
+    $(SRC_DIR)/engine/whp/GuestPageTable.cpp \
+    $(SRC_DIR)/engine/whp/WatchdogTracker.cpp \
+    $(SRC_DIR)/engine/whp/Canary.cpp \
+    $(SRC_DIR)/engine/whp/KernelLock.cpp \
     $(SRC_DIR)/engine/emu/CryptoEmu.cpp \
     $(SRC_DIR)/engine/emu/FileEmu.cpp \
     $(SRC_DIR)/engine/emu/MemoryEmu.cpp \
@@ -47,8 +61,13 @@ ENGINE_SRCS := \
     $(SRC_DIR)/engine/emu/ThreadManager.cpp \
     $(SRC_DIR)/engine/emu/TimingEmu.cpp \
     $(SRC_DIR)/engine/emu/VirtualState.cpp \
+    $(SRC_DIR)/engine/emu/DeviceIoEmu.cpp \
+    $(SRC_DIR)/engine/emu/ThreadHider.cpp \
     $(SRC_DIR)/engine/profile/GpuProfile.cpp \
+    $(SRC_DIR)/engine/profile/TimingProfile.cpp \
     $(SRC_DIR)/engine/profile/StorageProfile.cpp \
+    $(SRC_DIR)/engine/capture/CaptureLogger.cpp \
+    $(SRC_DIR)/engine/proxy/DxvkIntegration.cpp \
     $(SRC_DIR)/engine/proxy/Fallthrough.cpp \
     $(SRC_DIR)/engine/proxy/GpuBridge.cpp \
     $(SRC_DIR)/engine/proxy/IatPatch.cpp \

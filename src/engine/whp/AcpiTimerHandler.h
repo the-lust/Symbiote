@@ -22,10 +22,10 @@ public:
     void Shutdown();
 
     // Generate synthetic ACPI PM timer value
-    static uint32_t GetSyntheticPmTimer();
+    uint32_t GetSyntheticPmTimer();
 
     // Generate synthetic HPET counter value
-    static uint64_t GetSyntheticHpetCounter();
+    uint64_t GetSyntheticHpetCounter();
 
     // Handle ACPI PM timer read via I/O port interception
     bool HandlePmTimerIoRead(uint32_t port, uint32_t* value);

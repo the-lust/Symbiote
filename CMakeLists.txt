@@ -85,6 +85,7 @@ set(ENGINE_SOURCES
     src/engine/emu/TimingEmu.cpp
     src/engine/emu/VirtualState.cpp
     src/engine/emu/DeviceIoEmu.cpp
+    src/engine/emu/StackSpoofer.cpp
     # Kernel abstraction
     src/engine/kernel/MinimalKernel.cpp
     src/engine/kernel/SystemProfile.cpp
@@ -126,7 +127,12 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/WatchdogTracker.cpp
         src/engine/whp/EptSplitView.cpp
         src/engine/whp/AcpiTimerHandler.cpp
+        src/engine/whp/TimingCoordinator.cpp
         src/engine/emu/ThreadHider.cpp
+        src/engine/whp/EptPageProtect.cpp
+        src/engine/whp/VeSimulation.cpp
+        src/engine/whp/ConsistencyVerifier.cpp
+        src/engine/whp/IndirectSyscall.cpp
     )
 endif()
 add_library(engine SHARED ${ENGINE_SOURCES})
@@ -136,7 +142,7 @@ if(NOT SYMBIOTE_NO_WHP)
     target_link_libraries(engine PRIVATE ${WHP_LIBRARY})
 endif()
 if(WIN32)
-    target_link_libraries(engine PRIVATE dbghelp)
+    target_link_libraries(engine PRIVATE dbghelp winmm)
 endif()
 
 # ─── Proxy DLL helper ────────────────────────────────────────────────

@@ -68,7 +68,6 @@ bool EptSplitView::MapView(uint64_t gpa, uint64_t size, void* va)
 {
     if (!m_partition) return false;
 
-    uint64_t pageSize = GetOptimalPageSize(size);
     WHV_MAP_GPA_RANGE_FLAGS flags = WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite;
 
     // Map with optimal page size

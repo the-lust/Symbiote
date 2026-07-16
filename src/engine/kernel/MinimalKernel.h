@@ -34,6 +34,8 @@ public:
 
     static bool DispatchThunk(uint64_t syscallNumber, uint64_t* args, uint64_t* result);
 
+    DeviceIoEmu* GetDeviceIoEmu() { return m_deviceIoEmu; }
+
 private:
     static MinimalKernel* s_instance;
 
@@ -55,7 +57,6 @@ private:
     ModuleCloak* m_moduleCloak;
     PeLoader* m_peLoader;
 
-    DeviceIoEmu* GetDeviceIoEmu() { return m_deviceIoEmu; }
     DeviceIoEmu* m_deviceIoEmu;
 
     // Config flags

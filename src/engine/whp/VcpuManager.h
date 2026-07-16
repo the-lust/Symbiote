@@ -131,6 +131,8 @@ private:
         uint8_t* allocatedStack;
         bool running;
         HANDLE hostThread;
+        uint64_t lastSyncTsc;
+        uint64_t timingGeneration;
     };
 
     static const uint32_t MAX_VCPU = 20;

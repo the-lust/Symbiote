@@ -41,6 +41,14 @@ public:
     // VEH callback for host-side exceptions
     static LONG CALLBACK VectoredHandler(EXCEPTION_POINTERS* ep);
 
+    // EPT-based instruction interception (no INT3 in memory)
+    bool HandleEptSyscallIntercept(uint64_t rip, void* context = nullptr);
+    bool HandleEptRdmsrIntercept(uint64_t rip, uint32_t msr, uint64_t* value, void* context = nullptr);
+    bool HandleEptSysInstrIntercept(uint64_t rip, uint8_t* instruction, uint32_t length, void* context = nullptr);
+
+    // Pointer to synthetic TSC value for consistent timing
+    uint64_t* m_syntheticTsc = nullptr;
+
 private:
     static SystemSpoofer* s_instance;
 

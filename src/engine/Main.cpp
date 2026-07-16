@@ -27,6 +27,10 @@
 #include "whp/EptSplitView.h"
 #include "whp/GuestPageTable.h"
 #include "whp/AcpiTimerHandler.h"
+#include "whp/EptPageProtect.h"
+#include "emu/DeviceIoEmu.h"
+#include "whp/VeSimulation.h"
+#include "whp/ConsistencyVerifier.h"
 #include "emu/ThreadHider.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
@@ -67,6 +71,9 @@ extern GpuBridge* g_gpuBridge;
 static ThreadScheduler* g_threadScheduler = nullptr;
 static WatchdogTracker* g_watchdogTracker = nullptr;
 static EptSplitView* g_eptSplitView = nullptr;
+static EptPageProtect* g_eptPageProtect = nullptr;
+static VeSimulation* g_veSimulation = nullptr;
+static ConsistencyVerifier* g_consistencyVerifier = nullptr;
 
 static HANDLE g_engineReadyEvent = nullptr;
 static HANDLE g_engineActiveEvent = nullptr;
@@ -180,6 +187,9 @@ static void CleanupAll()
     delete g_captureLogger; g_captureLogger = nullptr;
     delete g_threadHider; g_threadHider = nullptr;
     delete g_acpiTimerHandler; g_acpiTimerHandler = nullptr;
+    delete g_consistencyVerifier; g_consistencyVerifier = nullptr;
+    delete g_veSimulation; g_veSimulation = nullptr;
+    delete g_eptPageProtect; g_eptPageProtect = nullptr;
 }
 
 static wchar_t g_engineDir[MAX_PATH] = {0};
@@ -686,6 +696,28 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_threadHider->Initialize();
     }
 
+    // Initialize EPT page protection (hide engine/patch pages from Denuvo)
+    if (g_partition) {
+        g_eptPageProtect = new EptPageProtect(&g_logger, g_partition);
+        if (g_eptPageProtect && g_eptPageProtect->Initialize()) {
+            g_eptPageProtect->ProtectEngineDll();
+            g_logger.Trace(LOG_INFO, "EptPageProtect: engine DLL pages hidden from guest");
+        }
+    }
+
+    // Initialize #VE simulation
+    g_veSimulation = new VeSimulation(&g_logger);
+    if (g_veSimulation) {
+        g_veSimulation->Initialize();
+    }
+
+    // Initialize consistency verifier
+    g_consistencyVerifier = new ConsistencyVerifier(&g_logger);
+    if (g_consistencyVerifier) {
+        g_consistencyVerifier->Initialize();
+        g_consistencyVerifier->VerifyAll();
+    }
+
     // Signal launcher / target that hooks, patches, and shared KUSER are ready
     if (g_engineReadyEvent) {
         SetEvent(g_engineReadyEvent);
@@ -712,6 +744,12 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             if (!g_vcpuManager->CreateVcpu(i)) {
                 g_logger.Trace(LOG_ERROR, "Failed to create VCPU %u", i);
             }
+        }
+
+        // Sync timing across all VCPUs to ensure consistent cross-VCPU measurements
+        if (g_rdtscHandler) {
+            g_rdtscHandler->StartCounterUpdater();
+            g_logger.Trace(LOG_TIMING, "Cross-VCPU timing sync: CounterUpdater active");
         }
 
         if (g_guestPageTableBuilt) {

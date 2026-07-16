@@ -21,7 +21,7 @@ struct CpuJitterProfile {
     uint32_t rdtscInterClusterDelta; // TSC delta between different core clusters
 };
 
-class TimingCoordinator {
+struct TimingCoordinator {
 public:
     TimingCoordinator();
     ~TimingCoordinator();

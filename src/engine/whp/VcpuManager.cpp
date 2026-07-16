@@ -7,6 +7,7 @@
 #include "MsrHandler.h"
 #include "MagicCpuid.h"
 #include "ExceptionHandler.h"
+#include "TimingCoordinator.h"
 #include <cstring>
 #include <intrin.h>
 
@@ -88,6 +89,8 @@ bool VcpuManager::CreateVcpu(uint32_t vcpuIndex)
     m_vcpus[vcpuIndex].stack = nullptr;
     m_vcpus[vcpuIndex].allocatedStack = nullptr;
     m_vcpus[vcpuIndex].hostThread = nullptr;
+    m_vcpus[vcpuIndex].lastSyncTsc = 0;
+    m_vcpus[vcpuIndex].timingGeneration = 0;
 
     if (vcpuIndex >= m_vcpuCount) m_vcpuCount = vcpuIndex + 1;
 
