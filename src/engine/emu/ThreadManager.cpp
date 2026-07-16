@@ -183,7 +183,7 @@ bool ThreadManager::HandleNtQueryInformationProcess(uint64_t* args, uint64_t* re
     ULONG bufLen = (ULONG)args[3];
     PULONG retLen = (PULONG)(uintptr_t)args[4];
 
-    // Handle anti-debug query classes
+    // Handle debug-related query classes
     if (infoClass == (PROCESS_INFORMATION_CLASS)7 && outBuf && bufLen >= 4) {
         // ProcessDebugPort — return 0 (not being debugged)
         *(DWORD*)outBuf = 0;

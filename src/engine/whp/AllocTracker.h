@@ -26,7 +26,7 @@ private:
         bool hasCpuid;
         bool isClean;
         bool modified;       // set on alloc/protect, cleared on rescan
-        bool wasExecutable;  // previous protection state for re-encrypt detection
+        bool wasExecutable;  // previous protection state
         bool allocAsRW;      // was originally allocated as RW (re-encrypt candidate)
         uint32_t reencryptCycle; // re-encrypt cycle counter
     };

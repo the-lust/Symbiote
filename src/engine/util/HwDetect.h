@@ -152,7 +152,7 @@ inline void ApplyFeatureMask(uint32_t leaf, uint32_t subleaf, const char* vendor
         return;
     }
 
-    // Leaf 0xA: PMU version — zero out to hide PMU capabilities
+    // Leaf 0xA: PMU version — zero out
     if (leaf == 0xA) {
         *eax = 0;
         *ebx = 0;

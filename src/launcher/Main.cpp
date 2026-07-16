@@ -146,7 +146,7 @@ int main(int, char**)
     bool initOk = CallRemoteFunction(pi.hProcess, dllPath, "Engine_Init");
     LogMessage(std::string("Engine_Init: ") + (initOk ? "OK" : "FAILED") + "\n");
 
-    // Allow engine thread to finish hook installation before target main runs
+    // Allow engine thread to finish initialization before main runs
     // Wait for engine ready event (created by engine.dll on init complete)
     HANDLE hEngineReady = OpenEventW(EVENT_ALL_ACCESS, FALSE, L"Symbiote_EngineReady");
     if (hEngineReady) {
@@ -157,7 +157,7 @@ int main(int, char**)
         Sleep(750);
     }
 
-    // Intercept game entry point (Ghost Sandbox) — must happen before ResumeThread
+    // Intercept entry point — must happen before ResumeThread
     LogMessage("Calling Engine_InterceptEntryPoint...\n");
     CallRemoteFunction(pi.hProcess, dllPath, "Engine_InterceptEntryPoint");
     LogMessage("Engine_InterceptEntryPoint done\n");

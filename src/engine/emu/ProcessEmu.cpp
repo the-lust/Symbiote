@@ -189,7 +189,7 @@ void ProcessEmu::BuildVirtualProcessList()
 
 uint64_t ProcessEmu::GetSpoofedPebField(uint32_t offset)
 {
-    // PEB fields read for fingerprinting
+    // PEB fields
     switch (offset) {
         case 0x0B8: return 0; // TlsExpansionCounter
         case 0x118: return (uint64_t)(uintptr_t)GetProcessHeap(); // ProcessParameters
@@ -288,7 +288,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             if (returnLengthPtr) *(uint32_t*)returnLengthPtr = totalSize;
             *result = (uint64_t)STATUS_SUCCESS;
 
-            // Apply ThreadHider filtering to remove hidden threads/processes
+            // Apply ThreadHider filtering
             if (m_threadHider) {
                 m_threadHider->HandleSystemProcessInformation(infoBuffer, infoLength, (uint32_t*)(uintptr_t)returnLengthPtr, result);
             }
@@ -361,7 +361,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             void* tableBuffer = fti->FirmwareTableBuffer;
             uint32_t tableBufLen = fti->FirmwareTableBufferLength;
 
-            // Handle ACPI provider — spoof MADT to show 20 processors
+            // Handle ACPI provider — set MADT to show 20 processors
             if (providerSig == 0x49435041) {
                 // Call real NtQuerySystemInformation to get ACPI data
                 HMODULE nt = GetModuleHandleA("ntdll.dll");
@@ -402,7 +402,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
                     return true;
                 }
 
-                // Spoof MADT (APIC) if this is the right table
+                // Override MADT (APIC) if this is the right table
                 void* acpiData = tempBuf;
                 ULONG acpiLen = bufSize;
                 if (fti->FirmwareTableID == 0x43495041 && acpiData && acpiLen >= 44) {

@@ -455,7 +455,7 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
         return true;
     }
 
-    // SystemModuleInformation (0x0B / 11) — hide kernel modules
+    // SystemModuleInformation (0x0B / 11) — filter kernel modules
     if (infoClass == 11 || infoClass == 0x0B) {
         if (infoLen >= sizeof(uint32_t)) {
             if (info) *(uint32_t*)(uintptr_t)info = 0;
@@ -465,7 +465,7 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
         return true;
     }
 
-    // SystemHypervisorInformation (0x5B) — hide hypervisor presence
+    // SystemHypervisorInformation (0x5B) — filter hypervisor info
     if (infoClass == 0x5B) {
         if (info && infoLen >= 16) {
             memset((void*)(uintptr_t)info, 0, 16);
@@ -475,7 +475,7 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
         return true;
     }
 
-    // SystemHypervisorDetailInformation (0x9F) — hide hypervisor details
+    // SystemHypervisorDetailInformation (0x9F) — filter hypervisor details
     if (infoClass == 0x9F) {
         if (info && infoLen >= 0x70) {
             memset((void*)(uintptr_t)info, 0, 0x70);
@@ -498,7 +498,7 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
         return true;
     }
 
-    // SystemCodeIntegrityInformation (0x67 / 103) — hide code integrity state
+    // SystemCodeIntegrityInformation (0x67 / 103) — filter code integrity state
     if (infoClass == 103 || infoClass == 0x67) {
         if (info && infoLen >= 8) {
             *(uint32_t*)(uintptr_t)info = 8;
@@ -518,7 +518,7 @@ bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& 
     uint64_t info = args[1];
     uint32_t infoLen = (uint32_t)args[3];
 
-    // ProcessDebugPort (0x07) — hide debugger
+    // ProcessDebugPort (0x07) — filter debugger info
     if (infoClass == 7) {
         if (info && infoLen >= sizeof(int32_t)) {
             *(int32_t*)(uintptr_t)info = -1;
@@ -528,7 +528,7 @@ bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& 
         return true;
     }
 
-    // ProcessDebugObjectHandle (0x1E) — hide debug object
+    // ProcessDebugObjectHandle (0x1E) — filter debug object
     if (infoClass == 0x1E) {
         if (info && infoLen >= sizeof(HANDLE)) {
             *(HANDLE*)(uintptr_t)info = NULL;
@@ -588,8 +588,8 @@ bool SyscallDispatch::HandleNtOpenKey(uint64_t* args, uint64_t& result)
     return false;
 }
 
-// ─── P1.8: NtQueryVirtualMemory — spoof PE header reads from ntdll ─────
-// Integrity check reads its own .text section via NtQueryVirtualMemory with
+    // ─── P1.8: NtQueryVirtualMemory — filter PE header reads ───────────────
+    // Integrity check reads its own .text section via NtQueryVirtualMemory with
 // MemoryBasicInformation (0x00) to detect PE header modifications.
 // We intercept and return clean PAGE_EXECUTE_READ for .text pages.
 bool SyscallDispatch::HandleNtQueryVirtualMemory(uint64_t* args, uint64_t& result)

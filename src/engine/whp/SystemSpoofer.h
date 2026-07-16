@@ -77,7 +77,7 @@ private:
     void PatchInstruction(uint64_t addr, PatchType type, uint8_t origByte, uint8_t modrm, int len);
     void ApplyPatches();
 
-    // Anti-memory-scanning: hide INT3 patches from integrity verification CRC checks
+    // Hide INT3 patches from integrity verification
     void EnableAntiScan(bool enable);
     bool ApplyCamouflage();
     bool RestorePatches();

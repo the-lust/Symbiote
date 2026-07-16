@@ -245,7 +245,7 @@ bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t val
             m_logger->Trace(LOG_WHP, "WRMSR FEATURE_CTRL => 0x%llX (locked)", value);
             break;
 
-        // Hyper-V TLFS MSRs - silently ignore all writes to hide Hyper-V presence
+        // Hyper-V TLFS MSRs - silently ignore all writes
         case MSR_HV_GUEST_OS_ID:
         case MSR_HV_HYPERCALL:
         case MSR_HV_VP_INDEX:

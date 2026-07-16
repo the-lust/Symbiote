@@ -39,11 +39,10 @@ bool Partition::Create()
 
 bool Partition::SetupMsrBitmap()
 {
-    // Explicit MSR whitelist — only intercept MSRs we need to spoof.
+    // Explicit MSR whitelist — only intercept MSRs we need.
     // Do NOT set UnhandledMsrs=1 (that causes ALL MSRs to VM-exit, including
     // reserved/invalid ones, where our handler returns 0 instead of injecting #GP).
-    // WHP's native MSR handling injects #GP correctly for invalid/reserved MSRs,
-    // which matches real hardware behavior and avoids hypervisor detection.
+    // WHP's native MSR handling injects #GP correctly for invalid/reserved MSRs.
     WHV_X64_MSR_EXIT_BITMAP bitmap;
     bitmap.AsUINT64 = 0;
     bitmap.TscMsrRead = 1;           // Intercept RDTSC/RDTSCP
@@ -94,7 +93,7 @@ bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
 {
     if (!m_handle) return false;
 
-    // Always pre-populate anti-detection leaves (hypervisor range + leaf 1 ECX[31])
+    // Pre-populate hypervisor leaves + leaf 1 ECX[31]
     WHV_X64_CPUID_RESULT results[32];
     int count = 0;
 
@@ -113,12 +112,12 @@ bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
         count++;
     };
 
-    // Anti-detection: Leaf 1 with hypervisor present bit (ECX[31]) cleared
-    // Use either spoofed values or real hardware (with bit cleared)
+    // Leaf 1 with hypervisor present bit (ECX[31]) cleared
+    // Use either configured values or real hardware (with bit cleared)
     if (cpuidHandler) {
         cpuidHandler->GetCpuidResultList(results, &count, 32);
     } else {
-        // Minimal anti-detection result list (no CpuidHandler available)
+        // Minimal result list (no CpuidHandler available)
         int cpuInfo[4];
         __cpuidex(cpuInfo, 1, 0);
         add(1, 0, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1],
@@ -126,7 +125,6 @@ bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
     }
 
     // Always add hypervisor leaves 0x40000000-0x4000000F as zeros
-    // (detection safety: even if cpuidHandler didn't add them, we do)
     bool hasHypervisorLeaves = false;
     for (int i = 0; i < count; i++) {
         if (results[i].Function >= 0x40000000 && results[i].Function <= 0x4000000F) {

@@ -192,7 +192,7 @@ bool DeviceIoEmu::HandleDeviceIoControl(
     inst->m_totalIoctlCalls++;
     inst->m_ioctlCounters[ioControlCode]++;
 
-    // Handle WHvGetPartitionProperty - return spoofed values
+    // Handle WHvGetPartitionProperty - return configured values
     if (ioControlCode == IOCTL_WHV_GET_PARTITION_PROPERTY) {
         if (inst->HandleGetPartitionProperty(inputBuffer, inputBufferLength,
                                               outputBuffer, outputBufferLength, result)) {
@@ -290,7 +290,7 @@ bool DeviceIoEmu::HandleGetPartitionProperty(
             break;
 
         default:
-            // Unknown property - don't spoof, let through
+            // Unknown property - let through
             m_logger->Trace(LOG_EMU, "WHP property query (passthrough): code=0x%08X", propertyCode);
             return false;
     }

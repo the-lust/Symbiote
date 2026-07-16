@@ -85,9 +85,7 @@ static StackSpoofer* g_stackSpoofer = nullptr;
 static IndirectSyscall* g_indirectSyscall = nullptr;
 static Snapshot* g_snapshot = nullptr;
 
-// PEB anti-debug restoration thread: continuously monitors BeingDebugged
-// (offset 0x02) and NtGlobalFlag (offset 0xBC) for overwrite by protection
-// threads, restoring them to safe values every 500ms.
+// PEB restoration thread: monitors BeingDebugged and NtGlobalFlag, restores every 500ms.
 static std::thread g_pebRestoreThread;
 static std::atomic<bool> g_pebRestoreRunning{false};
 
@@ -96,11 +94,11 @@ static HANDLE g_engineActiveEvent = nullptr;
 
 CaptureLogger* g_captureLogger = nullptr;
 
-// Ghost Sandbox: original entry point (saved before trampoline)
+// Original entry point (saved before trampoline)
 static uint64_t g_originalEntryRip = 0;
 static bool g_guestPageTableBuilt = false;
 
-// PEB restoration thread: background monitor that restores anti-debug fields
+// PEB restoration thread
 static void PebRestoreLoop()
 {
     while (g_pebRestoreRunning.load()) {
@@ -327,7 +325,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "Config loaded from %s", configPathA.c_str());
     }
 
-    // check spoof toggles from config (supports both new [feature].status and old [spoof].feature format)
+    // check feature toggles from config
     auto CheckSpoof = [&](const char* section, bool defaultVal) -> bool {
         std::string raw = configParser.GetString(section, "status", "");
         if (!raw.empty()) return configParser.GetBool(section, "status", defaultVal);
@@ -347,7 +345,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     g_gpuProfile->LoadFromConfig(&configParser);
     g_storageProfile->LoadFromConfig(&configParser);
 
-    // Create SystemProfile + KernelBackend (unified spoof data source)
+    // Create SystemProfile + KernelBackend
     g_systemProfile = new SystemProfile();
     g_kernelBackend = new KernelBackend(g_systemProfile);
 
@@ -376,7 +374,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             configTsc, detectedTsc);
     }
 
-    // Capture mode: log all queries without spoofing (for fingerprint collection)
+    // Capture mode: log all queries without modification
     bool captureMode = configParser.GetBool("capture", "enabled", false);
     if (captureMode) {
         wchar_t capturePath[MAX_PATH];
@@ -478,10 +476,8 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         uint32_t memoryMb = (uint32_t)configParser.GetUint64("vm", "memory_size_mb", 512);
         g_partition->SetupCpuCount(cpuCount);
         g_partition->SetupMemory(memoryMb);
-        // Pre-populate WHP CPUID result list — ALWAYS creates anti-detection
-        // entries (leaf 1 ECX[31]=0, hypervisor range zeroed) even when CPUID
-        // spoofing is disabled. This prevents trivial hypervisor detection via
-        // CPUID leaf 0x40000000 ("Microsoft Hv") or leaf 1 ECX[31] (hypervisor bit).
+        // Pre-populate WHP CPUID result list — hides hypervisor presence
+        // (leaf 1 ECX[31]=0, hypervisor range zeroed) even when CPUID override is disabled.
         if (!g_partition->SetupCpuidResultList(g_cpuidHandler)) {
             g_logger.Trace(LOG_WARNING, "CPUID result list setup failed — hypervisor may be detectable via CPUID");
         }
@@ -511,7 +507,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_eptExecHook = new EptExecHook(&g_logger, g_partition);
         g_vcpuManager->SetEptExecHook(g_eptExecHook);
 
-        // P0.3: Threaded integrity watchdog detection via EPT exec hooks
+        // P0.3: EPT exec hook watchdog tracker
         bool watchdogEnabled = configParser.GetBool("watchdog", "enabled", true);
         if (watchdogEnabled) {
             g_watchdogTracker = new WatchdogTracker(&g_logger, g_partition, g_eptExecHook);
@@ -557,7 +553,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_vcpuManager->SetSyscallHandler(MinimalKernel::DispatchThunk);
         g_vcpuManager->SetExceptionHandler(g_exceptionHandler);
 
-        // Build guest page tables for identity-mapped WHP execution (Ghost Sandbox)
+        // Build guest page tables for identity-mapped WHP execution
         bool forwardingEnabled = configParser.GetBool("forwarding", "enabled", true);
         if (forwardingEnabled) {
             g_logger.Trace(LOG_INFO, "Building guest page tables...");
@@ -578,7 +574,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
     bool spoofEat = configParser.GetBool("eat", "enabled", false);
 
-    // IAT hooks for proxy DLLs (always in capture mode to intercept target calls)
+    // IAT hooks for proxy DLLs (always in capture mode)
     if (captureMode || spoofProcess || spoofRegistry || spoofFile || spoofTiming) {
         SetupIatHooks(spoofEat);
     } else {
@@ -587,11 +583,11 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
 
 
 
-    // AllocTracker for allocated-memory CPUID interception (gated by hypervisor_hiding config)
+    // AllocTracker for allocated-memory CPUID interception
     bool allocTrackerEnabled = configParser.GetBool("hypervisor_hiding", "alloc_tracker", false);
     if (allocTrackerEnabled) {
         // EptExecHook supersedes AllocTracker — EPT-based execution interception is more
-        // efficient and undetectable than VEH guard pages. Warn and skip if EPT hooks active.
+        // efficient. Warn and skip if EPT hooks active.
         if (g_eptExecHook) {
             g_logger.Trace(LOG_WARNING,
                 "AllocTracker requested but EptExecHook is active — superseding. "
@@ -611,7 +607,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_DEBUG, "AllocTracker disabled by config (hypervisor_hiding.alloc_tracker=false)");
     }
 
-    // Init Canary for memory scanner detection and handshake page
+    // Init Canary for handshake page
     Canary* canary = new Canary(&g_logger);
     if (g_captureLogger) canary->SetCaptureLogger(g_captureLogger);
     if (canary->Initialize()) {
@@ -622,7 +618,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         canary = nullptr;
     }
 
-    // Spoof PEB anti-debug fields (BeingDebugged, NtGlobalFlag)
+    // Set PEB fields (BeingDebugged, NtGlobalFlag)
     // NOTE: ProcessHeap.Flags/ForceFlags offsets differ per Windows version.
     // On Win10 22H2+ the classic offsets (0x1C/0x20) collide with critical
     // heap metadata. Skip them — BeingDebugged + NtGlobalFlag is sufficient.
@@ -634,15 +630,13 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             g_logger.Trace(LOG_INFO, "PEB: BeingDebugged=0, NtGlobalFlag=0 set (spoofProcess)");
         }
 
-        // PEB restoration thread: background monitor that restores anti-debug
-        // fields every 500ms in case a protection thread overwrites them.
+        // PEB restoration thread: background monitor that restores fields every 500ms.
         g_pebRestoreRunning.store(true);
         g_pebRestoreThread = std::thread(PebRestoreLoop);
         g_logger.Trace(LOG_INFO, "PEB: restoration thread started (500ms interval)");
     }
 
     // Init SystemSpoofer for SGDT/SIDT/SLDT/STR/XGETBV interception
-    // Primary check: hypervisor_hiding.system_spoofer; fallback: system_spoofer.enabled
     bool spoofSystemSpoofer = configParser.GetBool("hypervisor_hiding", "system_spoofer", false);
     if (!spoofSystemSpoofer) {
         spoofSystemSpoofer = configParser.GetBool("system_spoofer", "enabled", false);
@@ -665,12 +659,12 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "SystemSpoofer disabled by config");
     }
 
-    // Phase B: Wire SystemSpoofer to VcpuManager for EPT dispatch
+    // Wire SystemSpoofer to VcpuManager for EPT dispatch
     if (g_vcpuManager) {
         g_vcpuManager->SetSystemSpoofer(g_systemSpoofer);
     }
 
-    // Phase B: StackSpoofer (call-stack return address protection)
+        // StackSpoofer (call-stack return address handler)
     bool spoofStackSpoofer = configParser.GetBool("stack_spoofer", "enabled", true);
     if (spoofStackSpoofer && g_vcpuManager) {
         g_stackSpoofer = new StackSpoofer(&g_logger);
@@ -713,7 +707,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "Snapshot disabled by config (requires WHP)");
     }
 
-    // Phase B: Wire synthetic TSC source to TimingEmu and SystemSpoofer
+        // Wire synthetic TSC source to TimingEmu and SystemSpoofer
     // Both derive from the same CounterUpdater TSC for coherent timing
     if (g_minimalKernel && g_minimalKernel->GetTimingEmu()) {
         TimingEmu* timingEmu = g_minimalKernel->GetTimingEmu();
@@ -731,19 +725,19 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "SystemSpoofer: synthetic TSC source set to CounterUpdater");
     }
 
-    // Initialize ACPI PM timer / HPET spoofing
+    // Initialize ACPI PM timer / HPET handler
     g_acpiTimerHandler = new AcpiTimerHandler(&g_logger);
     if (g_acpiTimerHandler) {
         g_acpiTimerHandler->Initialize();
     }
 
-    // Initialize thread hider
+    // Initialize ThreadHider
     g_threadHider = new ThreadHider(&g_logger);
     if (g_threadHider) {
         g_threadHider->Initialize();
-        // Hide engine's own threads from toolhelp32 enumeration
+        // Register engine's own threads with ThreadHider
         g_threadHider->HideThread(GetCurrentThreadId());
-        // Also enumerate and hide all threads in the current process
+        // Also enumerate and register all threads in the current process
         HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, GetCurrentProcessId());
         if (hSnap != INVALID_HANDLE_VALUE) {
             THREADENTRY32 te;
@@ -763,14 +757,14 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
         g_logger.Trace(LOG_INFO, "ThreadHider: engine threads registered as hidden");
 
-        // Wire ThreadHider into ProcessEmu for NtQuerySystemInformation thread filtering
+        // Wire ThreadHider into ProcessEmu
         if (g_minimalKernel && g_minimalKernel->GetProcessEmu()) {
             g_minimalKernel->GetProcessEmu()->SetThreadHider(g_threadHider);
             g_logger.Trace(LOG_INFO, "ThreadHider: wired to ProcessEmu NtQuerySystemInformation path");
         }
     }
 
-    // Initialize EPT page protection (hide engine/patch pages from integrity verification)
+    // Initialize EPT page protection
     if (g_partition) {
         g_eptPageProtect = new EptPageProtect(&g_logger, g_partition);
         if (g_eptPageProtect && g_eptPageProtect->Initialize()) {
@@ -792,7 +786,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_consistencyVerifier->VerifyAll();
     }
 
-    // Signal launcher / target that hooks, patches, and shared KUSER are ready
+    // Signal launcher that initialization is complete
     if (g_engineReadyEvent) {
         SetEvent(g_engineReadyEvent);
         g_logger.Trace(LOG_INFO, "Engine ready — hooks active");
@@ -827,10 +821,8 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
 
         if (g_guestPageTableBuilt) {
-            // Ghost Sandbox mode: engine thread does NOT enter VCPU.
-            // The target thread enters VCPU via BootstrapFromContext when
-            // it hits the entry point trampoline (Engine_VcpuEntry).
-            g_logger.Trace(LOG_INFO, "Ghost Sandbox mode: engine waiting (target thread enters VCPU)");
+            // Engine thread does NOT enter VCPU — the entry thread enters via BootstrapFromContext.
+            g_logger.Trace(LOG_INFO, "Bootstrap mode: engine waiting (entry thread enters VCPU)");
             // Engine thread stays alive but idle
             while (g_vcpuManager) {
                 Sleep(1000);
@@ -851,11 +843,10 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     return 0;
 }
 
-// ─── Ghost Sandbox: Entry point interception ──────────────────────────
+// ─── Entry point interception ──────────────────────────────────────────
 
 // Called by launcher AFTER Engine_Init, BEFORE ResumeThread.
-// Modifies the PE entry point to jump to Engine_VcpuEntry,
-// which captures the thread context and enters the WHP VCPU.
+// Modifies the PE entry point to jump to Engine_VcpuEntry.
 ENGINE_DLL_EXPORT void Engine_InterceptEntryPoint()
 {
     uint8_t* base = (uint8_t*)GetModuleHandleW(NULL);
@@ -889,7 +880,7 @@ ENGINE_DLL_EXPORT void Engine_InterceptEntryPoint()
     g_logger.Trace(LOG_INFO, "InterceptEntryPoint: trampoline written at %p → Engine_VcpuEntry", entryPoint);
 }
 
-// Called when the target's main thread starts execution.
+// Called when the entry thread starts execution.
 // The entry point trampoline jumps here. We capture the current thread
 // context and enter the WHP VCPU with identity-mapped guest page tables.
 ENGINE_DLL_EXPORT void Engine_VcpuEntry()
@@ -981,7 +972,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
             g_logger.Init(path);
             g_logger.Trace(LOG_INFO, "Engine loaded");
 
-            // create event to signal engine active to target process
+            // create event to signal engine active
             g_engineActiveEvent = CreateEventW(NULL, TRUE, FALSE, L"Symbiote_EngineActive");
             break;
         }

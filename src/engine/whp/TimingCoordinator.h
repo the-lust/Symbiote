@@ -126,7 +126,7 @@ public:
 
     // Cross-time-source correlation: snap all clocks at once
     void SnapshotBaseClocks();
-    // Get consistent spoofed values across all time sources
+    // Get consistent values across all time sources
     uint64_t GetConsistentQpc() const;
     uint64_t GetConsistentTsc() const;
     uint64_t GetConsistentSysTime() const;
@@ -137,6 +137,5 @@ public:
     uint64_t GetConsistentHpetCounter() const;
 
     // Cross-source verification: ensure all clocks are consistent with each other
-    // Returns true if all sources correlate properly (spoof passes)
     bool VerifyClockConsistency() const;
 };

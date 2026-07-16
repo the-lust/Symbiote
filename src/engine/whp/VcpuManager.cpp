@@ -156,7 +156,7 @@ bool VcpuManager::Run(uint32_t vcpuIndex)
     return true;
 }
 
-// ─── Ghost Sandbox: Bootstrap VCPU from captured thread context ────────
+// ─── Bootstrap VCPU from captured thread context ────────────────────────
 
 bool VcpuManager::BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& ctx, GuestPageTable* pageTable)
 {
@@ -164,7 +164,7 @@ bool VcpuManager::BootstrapFromContext(uint32_t vcpuIndex, const ThreadContext& 
         if (!CreateVcpu(vcpuIndex)) return false;
     }
 
-    // Set up LSTAR→HLT for syscall interception (required for guest to make syscalls)
+    // Set up LSTAR→HLT for syscall interception (required for guest syscalls)
     if (!LoadHltPage()) {
         m_logger->Trace(LOG_ERROR, "Bootstrap: HLT page load failed");
         return false;
@@ -287,7 +287,7 @@ void VcpuManager::SetContextRegisters(uint32_t vcpuIndex, const ThreadContext& c
     WHV_REGISTER_VALUE crValues[4];
     crValues[0].Reg64 = 0x80000001; // PE | MP | ET
     crValues[1].Reg64 = cr3;
-    crValues[2].Reg64 = 0x1706F8 & ~0x6000;   // PAE | PGE | OSFXSR | OSXMMEXCPT | OSXSAVE (VMXE+SMXE masked to hide hypervisor)
+    crValues[2].Reg64 = 0x1706F8 & ~0x6000;   // PAE | PGE | OSFXSR | OSXMMEXCPT | OSXSAVE (VMXE+SMXE masked)
     crValues[3].Reg64 = 0;
     WriteVcpuRegs(vcpuIndex, crNames, crValues, 4);
 
@@ -305,7 +305,7 @@ void VcpuManager::SetContextRegisters(uint32_t vcpuIndex, const ThreadContext& c
 
 uint32_t VcpuManager::AllocateVcpuIndex()
 {
-    // VCPU 0 is reserved for main target thread
+    // VCPU 0 is reserved for main entry thread
     for (uint32_t i = 1; i < MAX_VCPU; i++) {
         if (!m_vcpus[i].running && m_vcpus[i].hostThread == nullptr) {
             return i;
@@ -528,7 +528,7 @@ bool VcpuManager::HandleCreateThreadSyscall(uint32_t vcpuIndex, uint32_t syscall
 bool VcpuManager::HandleTerminateThreadSyscall(uint32_t vcpuIndex, uint64_t* args, uint64_t& result)
 {
     (void)vcpuIndex; (void)args;
-    // Only intercept for child VCPUs (not VCPU 0 — main target thread)
+    // Only intercept for child VCPUs (not VCPU 0)
     uint32_t currentVcpu = t_currentVcpuIndex;
 
     if (currentVcpu != UINT32_MAX && currentVcpu > 0 && currentVcpu < MAX_VCPU
@@ -756,7 +756,7 @@ bool VcpuManager::HandleSyscallExit(uint32_t vcpuIndex)
     uint64_t result = 0;
     bool handled = false;
 
-    // Multi-VCPU: intercept thread management syscalls first
+    // Intercept thread management syscalls first
     if (syscallNum == m_syscallDispatch.NtCreateThread ||
         syscallNum == m_syscallDispatch.NtCreateThreadEx) {
         handled = HandleCreateThreadSyscall(vcpuIndex, syscallNum, args, guestRsp, result);
@@ -767,7 +767,7 @@ bool VcpuManager::HandleSyscallExit(uint32_t vcpuIndex)
     }
 
     if (!handled) {
-        // Try DispatchRawSyscall (spoofed syscalls)
+        // Try DispatchRawSyscall
         handled = m_syscallDispatch.DispatchRawSyscall(syscallNum, args, result);
     }
 
@@ -1291,7 +1291,7 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
                     return true;
                 }
 
-                // Try SystemSpoofer EPT handlers for system instructions
+                // Try SystemSpoofer EPT handlers
                 // Read instruction bytes at RIP for decoding
                 uint8_t instr[16] = {0};
                 if (rip) {

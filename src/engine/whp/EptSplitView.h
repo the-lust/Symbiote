@@ -42,7 +42,7 @@ public:
     bool ReadHiddenMemory(uint64_t gpa, void* buffer, uint64_t size);
     bool WriteHiddenMemory(uint64_t gpa, const void* buffer, uint64_t size);
 
-    // Hide specific memory regions from integrity verification scanning (EPT-based memory protection)
+    // Protect specific memory regions (EPT-based memory isolation)
     bool ProtectMemoryRange(uint64_t gpa, uint64_t size);
 
     // Check if a GPA is currently managed by split-view

@@ -161,7 +161,7 @@ extern "C" NTSTATUS NTAPI Proxy_NtQueryInformationProcess(
     return STATUS_UNSUCCESSFUL;
 }
 
-// ── PEB anti-debug ──────────────────────────────────────────────────────
+// ── PEB debug flags ─────────────────────────────────────────────────────
 static void FixPebDebugFlags()
 {
     // Access PEB via TEB (gs:0x60 on x64)

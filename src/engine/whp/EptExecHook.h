@@ -36,7 +36,7 @@ public:
     bool RegisterEptExecHook(uint64_t gpa, uint64_t size, void* hostVA, void (*callback)(uint64_t, uint64_t));
     bool UnregisterEptExecHook(uint64_t gpa);
 
-    // EPT-based memory protection (trap all access to critical pages)
+    // EPT-based memory protection (trap all access)
     bool ProtectPage(uint64_t gpa, uint64_t size);
     bool UnprotectPage(uint64_t gpa);
 
