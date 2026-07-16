@@ -126,6 +126,11 @@ uint64_t RdtscHandler::GetCounterUpdaterTsc()
     return s_counterTsc.load();
 }
 
+uint64_t* RdtscHandler::GetCounterUpdaterTscPtr()
+{
+    return (uint64_t*)&s_counterTsc;
+}
+
 void RdtscHandler::CounterUpdaterThread(RdtscHandler* handler)
 {
     (void)handler;

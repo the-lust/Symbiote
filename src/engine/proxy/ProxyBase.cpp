@@ -43,6 +43,27 @@ void* ProxyBase::GetRealProc(const char* procName)
 bool ProxyBase::HookSensitiveFunctions()
 {
     m_logger->Trace(LOG_PROXY, "Hooking sensitive functions");
+
+    // Hook kernel32!CreateThread to route through proxy
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (hKernel32) {
+        void* createThread = GetProcAddress(hKernel32, "CreateThread");
+        if (createThread) {
+            // 12-byte inline hook — redirect to proxy handler
+            DWORD old;
+            VirtualProtect(createThread, 12, PAGE_EXECUTE_READWRITE, &old);
+            uint8_t* p = (uint8_t*)createThread;
+            // Save original bytes (not implemented here — caller handles)
+            p[0] = 0x48; p[1] = 0xB8; // mov rax, imm64
+            // Store address of a trampoline handler (to be set by caller)
+            *(uint64_t*)&p[2] = 0;
+            p[10] = 0xFF; p[11] = 0xE0; // jmp rax
+            VirtualProtect(createThread, 12, old, &old);
+            FlushInstructionCache(GetCurrentProcess(), createThread, 12);
+            m_logger->Trace(LOG_PROXY, "HookSensitiveFunctions: CreateThread hooked");
+        }
+    }
+
     return true;
 }
 

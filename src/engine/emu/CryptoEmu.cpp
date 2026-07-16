@@ -64,14 +64,51 @@ bool CryptoEmu::HandleNtOpenProcessToken(uint64_t* args, uint64_t* result)
     return true;
 }
 
-bool CryptoEmu::HandleCryptGetProvParam(uint64_t*, uint64_t* result)
+bool CryptoEmu::HandleCryptGetProvParam(uint64_t* args, uint64_t* result)
 {
-    // CryptGetProvParam is used to get CryptoAPI container name
-    // This is a Win32 API, not a syscall. Intercepted via IAT patch.
-    // If we get here via the emulator, we spoof the provider params.
-    m_logger->Trace(LOG_EMU, "CryptGetProvParam intercepted");
-    *result = 0; // success with default/safe values
-    return true;
+    // Args: [0]=HCRYPTPROV hProv, [1]=DWORD dwParam, [2]=BYTE* pbData, [3]=DWORD* pdwDataLen, [4]=DWORD dwFlags
+    HCRYPTPROV hProv = (HCRYPTPROV)(ULONG_PTR)args[0];
+    DWORD dwParam = (DWORD)args[1];
+    BYTE* pbData = (BYTE*)(uintptr_t)args[2];
+    DWORD* pdwDataLen = (DWORD*)(uintptr_t)args[3];
+
+    m_logger->Trace(LOG_EMU, "CryptGetProvParam: hProv=0x%p param=0x%X", (void*)hProv, dwParam);
+
+    switch (dwParam) {
+        case 2: { // PP_CONTAINER
+            static const WCHAR* container = L"DefaultContainer";
+            DWORD len = (DWORD)((wcslen(container) + 1) * sizeof(WCHAR));
+            if (pbData && pdwDataLen && *pdwDataLen >= len) {
+                memcpy(pbData, container, len);
+                *pdwDataLen = len;
+            } else if (pdwDataLen) {
+                *pdwDataLen = len;
+            }
+            *result = 0;
+            return true;
+        }
+        case 1: { // PP_PROVTYPE
+            if (pbData && pdwDataLen && *pdwDataLen >= sizeof(DWORD))
+                *(DWORD*)pbData = PROV_RSA_FULL;
+            *result = 0;
+            return true;
+        }
+        case 3: { // PP_UNIQUE_CONTAINER
+            static const WCHAR* unique = L"{FAKE-GUID-0000-0000-000000000000}";
+            DWORD len = (DWORD)((wcslen(unique) + 1) * sizeof(WCHAR));
+            if (pbData && pdwDataLen && *pdwDataLen >= len) {
+                memcpy(pbData, unique, len);
+                *pdwDataLen = len;
+            } else if (pdwDataLen) {
+                *pdwDataLen = len;
+            }
+            *result = 0;
+            return true;
+        }
+        default:
+            *result = 0;
+            return true;
+    }
 }
 
 bool CryptoEmu::HandleNtDuplicateToken(uint64_t* args, uint64_t* result)

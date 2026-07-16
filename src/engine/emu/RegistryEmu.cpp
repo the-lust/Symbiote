@@ -117,22 +117,80 @@ bool RegistryEmu::HandleNtOpenKey(uint64_t* args, uint64_t* result)
     return false;
 }
 
-bool RegistryEmu::HandleNtQueryValueKey(uint64_t*, uint64_t*)
+bool RegistryEmu::HandleNtQueryValueKey(uint64_t* args, uint64_t* result)
 {
-    // fall through
+    std::wstring path = GetKeyPathFromAttributes(args[2]);
+    m_logger->Trace(LOG_EMU, "NtQueryValueKey: %ls", path.c_str());
+
+    // Pass through to real NtQueryValueKey for tracked keys
+    typedef NTSTATUS (NTAPI* RealNtQueryValueKey_t)(HANDLE, PUNICODE_STRING, ULONG, PVOID, ULONG, PULONG);
+    static RealNtQueryValueKey_t realFunc = (RealNtQueryValueKey_t)
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryValueKey");
+
+    if (realFunc) {
+        NTSTATUS status = realFunc((HANDLE)(ULONG_PTR)args[0],
+            (PUNICODE_STRING)(uintptr_t)args[1],
+            (ULONG)args[3],
+            (PVOID)(uintptr_t)args[4],
+            (ULONG)args[5],
+            (PULONG)(uintptr_t)args[6]);
+        *result = (uint64_t)status;
+        return true;
+    }
     return false;
 }
 
-bool RegistryEmu::HandleNtEnumerateKey(uint64_t*, uint64_t* result)
+bool RegistryEmu::HandleNtEnumerateKey(uint64_t* args, uint64_t* result)
 {
-    *result = (uint64_t)STATUS_NO_MORE_ENTRIES;
-    return true;
+    HANDLE keyHandle = (HANDLE)(ULONG_PTR)args[0];
+    ULONG index = (ULONG)args[1];
+
+    // Check virtual keys first
+    for (size_t i = 0; i < m_virtualKeys.size(); i++) {
+        if ((HANDLE)(ULONG_PTR)m_virtualKeys[i].handle == keyHandle) {
+            if (index == 0 && args[4]) {
+                // Return virtual key name
+                UNICODE_STRING* outName = (UNICODE_STRING*)(uintptr_t)args[4];
+                std::wstring name = m_virtualKeys[i].path;
+                size_t bytes = (name.size() + 1) * sizeof(wchar_t);
+                if (outName->MaximumLength >= bytes) {
+                    memcpy(outName->Buffer, name.c_str(), bytes);
+                    outName->Length = (USHORT)bytes;
+                }
+                *result = (uint64_t)STATUS_SUCCESS;
+                return true;
+            }
+        }
+    }
+
+    // Pass through to real NtEnumerateKey
+    typedef NTSTATUS (NTAPI* RealNtEnumerateKey_t)(HANDLE, ULONG, ULONG, PVOID, ULONG, PULONG);
+    static RealNtEnumerateKey_t realFunc = (RealNtEnumerateKey_t)
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtEnumerateKey");
+
+    if (realFunc) {
+        NTSTATUS status = realFunc(keyHandle, index, (ULONG)args[2],
+            (PVOID)(uintptr_t)args[3], (ULONG)args[4], (PULONG)(uintptr_t)args[5]);
+        *result = (uint64_t)status;
+        return true;
+    }
+    return false;
 }
 
-bool RegistryEmu::HandleNtEnumerateValueKey(uint64_t*, uint64_t* result)
+bool RegistryEmu::HandleNtEnumerateValueKey(uint64_t* args, uint64_t* result)
 {
-    *result = (uint64_t)STATUS_NO_MORE_ENTRIES;
-    return true;
+    // Pass through to real NtEnumerateValueKey
+    typedef NTSTATUS (NTAPI* RealNtEnumerateValueKey_t)(HANDLE, ULONG, ULONG, PVOID, ULONG, PULONG);
+    static RealNtEnumerateValueKey_t realFunc = (RealNtEnumerateValueKey_t)
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtEnumerateValueKey");
+
+    if (realFunc) {
+        NTSTATUS status = realFunc((HANDLE)(ULONG_PTR)args[0], (ULONG)args[1],
+            (ULONG)args[2], (PVOID)(uintptr_t)args[3], (ULONG)args[4], (PULONG)(uintptr_t)args[5]);
+        *result = (uint64_t)status;
+        return true;
+    }
+    return false;
 }
 
 bool RegistryEmu::HandleNtCreateKey(uint64_t* args, uint64_t* result)

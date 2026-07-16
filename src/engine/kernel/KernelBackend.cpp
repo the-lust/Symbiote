@@ -1,5 +1,8 @@
 #include "KernelBackend.h"
 #include "SystemProfile.h"
+#include <intrin.h>
+#include <excpt.h>
+#include <cstring>
 
 KernelBackend::KernelBackend(SystemProfile* profile)
     : m_profile(profile)
@@ -33,25 +36,47 @@ bool KernelBackend::HandleRdtscp(uint64_t& tsc, uint32_t& processorId)
     return true;
 }
 
-bool KernelBackend::HandleRdmsr(uint32_t, uint64_t& value)
+bool KernelBackend::HandleRdmsr(uint32_t msr, uint64_t& value)
 {
-    value = 0;
-    return false;
+    __try {
+        value = __readmsr(msr);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        value = 0;
+        return false;
+    }
 }
 
-bool KernelBackend::HandleWrmsr(uint32_t, uint64_t)
+bool KernelBackend::HandleWrmsr(uint32_t msr, uint64_t value)
 {
-    return false;
+    __try {
+        __writemsr(msr, value);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
-bool KernelBackend::HandleMemoryRead(uint64_t, void*, size_t)
+bool KernelBackend::HandleMemoryRead(uint64_t address, void* buffer, size_t size)
 {
-    return false;
+    if (!buffer || !address) return false;
+    __try {
+        memcpy(buffer, (const void*)(uintptr_t)address, size);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
-bool KernelBackend::HandleMemoryWrite(uint64_t, const void*, size_t)
+bool KernelBackend::HandleMemoryWrite(uint64_t address, const void* buffer, size_t size)
 {
-    return false;
+    if (!buffer || !address) return false;
+    __try {
+        memcpy((void*)(uintptr_t)address, buffer, size);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 uint64_t KernelBackend::GetTscFrequency() const
