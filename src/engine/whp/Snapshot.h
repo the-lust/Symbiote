@@ -71,6 +71,21 @@ public:
                  MsrHandler* msrHandler,
                  EptExecHook* eptExecHook);
 
+    // Create in-memory snapshot (VCPU regs + handler state only, no memory copy)
+    std::vector<uint8_t> CreateInMemory(Partition* partition,
+                                        CpuidHandler* cpuidHandler,
+                                        RdtscHandler* rdtscHandler,
+                                        MsrHandler* msrHandler,
+                                        EptExecHook* eptExecHook);
+
+    // Restore from in-memory snapshot
+    bool RestoreInMemory(const std::vector<uint8_t>& snapshotData,
+                         Partition* partition,
+                         CpuidHandler* cpuidHandler,
+                         RdtscHandler* rdtscHandler,
+                         MsrHandler* msrHandler,
+                         EptExecHook* eptExecHook);
+
     // Validate snapshot header
     static bool ValidateHeader(const uint8_t* data, size_t size);
 

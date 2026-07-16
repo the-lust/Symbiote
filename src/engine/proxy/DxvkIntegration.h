@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 class Logger;
 
@@ -25,11 +26,16 @@ public:
     // Check if a given DLL module is a DXVK DLL (should skip proxy interception)
     static bool IsDxvkModule(const std::wstring& moduleName);
 
+    // Detect Vulkan layer paths for forwarding
+    static std::vector<std::wstring> DetectVulkanLayers();
+    static bool IsVulkanLayer(const std::wstring& moduleName);
+
     // DXVK DLL names
     static const wchar_t* kDxvkDlls[];
 
 private:
     Logger* m_logger;
+    std::unordered_set<std::wstring> m_knownLayers;
 
     static const std::wstring kD3d9;
     static const std::wstring kD3d10Core;

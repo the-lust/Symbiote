@@ -1,19 +1,23 @@
 #include "KernelLock.h"
 
-KernelLock::KernelLock()
-    : m_ownerThreadId(0), m_recursionCount(0)
+KernelLock::KernelLock(uint32_t vcpuCount)
+    : m_globalLock(SRWLOCK_INIT)
+    , m_ownerThreadId(0)
+    , m_recursionCount(0)
+    , m_vcpuCount(vcpuCount)
 {
-    InitializeCriticalSection(&m_cs);
+    m_perVcpuLocks.resize(vcpuCount);
+    for (auto& lock : m_perVcpuLocks)
+        InitializeSRWLock(&lock);
 }
 
 KernelLock::~KernelLock()
 {
-    DeleteCriticalSection(&m_cs);
 }
 
 void KernelLock::Lock()
 {
-    EnterCriticalSection(&m_cs);
+    AcquireSRWLockExclusive(&m_globalLock);
     m_ownerThreadId = GetCurrentThreadId();
     m_recursionCount++;
 }
@@ -22,12 +26,12 @@ void KernelLock::Unlock()
 {
     if (m_recursionCount > 0) m_recursionCount--;
     if (m_recursionCount == 0) m_ownerThreadId = 0;
-    LeaveCriticalSection(&m_cs);
+    ReleaseSRWLockExclusive(&m_globalLock);
 }
 
 bool KernelLock::TryLock()
 {
-    if (TryEnterCriticalSection(&m_cs)) {
+    if (TryAcquireSRWLockExclusive(&m_globalLock)) {
         m_ownerThreadId = GetCurrentThreadId();
         m_recursionCount++;
         return true;
@@ -35,8 +39,25 @@ bool KernelLock::TryLock()
     return false;
 }
 
+void KernelLock::LockShared(uint32_t vcpuIndex)
+{
+    if (vcpuIndex >= m_vcpuCount) vcpuIndex = 0;
+    AcquireSRWLockShared(&m_perVcpuLocks[vcpuIndex]);
+}
+
+void KernelLock::UnlockShared(uint32_t vcpuIndex)
+{
+    if (vcpuIndex >= m_vcpuCount) vcpuIndex = 0;
+    ReleaseSRWLockShared(&m_perVcpuLocks[vcpuIndex]);
+}
+
+bool KernelLock::TryLockShared(uint32_t vcpuIndex)
+{
+    if (vcpuIndex >= m_vcpuCount) vcpuIndex = 0;
+    return TryAcquireSRWLockShared(&m_perVcpuLocks[vcpuIndex]) != 0;
+}
+
 bool KernelLock::IsHeldByCurrentThread() const
 {
-    // We can't safely query CRITICAL_SECTION ownership, so track it ourselves
     return m_ownerThreadId == GetCurrentThreadId() && m_recursionCount > 0;
 }

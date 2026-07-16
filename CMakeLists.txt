@@ -105,11 +105,18 @@ set(ENGINE_SOURCES
     src/engine/proxy/ProxyBase.cpp
     src/engine/proxy/SyscallBridge.cpp
     src/engine/proxy/ApiSetResolver.cpp
+    # Backend abstraction
+    src/engine/backend/WhpBackend.cpp
+    src/engine/backend/UnicornBackend.cpp
 )
 if(NOT SYMBIOTE_NO_WHP)
     list(APPEND ENGINE_SOURCES
         # WHP-dependent components (x64 only)
         src/engine/whp/CpuidHandler.cpp
+        src/engine/whp/EptMemoryManager.cpp
+        src/engine/debug/GdbStub.cpp
+        src/engine/ProcessCloner.cpp
+        src/engine/replay/ReplayLogger.cpp
         src/engine/whp/ExceptionHandler.cpp
         src/engine/whp/ExitDispatcher.cpp
         src/engine/whp/EptHook.cpp

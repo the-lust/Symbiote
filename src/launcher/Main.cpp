@@ -36,12 +36,35 @@ static std::wstring BrowseForExe() {
     return L"";
 }
 
+static void ShowUsage()
+{
+    MessageBoxW(NULL,
+        L"Symbiote Launcher\n\n"
+        L"Usage: launcher.exe [options] <target.exe>\n\n"
+        L"Options:\n"
+        L"   explorer, -e              Open file browser to select target\n"
+        L"   debug, -d                 Enable verbose debug logging\n"
+        L"   --target <exe>            Target executable path\n"
+        L"   --args <...>              Arguments passed to target\n"
+        L"   --sandbox <exe>           Run any .exe inside WHP sandbox\n"
+        L"   config=<path>             Path to config.ini (default: ./config/config.ini)\n\n"
+        L"Examples:\n"
+        L"   launcher.exe explorer\n"
+        L"   launcher.exe --sandbox notepad.exe\n"
+        L"   launcher.exe --target C:\\Windows\\System32\\cmd.exe --args /c dir\n"
+        L"   launcher.exe -d --sandbox D:\\games\\mygame.exe\n"
+        L"   launcher.exe --config=custom.ini myapp.exe",
+        L"Symbiote",
+        MB_ICONINFORMATION);
+}
+
 int main(int, char**)
 {
     std::wstring targetExe;
     std::wstring targetArgs;
     bool useExplorer = false;
     bool debugMode = false;
+    bool sandboxMode = false;
 
     int wargc = 0;
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
@@ -52,6 +75,11 @@ int main(int, char**)
                 useExplorer = true;
             } else if (arg == L"--debug" || arg == L"-d" || arg == L"debug") {
                 debugMode = true;
+            } else if (arg == L"--sandbox") {
+                sandboxMode = true;
+                if (i + 1 < wargc) {
+                    targetExe = wargv[++i];
+                }
             } else if (arg == L"--target" && i + 1 < wargc) {
                 targetExe = wargv[++i];
             } else if (arg == L"--args" && i + 1 < wargc) {
@@ -62,6 +90,10 @@ int main(int, char**)
                 i = wargc;
             } else if (arg.find(L"--config") == 0 || arg.find(L"config=") == 0) {
                 i++;
+            } else if (arg == L"--help" || arg == L"-h" || arg == L"/?") {
+                ShowUsage();
+                LocalFree(wargv);
+                return 0;
             } else if (arg[0] != L'-') {
                 if (targetExe.empty()) targetExe = arg;
             }
@@ -74,19 +106,13 @@ int main(int, char**)
             targetExe = BrowseForExe();
             if (targetExe.empty()) return 0;
         } else {
-            MessageBoxW(NULL,
-                L"Usage: launcher.exe [options] <target.exe>\n\n"
-                L"Options:\n"
-                L"   explorer, -e              Open file browser to select target\n"
-                L"   debug, -d                 Enable verbose debug logging\n"
-                L"   --target <exe>            Target executable path\n"
-                L"   --args <...>              Arguments passed to target\n"
-
-                L"   config=<path>             Path to config.ini (default: ./config/config.ini)",
-                L"Symbiote",
-                MB_ICONINFORMATION);
+            ShowUsage();
             return 0;
         }
+    }
+
+    if (sandboxMode) {
+        LogMessage("Sandbox mode: forcing all user-mode hooks + WHP intercept\n");
     }
 
     wchar_t modulePath[MAX_PATH];
@@ -135,29 +161,29 @@ int main(int, char**)
     }
     LogMessage("Engine DLL injected\n");
 
-    // set debug BEFORE init so we get all log output
     if (debugMode) {
         CallRemoteFunction(pi.hProcess, dllPath, "Engine_SetDebug");
         LogMessage("Debug mode enabled\n");
     }
 
-    // init engine (loads WHP, hooks, etc.)
     LogMessage("Calling Engine_Init...\n");
     bool initOk = CallRemoteFunction(pi.hProcess, dllPath, "Engine_Init");
     LogMessage(std::string("Engine_Init: ") + (initOk ? "OK" : "FAILED") + "\n");
 
-    // Allow engine thread to finish initialization before main runs
-    // Wait for engine ready event (created by engine.dll on init complete)
+    if (initOk && sandboxMode) {
+        LogMessage("Setting sandbox mode flag...\n");
+        CallRemoteFunction(pi.hProcess, dllPath, "Engine_SetSandboxMode");
+        LogMessage("Sandbox mode flag set\n");
+    }
+
     HANDLE hEngineReady = OpenEventW(EVENT_ALL_ACCESS, FALSE, L"Symbiote_EngineReady");
     if (hEngineReady) {
         WaitForSingleObject(hEngineReady, 5000);
         CloseHandle(hEngineReady);
     } else {
-        // fallback if event not available
         Sleep(750);
     }
 
-    // Intercept entry point — must happen before ResumeThread
     LogMessage("Calling Engine_InterceptEntryPoint...\n");
     CallRemoteFunction(pi.hProcess, dllPath, "Engine_InterceptEntryPoint");
     LogMessage("Engine_InterceptEntryPoint done\n");
