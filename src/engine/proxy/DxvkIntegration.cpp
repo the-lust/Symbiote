@@ -38,7 +38,6 @@ bool DxvkIntegration::DetectDxvkDlls(const std::wstring& targetExePath)
     fs::path exeDir = fs::path(targetExePath).parent_path();
     if (exeDir.empty()) return false;
 
-    // Check if any DXVK DLLs exist in the target directory
     for (const wchar_t** dll = kDxvkDlls; *dll; dll++) {
         fs::path dllPath = exeDir / *dll;
         if (fs::exists(dllPath)) {
@@ -109,12 +108,8 @@ bool DxvkIntegration::ProtectDxvkDlls(const std::vector<std::wstring>& dxvkDlls)
 {
     if (dxvkDlls.empty()) return true;
 
-    // Set the passthrough flag so proxy hooks skip interception for DXVK modules
     g_dxvkPassthroughActive = true;
 
-    // Ensure all DXVK DLLs are loaded into the process (so they're initialized
-    // before the target starts hooking them). We do this by forcing a LoadLibrary
-    // for each DXVK DLL path.
     for (const auto& dllPath : dxvkDlls) {
         HMODULE hMod = LoadLibraryW(dllPath.c_str());
         if (hMod) {
@@ -141,4 +136,33 @@ bool DxvkIntegration::IsDxvkModule(const std::wstring& moduleName)
         if (lower == *dll) return true;
     }
     return false;
+}
+
+std::vector<std::wstring> DxvkIntegration::DetectVulkanLayers()
+{
+    std::vector<std::wstring> layers;
+    std::wstring searchPaths[] = {
+        L"C:\\Windows\\System32",
+        L"C:\\Windows\\SysWOW64",
+    };
+
+    for (const auto& dir : searchPaths) {
+        if (!fs::exists(dir)) continue;
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            std::wstring name = entry.path().filename().wstring();
+            std::wstring lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+            if (lower.find(L"vk") != std::wstring::npos && lower.find(L".dll") != std::wstring::npos) {
+                layers.push_back(entry.path().wstring());
+            }
+        }
+    }
+    return layers;
+}
+
+bool DxvkIntegration::IsVulkanLayer(const std::wstring& moduleName)
+{
+    std::wstring lower = moduleName;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+    return lower.find(L"vk") != std::wstring::npos && lower.find(L".dll") != std::wstring::npos;
 }

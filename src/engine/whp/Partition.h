@@ -42,6 +42,11 @@ public:
     void FreeGuestMemory(void* ptr);
 
 public:
+    // On-demand mapping — track GPA ranges but defer mapping until page fault
+    bool MapOnDemand(WHV_GUEST_PHYSICAL_ADDRESS guestPa, uint64_t sizeInBytes);
+    bool IsOnDemandRegion(WHV_GUEST_PHYSICAL_ADDRESS guestPa) const;
+    bool MapOnDemandNow(WHV_GUEST_PHYSICAL_ADDRESS guestPa);
+
     // Memory region tracking for snapshot/restore
     struct TrackedMemoryRegion {
         WHV_GUEST_PHYSICAL_ADDRESS gpa;
@@ -64,6 +69,7 @@ private:
     std::vector<GuestMemBlock> m_guestMemory;
     GuestPageTable* m_guestPageTable;
     std::vector<TrackedMemoryRegion> m_trackedRegions;
+    std::vector<std::pair<WHV_GUEST_PHYSICAL_ADDRESS, uint64_t>> m_onDemandRegions;
 
     struct DeferredMap {
         WHV_MAP_GPA_RANGE_FLAGS flags;

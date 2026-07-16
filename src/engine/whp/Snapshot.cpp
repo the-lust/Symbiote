@@ -113,6 +113,108 @@ bool Snapshot::RestoreVcpuRegisters(HANDLE partitionHandle, uint32_t vcpuIndex,
     return true;
 }
 
+// ─── CreateInMemory ───────────────────────────────────────────────────
+
+std::vector<uint8_t> Snapshot::CreateInMemory(Partition* partition,
+                                               CpuidHandler* cpuidHandler,
+                                               RdtscHandler* rdtscHandler,
+                                               MsrHandler* msrHandler,
+                                               EptExecHook* eptExecHook)
+{
+    (void)cpuidHandler;
+    (void)rdtscHandler;
+    (void)msrHandler;
+
+    if (!partition) return {};
+
+    HANDLE hPartition = partition->GetHandle();
+    if (!hPartition) return {};
+
+    uint32_t numVcpus = partition->GetVcpuCount();
+    if (numVcpus == 0) numVcpus = 1;
+
+    size_t totalSize = sizeof(SnapshotHeader);
+    for (uint32_t i = 0; i < numVcpus; i++)
+        totalSize += sizeof(uint32_t) + kNumSnapshotRegisters * sizeof(WHV_REGISTER_VALUE);
+    totalSize += sizeof(uint32_t);
+
+    std::vector<uint8_t> snapshot(totalSize, 0);
+
+    SnapshotHeader* header = (SnapshotHeader*)snapshot.data();
+    memcpy(header->magic, "SYMBIOTE", 8);
+    header->magic[7] = '\0';
+    header->version = kSnapshotVersion;
+    header->numVcpus = numVcpus;
+    header->numMemoryRegions = 0;
+    header->handlerDataSize = 0;
+    header->timestamp = 0;
+    QueryPerformanceCounter((LARGE_INTEGER*)&header->timestamp);
+
+    size_t offset = sizeof(SnapshotHeader);
+    for (uint32_t i = 0; i < numVcpus; i++) {
+        size_t written = SaveVcpuRegisters(hPartition, i,
+            snapshot.data() + offset, snapshot.size() - offset);
+        if (written == 0) return {};
+        offset += written;
+    }
+
+    size_t handlerOffset = offset;
+    offset += sizeof(uint32_t);
+    if (eptExecHook) {
+        eptExecHook->Serialize(snapshot);
+    }
+    uint32_t handlerSize = (uint32_t)(snapshot.size() - offset + sizeof(uint32_t));
+    *(uint32_t*)(snapshot.data() + handlerOffset) = handlerSize;
+    header->handlerDataSize = handlerSize;
+    snapshot.resize(offset);
+
+    m_logger->Trace(LOG_INFO, "Snapshot: in-memory created for %u VCPUs, %zu bytes (no memory copy)",
+        numVcpus, snapshot.size());
+    return snapshot;
+}
+
+// ─── RestoreInMemory ──────────────────────────────────────────────────
+
+bool Snapshot::RestoreInMemory(const std::vector<uint8_t>& snapshotData,
+                                Partition* partition,
+                                CpuidHandler* cpuidHandler,
+                                RdtscHandler* rdtscHandler,
+                                MsrHandler* msrHandler,
+                                EptExecHook* eptExecHook)
+{
+    (void)cpuidHandler;
+    (void)rdtscHandler;
+    (void)msrHandler;
+    if (!ValidateHeader(snapshotData.data(), snapshotData.size())) return false;
+    if (!partition) return false;
+
+    const SnapshotHeader* header = (const SnapshotHeader*)snapshotData.data();
+    size_t offset = sizeof(SnapshotHeader);
+
+    for (uint32_t i = 0; i < header->numVcpus; i++) {
+        if (i < partition->GetVcpuCount()) {
+            size_t regDataSize = snapshotData.size() - offset;
+            RestoreVcpuRegisters(partition->GetHandle(), i,
+                snapshotData.data() + offset, regDataSize);
+        }
+        if (offset + sizeof(uint32_t) <= snapshotData.size()) {
+            uint32_t regCount = *(const uint32_t*)(snapshotData.data() + offset);
+            offset += sizeof(uint32_t) + regCount * sizeof(WHV_REGISTER_VALUE);
+        }
+    }
+
+    if (offset + sizeof(uint32_t) <= snapshotData.size()) {
+        uint32_t handlerSize = *(const uint32_t*)(snapshotData.data() + offset);
+        offset += sizeof(uint32_t);
+        if (handlerSize > 0 && eptExecHook && offset + handlerSize <= snapshotData.size()) {
+            eptExecHook->Deserialize(snapshotData.data() + offset, handlerSize);
+        }
+    }
+
+    m_logger->Trace(LOG_INFO, "Snapshot: in-memory restored from %zu-byte snapshot", snapshotData.size());
+    return true;
+}
+
 // ─── Create ───────────────────────────────────────────────────────────
 
 std::vector<uint8_t> Snapshot::Create(Partition* partition,

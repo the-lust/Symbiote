@@ -39,17 +39,18 @@ bool Partition::Create()
 
 bool Partition::SetupMsrBitmap()
 {
-    // Explicit MSR whitelist — only intercept MSRs we need.
+    // Explicit MSR whitelist — only intercept MSRs we need to spoof.
     // Do NOT set UnhandledMsrs=1 (that causes ALL MSRs to VM-exit, including
     // reserved/invalid ones, where our handler returns 0 instead of injecting #GP).
     // WHP's native MSR handling injects #GP correctly for invalid/reserved MSRs.
+    // MSRs outside the bitmap range (e.g. Hyper-V TLFS 0x40000000) always VM-exit.
     WHV_X64_MSR_EXIT_BITMAP bitmap;
     bitmap.AsUINT64 = 0;
-    bitmap.TscMsrRead = 1;           // Intercept RDTSC/RDTSCP
-    bitmap.TscMsrWrite = 1;          // Intercept WRMSR TSC
-    bitmap.ApicBaseMsrWrite = 1;     // Intercept APIC_BASE writes
-    bitmap.MiscEnableMsrRead = 1;    // Intercept MISC_ENABLE reads
-    bitmap.McUpdatePatchLevelMsrRead = 1; // Intercept BIOS_SIGN_ID reads
+    bitmap.TscMsrRead = 1;                 // 0x10 RDTSC/RDTSCP
+    bitmap.TscMsrWrite = 1;                // 0x10 WRMSR TSC
+    bitmap.ApicBaseMsrWrite = 1;           // 0x1B APIC_BASE writes
+    bitmap.MiscEnableMsrRead = 1;          // 0x1A0 MISC_ENABLE reads
+    bitmap.McUpdatePatchLevelMsrRead = 1;  // 0x8B BIOS_SIGN_ID reads
 
     HRESULT hr = WHvSetPartitionProperty(m_handle,
         WHvPartitionPropertyCodeX64MsrExitBitmap,
@@ -217,6 +218,35 @@ bool Partition::Init()
     m_initialized = true;
     m_logger->Trace(LOG_WHP, "Partition initialized");
     return true;
+}
+
+bool Partition::MapOnDemand(WHV_GUEST_PHYSICAL_ADDRESS guestPa, uint64_t sizeInBytes)
+{
+    m_onDemandRegions.push_back({guestPa, sizeInBytes});
+    m_logger->Trace(LOG_WHP, "On-demand region registered: GPA=0x%llX size=%llu", guestPa, sizeInBytes);
+    return true;
+}
+
+bool Partition::IsOnDemandRegion(WHV_GUEST_PHYSICAL_ADDRESS guestPa) const
+{
+    for (const auto& region : m_onDemandRegions) {
+        if (guestPa >= region.first && guestPa < region.first + region.second)
+            return true;
+    }
+    return false;
+}
+
+bool Partition::MapOnDemandNow(WHV_GUEST_PHYSICAL_ADDRESS guestPa)
+{
+    for (const auto& region : m_onDemandRegions) {
+        if (guestPa >= region.first && guestPa < region.first + region.second) {
+            void* hostVa = VirtualAlloc(NULL, (SIZE_T)region.second, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            if (!hostVa) return false;
+            return MapGpaRange(hostVa, guestPa, region.second,
+                WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+        }
+    }
+    return false;
 }
 
 bool Partition::MapProcessMemory(HANDLE hProcess)
