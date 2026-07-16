@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <cstdint>
+#include <atomic>
 
 enum JitterStrategy {
     JITTER_UNIFORM = 0,
@@ -8,19 +9,30 @@ enum JitterStrategy {
     JITTER_LINEAR = 2,
 };
 
-struct TimingCoordinator {
-    // Shared state for RDTSC→CPUID→RDTSC pattern detection
+class TimingCoordinator {
+public:
+    TimingCoordinator();
+    ~TimingCoordinator();
+
+    // RDTSC→CPUID→RDTSC pattern detection
     uint64_t lastRdtscTime = 0;
     uint64_t lastCpuidTime = 0;
     uint32_t lastCpuidLeaf = 0;
     uint32_t rdtscCpuidRdtscCount = 0;
 
-    // Jitter strategy
+    // Jitter configuration
     JitterStrategy jitterStrategy = JITTER_UNIFORM;
     uint32_t jitterBaseUs = 10;
 
     // Monotonic TSC tracking
     uint64_t monotonicLastTsc = 0;
+
+    // Cross-time-source correlation base
+    uint64_t m_baseQpc = 0;
+    uint64_t m_baseTsc = 0;
+    uint64_t m_baseSysTime = 0;
+    uint64_t m_baseTickCount = 0;
+    uint64_t m_baseTimeGetTime = 0;
 
     void DetectRdtscBeforeCpuid(uint64_t rdtscTime) {
         lastRdtscTime = rdtscTime;
@@ -72,4 +84,13 @@ struct TimingCoordinator {
         monotonicLastTsc = result;
         return result;
     }
+
+    // Cross-time-source correlation: snap all clocks at once
+    void SnapshotBaseClocks();
+    // Get consistent spoofed values across all time sources
+    uint64_t GetConsistentQpc() const;
+    uint64_t GetConsistentTsc() const;
+    uint64_t GetConsistentSysTime() const;
+    uint64_t GetConsistentTickCount() const;
+    uint32_t GetConsistentTimeGetTime() const;
 };

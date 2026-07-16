@@ -55,8 +55,17 @@ bool KuserSync::Initialize(ConfigParser* config)
         m_systemTimeOffset = static_cast<int64_t>(config->GetUint64("kuser", "system_time_offset", 0));
         m_interruptTimeOffset = static_cast<int64_t>(config->GetUint64("kuser", "interrupt_time_offset", 0));
         m_utcBias = config->GetInt("kuser", "utc_bias", -300);
-        m_logger->Trace(LOG_EPT, "KUSER config: sysTimeOff=%lld intTimeOff=%lld utcBias=%d",
-            m_systemTimeOffset, m_interruptTimeOffset, m_utcBias);
+        m_ntMajorVersion = (uint8_t)config->GetInt("kuser", "nt_major_version", 0x0A);
+        m_ntMinorVersion = (uint8_t)config->GetInt("kuser", "nt_minor_version", 0x00);
+        m_buildNumber = (uint16_t)config->GetInt("kuser", "build_number", 19045);
+        m_numberOfPhysicalPages = config->GetUint64("kuser", "number_of_physical_pages", 0x7FF7E);
+        m_suiteMask = (uint32_t)config->GetInt("kuser", "suite_mask", 0x0110);
+        m_productTypeIsValid = (uint8_t)config->GetInt("kuser", "product_type_is_valid", 0x01);
+        m_activeProcessorCount = (uint32_t)config->GetInt("kuser", "active_processor_count", 4);
+        m_nativeProcessorArchitecture = (uint16_t)config->GetInt("kuser", "native_processor_architecture", 0x0009);
+        m_logger->Trace(LOG_EPT, "KUSER config: sysTimeOff=%lld intTimeOff=%lld utcBias=%d build=%d pages=0x%llX suite=0x%04X procCount=%u",
+            m_systemTimeOffset, m_interruptTimeOffset, m_utcBias,
+            m_buildNumber, m_numberOfPhysicalPages, m_suiteMask, m_activeProcessorCount);
     }
 
     return true;
@@ -69,16 +78,20 @@ void KuserSync::ApplyStaticSpoofs()
     // tick count multiplier + initial tick
     *(uint64_t*)(kuser + 0x000) = 0x0FA0000000000000ULL;
 
-    // NtMajorVersion (0x0A = Win 10), NtMinorVerion (0x00), BuildNumber (0x2328 = 9000), CSDverion (0x260-0x264)
-    kuser[0x260] = 0x0A;
-    kuser[0x261] = 0x00;
-    *(uint16_t*)(kuser + 0x262) = 0x2328; // BuildNumber
-    kuser[0x264] = 0x00;
-    // SuiteMask, ProductType (0x268-0x26E)
-    *(uint16_t*)(kuser + 0x268) = 0x0001; // SuiteMask low
-    *(uint16_t*)(kuser + 0x26A) = 0x0009; // SuiteMask high
-    *(uint16_t*)(kuser + 0x26C) = 0x000A; // ProductType + flags
-    // ProcessorFeatures - broad feature set claim
+    // NtMajorVersion (0x260), NtMinorVersion (0x261), BuildNumber (0x262-0x263)
+    kuser[0x260] = m_ntMajorVersion;
+    kuser[0x261] = m_ntMinorVersion;
+    *(uint16_t*)(kuser + 0x262) = m_buildNumber;
+    kuser[0x264] = 0x00; // CSDVersion
+    // NativeProcessorArchitecture (0x26A-0x26B = USHORT)
+    *(uint16_t*)(kuser + 0x26A) = m_nativeProcessorArchitecture;
+    // ProductTypeIsValid (0x268 byte, 0x269-0x26B reserved)
+    kuser[0x268] = m_productTypeIsValid;
+    // SuiteMask (0x26C = ULONG) - bits 0-1: Personal=0x0200, Professional=0x0110
+    *(uint32_t*)(kuser + 0x26C) = m_suiteMask;
+
+    // ProcessorFeatures - comprehensive feature bitmask matching i7-4510U
+    // Layout: 64 bytes starting at 0x270, first half at 0x270, second half at 0x2B0
     *(uint64_t*)(kuser + 0x270) = 0x00ULL;
     *(uint64_t*)(kuser + 0x272) = 0x010100000000ULL;
     *(uint64_t*)(kuser + 0x273) = 0x0100000101000000ULL;
@@ -86,26 +99,26 @@ void KuserSync::ApplyStaticSpoofs()
     *(uint64_t*)(kuser + 0x282) = 0x0101000001000001ULL;
     *(uint64_t*)(kuser + 0x283) = 0x0101010000010000ULL;
     *(uint32_t*)(kuser + 0x288) = 0x01010101;
-    // more processor features
     *(uint32_t*)(kuser + 0x290) = 0x01010101;
     *(uint64_t*)(kuser + 0x294) = 0x0101010101010101ULL;
     *(uint64_t*)(kuser + 0x29C) = 0x0101010101010101ULL;
     *(uint64_t*)(kuser + 0x2A4) = 0x0001010101010101ULL;
     *(uint32_t*)(kuser + 0x2AC) = 0x01010101;
-    // reserved/extension bits
+    // Second half of ProcessorFeatures (0x2B0-0x2CF)
     *(uint64_t*)(kuser + 0x2B0) = 0x0000000000000000ULL;
     *(uint64_t*)(kuser + 0x2B8) = 0x0000000000000000ULL;
     *(uint64_t*)(kuser + 0x2C0) = 0x0000000000000000ULL;
     *(uint64_t*)(kuser + 0x2C8) = 0x0000000000000000ULL;
 
-    // SuiteMask @ 0x2D0 (ULONG) — i9-10900K workstation token low 32 bits
-    *(uint32_t*)(kuser + 0x2D0) = 0x00000110;
-    // KdDebuggerEnabled @ 0x2D4 — bit 1 = KdDebuggerNotPresent
+    // NumberOfPhysicalPages @ 0x2D8 (SIZE_T) — must match host RAM
+    *(uint64_t*)(kuser + 0x2D8) = m_numberOfPhysicalPages;
+
+    // KdDebuggerEnabled @ 0x2D4 — bit
     kuser[0x2D4] = 0x02;
     kuser[0x2D5] = 0x01;
-    // ProductType: Workstation (0x2E8)
-    kuser[0x2E8] = 0x01;
-    // SystemExpirationDate: none (0x2F0)
+    // ActiveProcessorCount @ 0x2E8 (actually at 0x3C0 in Win10+)
+    *(volatile uint32_t*)(kuser + 0x3C0) = m_activeProcessorCount;
+    // SystemExpirationDate: none (0x2F0-0x2FF)
     *(uint64_t*)(kuser + 0x2f0) = 0x0ULL;
     *(uint64_t*)(kuser + 0x2f4) = 0x0ULL;
     // DualFact and Debug flags (0x300-0x310)
@@ -132,7 +145,6 @@ void KuserSync::ApplyStaticSpoofs()
     *(uint64_t*)(kuser + 0x3F0) = 0x0000000000000000ULL;
     *(uint64_t*)(kuser + 0x3F8) = 0x0000000000000000ULL;
 
-    // printf("kuser static spoofs applied\n");
     m_logger->Trace(LOG_EPT, "KUSER static spoofs applied (full page)");
 }
 
@@ -177,6 +189,9 @@ void KuserSync::SyncTimeFields()
 
     // QPC value
     *(volatile uint64_t*)(spoofed + 0x370) = qpc.QuadPart;
+
+    // ActiveProcessorCount - dynamically updated on each sync
+    *(volatile uint32_t*)(spoofed + 0x3C0) = m_activeProcessorCount;
 
     // ACPI thermal zone and power management info - passthrough from host
     *(volatile uint32_t*)(spoofed + 0x3A0) = *(volatile uint32_t*)(realKuser + 0x3A0);

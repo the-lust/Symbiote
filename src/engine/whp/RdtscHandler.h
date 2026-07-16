@@ -24,6 +24,33 @@ public:
     void SetNoiseEnabled(bool enabled) { m_noiseEnabled = enabled; }
     void SetNoiseAmplitude(uint32_t amplitude) { m_noiseAmplitude = amplitude; }
 
+    // VCPU-aware: set RCX based on which VCPU is running
+    void SetCurrentVpIndex(uint32_t idx) { m_vpIndex = idx; }
+
+    // Leaf-specific TSC cycle costs for bare-metal CPUID leaves
+    static constexpr uint64_t CplLeafCost(uint32_t leaf) {
+        switch (leaf) {
+            case 0x00: return 80;   // vendor string
+            case 0x01: return 120;  // feature bits
+            case 0x02: return 600;  // cache/TLB descriptors
+            case 0x03: return 80;   // serial number
+            case 0x04: return 350;  // cache params (multi-subleaf)
+            case 0x05: return 100;  // MONITOR/MWAIT
+            case 0x06: return 100;  // thermal/power
+            case 0x07: return 150;  // extended features
+            case 0x0A: return 120;  // PMU version
+            case 0x0B: return 200;  // topology
+            case 0x0D: return 400;  // xsave (multi-subleaf)
+            case 0x80000000: return 80;
+            case 0x80000001: return 120;
+            case 0x80000002: case 0x80000003: case 0x80000004: return 250;
+            case 0x80000006: return 100;
+            case 0x80000007: return 80;
+            case 0x80000008: return 80;
+            default: return 100;
+        }
+    }
+
 private:
     Logger* m_logger;
     IKernelBackend* m_backend;
@@ -35,6 +62,7 @@ private:
     uint64_t m_lastPreExitTsc = 0;
     bool m_noiseEnabled;
     uint32_t m_noiseAmplitude;
+    uint32_t m_vpIndex = 0;
 
     uint32_t LcgNext(uint32_t seed);
     uint64_t AddTimingNoise(uint64_t tsc);

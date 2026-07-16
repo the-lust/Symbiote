@@ -23,6 +23,8 @@
 #include "whp/TimingCoordinator.h"
 #include "whp/Canary.h"
 #include "whp/SystemSpoofer.h"
+#include "whp/WatchdogTracker.h"
+#include "whp/EptSplitView.h"
 #include "whp/GuestPageTable.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
@@ -59,6 +61,8 @@ static KernelBackend* g_kernelBackend = nullptr;
 static SystemSpoofer* g_systemSpoofer = nullptr;
 extern GpuBridge* g_gpuBridge;
 static ThreadScheduler* g_threadScheduler = nullptr;
+static WatchdogTracker* g_watchdogTracker = nullptr;
+static EptSplitView* g_eptSplitView = nullptr;
 
 static HANDLE g_engineReadyEvent = nullptr;
 static HANDLE g_engineActiveEvent = nullptr;
@@ -167,6 +171,8 @@ static void CleanupAll()
     delete g_threadScheduler; g_threadScheduler = nullptr;
     delete g_gpuBridge; g_gpuBridge = nullptr;
     delete g_canary; g_canary = nullptr;
+    delete g_watchdogTracker; g_watchdogTracker = nullptr;
+    delete g_eptSplitView; g_eptSplitView = nullptr;
     delete g_captureLogger; g_captureLogger = nullptr;
 }
 
@@ -510,6 +516,36 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         // EPT-based execution hook single-step system (replaces AllocTracker VEH)
         g_eptExecHook = new EptExecHook(&g_logger, g_partition);
         g_vcpuManager->SetEptExecHook(g_eptExecHook);
+
+        // P0.3: Denuvo threaded integrity watchdog detection via EPT exec hooks
+        bool watchdogEnabled = configParser.GetBool("watchdog", "enabled", true);
+        if (watchdogEnabled) {
+            g_watchdogTracker = new WatchdogTracker(&g_logger, g_partition, g_eptExecHook);
+            if (g_watchdogTracker->Initialize()) {
+                g_logger.Trace(LOG_INFO, "WatchdogTracker initialized");
+            } else {
+                g_logger.Trace(LOG_WARNING, "WatchdogTracker failed to initialize");
+                delete g_watchdogTracker;
+                g_watchdogTracker = nullptr;
+            }
+        } else {
+            g_logger.Trace(LOG_INFO, "WatchdogTracker disabled by config");
+        }
+
+        // P2.10: EPT split-view for per-VCPU process cloaking
+        bool splitViewEnabled = configParser.GetBool("ept_split_view", "enabled", true);
+        if (splitViewEnabled) {
+            g_eptSplitView = new EptSplitView(&g_logger, g_partition);
+            if (g_eptSplitView->Initialize()) {
+                g_logger.Trace(LOG_INFO, "EptSplitView initialized");
+            } else {
+                g_logger.Trace(LOG_WARNING, "EptSplitView failed to initialize");
+                delete g_eptSplitView;
+                g_eptSplitView = nullptr;
+            }
+        } else {
+            g_logger.Trace(LOG_INFO, "EptSplitView disabled by config");
+        }
 
         if (g_kuserSync->Initialize(&configParser)) {
             g_logger.Trace(LOG_INFO, "KUSER_SHARED_DATA spoofing initialized");
