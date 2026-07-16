@@ -5,6 +5,7 @@
 #include "CpuidHandler.h"
 #include "SystemSpoofer.h"
 #include "SyscallDispatch.h"
+#include "EptExecHook.h"
 #include <unordered_map>
 
 class Partition;
@@ -48,6 +49,10 @@ public:
 
     // Multi-VCPU child thread migration
     void SetChildThreadMigrationEnabled(bool enabled) { m_childThreadMigrationEnabled = enabled; }
+
+    // EPT-based execution hooks (single-step mechanism)
+    void SetEptExecHook(EptExecHook* hook) { m_eptExecHook = hook; }
+    EptExecHook* GetEptExecHook() const { return m_eptExecHook; }
 
     // Singleton access for ThreadBootstrapEntry (static thread proc)
     static VcpuManager* GetInstance() { return s_instance; }
@@ -107,6 +112,7 @@ private:
     SyscallHandler* m_syscallHandler;
     ExceptionHandler* m_exceptionHandler;
     SyscallDispatch m_syscallDispatch;
+    EptExecHook* m_eptExecHook = nullptr;
 
     struct VcpuContext {
         WHV_RUN_VP_EXIT_CONTEXT exitCtx;

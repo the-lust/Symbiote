@@ -13,6 +13,7 @@
 #include "whp/RdtscHandler.h"
 #include "whp/MsrHandler.h"
 #include "whp/EptHook.h"
+#include "whp/EptExecHook.h"
 #include "whp/KuserSync.h"
 #include "whp/KuserHook.h"
 #include "whp/MagicCpuid.h"
@@ -43,6 +44,7 @@ static CpuidHandler* g_cpuidHandler = nullptr;
 static RdtscHandler* g_rdtscHandler = nullptr;
 static MsrHandler* g_msrHandler = nullptr;
 static EptHook* g_eptHook = nullptr;
+static EptExecHook* g_eptExecHook = nullptr;
 static KuserSync* g_kuserSync = nullptr;
 static MagicCpuid* g_magicCpuid = nullptr;
 static GpuProfile* g_gpuProfile = nullptr;
@@ -145,6 +147,7 @@ static void CleanupAll()
     delete g_minimalKernel; g_minimalKernel = nullptr;
     delete g_kuserSync; g_kuserSync = nullptr;
     delete g_eptHook; g_eptHook = nullptr;
+    delete g_eptExecHook; g_eptExecHook = nullptr;
     delete g_exitDispatcher; g_exitDispatcher = nullptr;
     delete g_magicCpuid; g_magicCpuid = nullptr;
     delete g_msrHandler; g_msrHandler = nullptr;
@@ -503,6 +506,10 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         // install kernel memory hooks via WHP
         g_eptHook->InstallKernelMemoryHooks();
         g_eptHook->InstallMsrBitmapHook();
+
+        // EPT-based execution hook single-step system (replaces AllocTracker VEH)
+        g_eptExecHook = new EptExecHook(&g_logger, g_partition);
+        g_vcpuManager->SetEptExecHook(g_eptExecHook);
 
         if (g_kuserSync->Initialize(&configParser)) {
             g_logger.Trace(LOG_INFO, "KUSER_SHARED_DATA spoofing initialized");

@@ -250,13 +250,13 @@ bool GuestPageTable::MapDynamicPage(uint64_t va, bool)
         SetPte(pte, (WHV_GUEST_PHYSICAL_ADDRESS)pageBase, true, writable, executable);
     }
 
-    // Map in EPT
+    // Map in EPT via deferred coalescing wrapper
     WHV_MAP_GPA_RANGE_FLAGS flags = WHvMapGpaRangeFlagRead;
     if (writable) flags = (WHV_MAP_GPA_RANGE_FLAGS)(flags | WHvMapGpaRangeFlagWrite);
     if (executable) flags = (WHV_MAP_GPA_RANGE_FLAGS)(flags | WHvMapGpaRangeFlagExecute);
 
-    if (!m_partition->MapGpaRange((void*)pageBase, (WHV_GUEST_PHYSICAL_ADDRESS)pageBase, 0x1000, flags)) {
-        GPT_ERR("MapDynamicPage: failed to EPT-map VA 0x%llX", pageBase);
+    if (!m_partition->MapGpaRangeDeferred((void*)pageBase, (WHV_GUEST_PHYSICAL_ADDRESS)pageBase, 0x1000, flags)) {
+        GPT_ERR("MapDynamicPage: failed to defer EPT-map VA 0x%llX", pageBase);
         return false;
     }
 

@@ -1,0 +1,294 @@
+; =============================================================================
+; Symbiote Config — TEST PROFILE (LUST: Dell Inspiron 3542, i7-4510U)
+; =============================================================================
+; All status=1 means spoofing enabled.
+; Set status=0 to passthrough to real hardware for debugging.
+; =============================================================================
+
+; ─── CPUID Spoofing ──────────────────────────────────────────────────────
+[cpuid]
+status = 1
+
+[cpuid.basic]
+status = 1
+vendor = GenuineIntel
+max_leaf = 0xD
+max_ext_leaf = 0x80000008
+family = 6
+model = 69
+stepping = 1
+signature = 0x00040651
+
+leaf_0x0_eax = 0x0000000D
+leaf_0x0_ebx = 0x756E6547   ; "Genu"
+leaf_0x0_ecx = 0x6C65746E   ; "ineI"
+leaf_0x0_edx = 0x49656E69   ; "ntel"
+
+leaf_0x1_eax = 0x00040651
+leaf_0x1_ebx = 0x00100800
+leaf_0x1_ecx = 0x7FDAFBBF
+leaf_0x1_edx = 0xBFEBFBFF
+
+; Brand string for leaves 0x80000002-0x80000004
+brand_string = Intel(R) Core(TM) i7-4510U CPU @ 2.00GHz
+
+[cpuid.leaf_2]
+status = 1
+leaf_0x2_eax = 0x76036301
+leaf_0x2_ebx = 0x00F0B5FF
+leaf_0x2_ecx = 0x00000000
+leaf_0x2_edx = 0x00C10000
+
+[cpuid.leaf_4]
+status = 1
+leaf_0x4_sub0_eax = 0x1C004121
+leaf_0x4_sub0_ebx = 0x01C0003F
+leaf_0x4_sub0_ecx = 0x0000003F
+leaf_0x4_sub0_edx = 0x00000000
+leaf_0x4_sub1_eax = 0x1C004122
+leaf_0x4_sub1_ebx = 0x01C0003F
+leaf_0x4_sub1_ecx = 0x0000003F
+leaf_0x4_sub1_edx = 0x00000000
+leaf_0x4_sub2_eax = 0x1C004143
+leaf_0x4_sub2_ebx = 0x01C0003F
+leaf_0x4_sub2_ecx = 0x000001FF
+leaf_0x4_sub2_edx = 0x00000000
+leaf_0x4_sub3_eax = 0x1C03C163
+leaf_0x4_sub3_ebx = 0x03C0003F
+leaf_0x4_sub3_ecx = 0x00000FFF
+leaf_0x4_sub3_edx = 0x00000006
+
+[cpuid.leaf_5]
+status = 1
+leaf_0x5_eax = 0x00000040
+leaf_0x5_ebx = 0x00000040
+leaf_0x5_ecx = 0x00000003
+leaf_0x5_edx = 0x11142120
+
+[cpuid.leaf_6]
+status = 1
+leaf_0x6_eax = 0x00000077
+leaf_0x6_ebx = 0x00000002
+leaf_0x6_ecx = 0x00000009
+leaf_0x6_edx = 0x00000000
+
+[cpuid.leaf_7]
+status = 1
+leaf_0x7_sub0_eax = 0x00000000
+leaf_0x7_sub0_ebx = 0x000027AB
+leaf_0x7_sub0_ecx = 0x00000000
+leaf_0x7_sub0_edx = 0x9C000400
+
+[cpuid.leaf_A]
+status = 1
+leaf_0xA_eax = 0x07300403
+leaf_0xA_ebx = 0x00000000
+leaf_0xA_ecx = 0x00000000
+leaf_0xA_edx = 0x00000603
+
+[cpuid.leaf_B]
+status = 1
+leaf_0xB_sub0_eax = 0x00000001
+leaf_0xB_sub0_ebx = 0x00000002
+leaf_0xB_sub0_ecx = 0x00000100
+leaf_0xB_sub0_edx = 0x00000002
+leaf_0xB_sub1_eax = 0x00000004
+leaf_0xB_sub1_ebx = 0x00000004
+leaf_0xB_sub1_ecx = 0x00000201
+leaf_0xB_sub1_edx = 0x00000002
+
+[cpuid.leaf_D]
+status = 1
+leaf_0xD_sub0_eax = 0x00000007
+leaf_0xD_sub0_ebx = 0x00000340
+leaf_0xD_sub0_ecx = 0x00000340
+leaf_0xD_sub0_edx = 0x00000000
+leaf_0xD_sub1_eax = 0x00000001
+leaf_0xD_sub1_ebx = 0x00000000
+leaf_0xD_sub1_ecx = 0x00000000
+leaf_0xD_sub1_edx = 0x00000000
+leaf_0xD_sub2_eax = 0x00000100
+leaf_0xD_sub2_ebx = 0x00000240
+leaf_0xD_sub2_ecx = 0x00000000
+leaf_0xD_sub2_edx = 0x00000000
+
+[cpuid.ext]
+status = 1
+leaf_0x80000000_eax = 0x80000008
+leaf_0x80000000_ebx = 0x00000000
+leaf_0x80000000_ecx = 0x00000000
+leaf_0x80000000_edx = 0x00000000
+leaf_0x80000001_eax = 0x00000000
+leaf_0x80000001_ebx = 0x00000000
+leaf_0x80000001_ecx = 0x00000021
+leaf_0x80000001_edx = 0x2C100800
+leaf_0x80000006_eax = 0x00000000
+leaf_0x80000006_ebx = 0x00000000
+leaf_0x80000006_ecx = 0x01006040
+leaf_0x80000006_edx = 0x00000000
+leaf_0x80000007_eax = 0x00000000
+leaf_0x80000007_ebx = 0x00000000
+leaf_0x80000007_ecx = 0x00000000
+leaf_0x80000007_edx = 0x00000100
+leaf_0x80000008_eax = 0x00003027
+leaf_0x80000008_ebx = 0x00000000
+leaf_0x80000008_ecx = 0x00000000
+leaf_0x80000008_edx = 0x00000000
+
+; ─── RDTSC Spoofing ──────────────────────────────────────────────────────
+[rdtsc]
+status = 1
+
+; ─── MSR Spoofing ────────────────────────────────────────────────────────
+[msr]
+status = 1
+ia32_tsc                 = 0x000004251F0D481C
+ia32_platform_id         = 0x0018000000000000
+ia32_apic_base           = 0x00000000FEE00900
+ia32_feature_control     = 0x0000000000000005
+ia32_bios_sign_id        = 0x0000002500000000
+ia32_platform_info       = 0x0008083DF3011400
+ia32_mtrr_cap            = 0x0000000000000D0A
+ia32_sysenter_cs         = 0x0000000000000000
+ia32_sysenter_esp        = 0x0000000000000000
+ia32_sysenter_eip        = 0x0000000000000000
+ia32_mcg_cap             = 0x0000000000000C07
+ia32_mcg_status          = 0x0000000000000000
+ia32_perf_status         = 0x00001CEE00001C00
+ia32_perf_ctrl           = 0x0000000000001400
+ia32_misc_enable         = 0x0000000000850089
+ia32_therm_status        = 0x00000000881E0808
+ia32_debugctl            = 0x0000000000000000
+ia32_mtrr_def_type       = 0x0000000000000C00
+vmx_basic                = 0x00DA040000000012
+vmx_pinbased_ctls        = 0x0000007F00000016
+vmx_procbased_ctls       = 0xFFF9FFFE0401E172
+vmx_exit_ctls            = 0x007FFFFF00036DFF
+vmx_entry_ctls           = 0x0000FFFF000011FF
+vmx_misc                 = 0x00000000300481E5
+vmx_cr0_fixed0           = 0x0000000080000021
+vmx_cr0_fixed1           = 0x00000000FFFFFFFF
+vmx_cr4_fixed0           = 0x0000000000002000
+vmx_cr4_fixed1           = 0x00000000001727FF
+vmx_vmcs_enum            = 0x000000000000002A
+vmx_procbased_ctls2      = 0x00003CFF00000000
+vmx_ept_vpid_cap         = 0x00000F0106334141
+vmx_true_pinbased_ctls   = 0x0000007F00000016
+vmx_true_procbased_ctls  = 0xFFF9FFFE04006172
+vmx_true_exit_ctls       = 0x007FFFFF00036DFB
+vmx_true_entry_ctls      = 0x0000FFFF000011FB
+vmx_vmfunc               = 0x0000000000000001
+ia32_ds_area             = 0xFFFFC00083873000
+ia32_efer                = 0x0000000000000D01
+ia32_star                = 0x0023001000000000
+ia32_lstar               = 0xFFFFF80360211C00
+ia32_cstar               = 0xFFFFF80360211700
+ia32_fmask               = 0x0000000000004700
+fs_base                  = 0x0000000000000000
+gs_base                  = 0xFFFFF8035CEF1000
+kernel_gs_base           = 0x0000000F8098C000
+
+; ─── KUSER_SHARED_DATA Spoofing ─────────────────────────────────────────
+[kuser]
+status = 1
+system_time_offset = 10000000
+interrupt_time_offset = 5000000
+utc_bias = -330
+tick_count = 0x83000100000004
+build_number = 19045
+
+; ─── GPU Spoofing ────────────────────────────────────────────────────────
+[gpu]
+status = 1
+
+; Intel HD Graphics 4400 (Haswell GT2)
+gpu0_vendor_id = 0x8086
+gpu0_device_id = 0x0A16
+gpu0_subsystem_id = 0x06531028
+gpu0_revision_id = 0x0B
+gpu0_name = Intel(R) HD Graphics Family
+gpu0_driver_version = 20.19.15.4531
+gpu0_adapter_ram = 1073741824
+
+; NVIDIA GeForce 840M
+gpu1_vendor_id = 0x10DE
+gpu1_device_id = 0x1341
+gpu1_subsystem_id = 0x06531028
+gpu1_revision_id = 0xA2
+gpu1_name = NVIDIA GeForce 840M
+gpu1_driver_version = 10.18.13.5362
+gpu1_adapter_ram = 2147483648
+
+; ─── Timing Spoofing ─────────────────────────────────────────────────────
+[timing]
+status = 1
+tsc_frequency = 1995375200
+tsc_offset = 0x0
+apic_frequency = 100000000
+tsc_noise = 100
+qpc_frequency = 10000000
+
+; ─── Process Info Spoofing ───────────────────────────────────────────────
+[process]
+status = 1
+processor_count = 4
+processor_affinity_mask = 0xF
+
+; ─── Registry Spoofing ───────────────────────────────────────────────────
+[registry]
+status = 1
+
+; ─── File System Spoofing ────────────────────────────────────────────────
+[file]
+status = 1
+
+; ─── Thread Spoofing ─────────────────────────────────────────────────────
+[thread]
+status = 1
+
+; ─── Module Cloaking ─────────────────────────────────────────────────────
+[module_cloak]
+status = 1
+
+; ─── Token Spoofing ──────────────────────────────────────────────────────
+[token]
+status = 1
+
+; ─── System / Hardware Info ──────────────────────────────────────────────
+[hardware]
+manufacturer = Dell Inc.
+product = Inspiron 3542
+version = Not Specified
+bios_vendor = Dell Inc.
+bios_version = A03
+bios_date = 05/27/2014
+bios_major = 0
+bios_minor = 3
+baseboard_manufacturer = Dell Inc.
+baseboard_product = 0WW73H
+baseboard_version = A03
+chassis_serial = 5RSJB12
+system_uuid = {4C4C4544-0052-5310-804A-B5C04F423132}
+
+[storage]
+disk0_model = CT500BX500SSD1
+disk0_serial = 2324E6E428AC
+disk0_size = 500105249280
+disk1_model = ST1000LM024 HN-M101MBB
+disk1_serial = S314J90F795108
+disk1_size = 1000202273280
+
+[network]
+adapter0_mac = B8:2A:72:C9:38:7E
+adapter1_mac = 00:15:5D:73:9A:FA
+
+; ─── Virtual Machine (WHP Partition) ─────────────────────────────────────
+[vm]
+memory_size_mb = 512
+cpu_count = 2
+
+; ─── Target (Game) ───────────────────────────────────────────────────────
+[target]
+path = D:\Steam\steamapps\common\Hatsune Miku Project DIVA Mega Mix Plus\DivaMegaMix.exe
+arguments =
+wait_for_debugger = false
