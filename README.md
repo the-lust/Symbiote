@@ -9,72 +9,72 @@ Symbiote is a research hypervisor that runs a target process inside a Hyper-V VC
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Host Process                         │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │  engine.dll                                           │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐ │  │
-│  │  │WhpBackend│  │Unicorn   │  │ICpuBackend (abstract)│ │  │
-│  │  │(primary) │  │Backend   │  │(fallback)            │ │  │
-│  │  └────┬─────┘  │(fallback)│  └──────────────────────┘ │  │
-│  │       │        └──────────┘                           │  │
-│  │  ┌────┴─────────────────────────────────────────────┐ │  │
-│  │  │  WHP Partition                                   │ │  │
-│  │  │  ┌────────────────┐  ┌─────────────────────────┐ │ │  │
-│  │  │  │  EptMemoryMgr  │  │  GuestPageTable         │ │  │ │
-│  │  │  │  (on-demand    │  │  (4-level identity-map) │ │  │ │
-│  │  │  │   EPT paging)  │  └─────────────────────────┘ │  │ │
-│  │  │  └────────────────┘                              │  │ │
-│  │  │  ┌────────────────┐  ┌─────────────────────────┐ │  │ │
-│  │  │  │  VcpuManager   │  │  WhpHiding              │ │  │ │
-│  │  │  │  (LSTAR→HLT    │  │  (13+ detection vectors │ │  │ │
-│  │  │  │   syscall      │  │   countermeasures)      │ │  │ │
-│  │  │  │   intercept)   │  └─────────────────────────┘ │  │ │
-│  │  │  └───────┬───────┘                               │  │ │
-│  │  │          │ Dispatch                              │  │ │
-│  │  │  ┌───────┴─────────────────────────────────────┐ │  │ │
-│  │  │  │  ExitDispatcher                             │ │  │ │
-│  │  │  │  ┌──────────┐ ┌──────────┐ ┌──────────────┐ │ │  │ │
-│  │  │  │  │CpuidHdlr │ │MsrHandler│ │RdtscHandler  │ │ │  │ │
-│  │  │  │  │(mask+    │ │(spoof+   │ │(consistent   │ │ │  │ │
-│  │  │  │  │ spoof)   │ │ hide)    │ │ TSC)         │ │ │  │ │
-│  │  │  │  └──────────┘ └──────────┘ └──────────────┘ │ │  │ │
-│  │  │  │  ┌──────────┐ ┌──────────┐ ┌──────────────┐ │ │  │ │
-│  │  │  │  │EptExec   │ │System    │ │Exception     │ │ │  │ │
-│  │  │  │  │Hook      │ │Spoofer   │ │Handler       │ │ │  │ │
-│  │  │  │  └──────────┘ └──────────┘ └──────────────┘ │ │  │ │
-│  │  │  └─────────────────────────────────────────────┘ │  │ │
-│  │  │  ┌─────────────────────────────────────────────┐ │  │ │
-│  │  │  │  ProcessCloner (WinVisor process migration) │ │  │ │
-│  │  │  │  Snapshot (sub-ms VCPU state save/restore)  │ │  │ │
-│  │  │  │  ReplayLogger (deterministic record/replay) │ │  │ │
-│  │  │  │  GdbStub (remote debug over TCP :1234)      │ │  │ │
-│  │  │  └─────────────────────────────────────────────┘ │  │ │
-│  │  └────────────────────────────────────────────────┘ │  │ |
-│  │                                                     │  │ |
-│  │  ┌───────────────────────────────────────────────┐  │  │ |
-│  │  │  MinimalKernel — unified syscall dispatcher   │  │  │ |
-│  │  │  (ProcessEmu, MemoryEmu, FileEmu, RegistryEmu │  │  │ |
-│  │  │   TimingEmu, CryptoEmu, ThreadManager, ...)   │  │  │ |
-│  │  └───────────────────────────────────────────────┘  │  │ |
-│  │                                                     │  │ |
-│  │  ┌───────────────────────────────────────────────┐  │  │ |
-│  │  │  Proxy DLLs (13) — IAT/EAT hooks: ntdll.dll,  │  │  │ |
-│  │  │  kernel32.dll, kernelbase.dll, advapi32.dll,  │  │  │ |
-│  │  │  user32.dll, wbem.dll, wtsapi32.dll,          │  │  │ |
-│  │  │  secur32.dll, crypt32.dll, winhttp.dll,       │  │  │ |
-│  │  │  dnsapi.dll, iphlpapi.dll, ws2_32.dll         │  │  │ |
-│  │  └───────────────────────────────────────────────┘  │  │ |
-│  │                                                     │  │ |
-│  │  ┌───────────────────────────────────────────────┐  │  │ |
-│  │  │  GpuBridge → ForwardVulkanIcd — real Vulkan   │  │  │ |
-│  │  │  ICD passthrough via VK_ICD_FILENAMES         │  │  │ |
-│  │  └───────────────────────────────────────────────┘  │  │ |
-│  └────────────────────────────────────────────────────────┘ │
-│                                                             │
-│  launcher.exe — CLI, injects engine.dll into target,        │
-│  calls Engine_Init, intercepts entry point                  │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                        Host Process                        │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │  engine.dll                                           │ │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐ │ │
+│  │  │WhpBackend│  │Unicorn   │  │ICpuBackend (abstract)│ │ │
+│  │  │(primary) │  │Backend   │  │(fallback)            │ │ │
+│  │  └────┬─────┘  │(fallback)│  └──────────────────────┘ │ │
+│  │       │        └──────────┘                           │ │
+│  │  ┌────┴───────────────────────────────────────────────┐ │
+│  │  │  WHP Partition                                     │ │
+│  │  │  ┌────────────────┐  ┌─────────────────────────┐   │ │
+│  │  │  │  EptMemoryMgr  │  │  GuestPageTable         │   │ │
+│  │  │  │  (on-demand    │  │  (4-level identity-map) │   │ │
+│  │  │  │   EPT paging)  │  └─────────────────────────┘   │ │
+│  │  │  └────────────────┘                                │ │
+│  │  │  ┌────────────────┐  ┌─────────────────────────┐   │ │
+│  │  │  │  VcpuManager   │  │  WhpHiding              │   │ │
+│  │  │  │  (LSTAR→HLT    │  │  (13+ detection vectors │   │ │
+│  │  │  │   syscall      │  │   countermeasures)      │   │ │
+│  │  │  │   intercept)   │  └─────────────────────────┘   │ │
+│  │  │  └───────┬───────┘                                 │ │
+│  │  │          │ Dispatch                                │ │
+│  │  │  ┌───────┴─────────────────────────────────────┐   │ │
+│  │  │  │  ExitDispatcher                             │   │ │
+│  │  │  │  ┌──────────┐ ┌──────────┐ ┌──────────────┐ │   │ │
+│  │  │  │  │CpuidHdlr │ │MsrHandler│ │RdtscHandler  │ │   │ │
+│  │  │  │  │(mask+    │ │(spoof+   │ │(consistent   │ │   │ │
+│  │  │  │  │ spoof)   │ │ hide)    │ │ TSC)         │ │   │ │
+│  │  │  │  └──────────┘ └──────────┘ └──────────────┘ │   │ │
+│  │  │  │  ┌──────────┐ ┌──────────┐ ┌──────────────┐ │   │ │
+│  │  │  │  │EptExec   │ │System    │ │Exception     │ │   │ │
+│  │  │  │  │Hook      │ │Spoofer   │ │Handler       │ │   │ │
+│  │  │  │  └──────────┘ └──────────┘ └──────────────┘ │   │ │
+│  │  │  └─────────────────────────────────────────────┘   │ │
+│  │  │  ┌─────────────────────────────────────────────┐   │ │
+│  │  │  │  ProcessCloner (WinVisor process migration) │   │ │
+│  │  │  │  Snapshot (sub-ms VCPU state save/restore)  │   │ │
+│  │  │  │  ReplayLogger (deterministic record/replay) │   │ │
+│  │  │  │  GdbStub (remote debug over TCP :1234)      │   │ │
+│  │  │  └─────────────────────────────────────────────┘   │ │
+│  │  └────────────────────────────────────────────────┘   │ |
+│  │                                                       │ |
+│  │  ┌───────────────────────────────────────────────┐    │ |
+│  │  │  MinimalKernel — unified syscall dispatcher   │    │ |
+│  │  │  (ProcessEmu, MemoryEmu, FileEmu, RegistryEmu │    │ |
+│  │  │   TimingEmu, CryptoEmu, ThreadManager, ...)   │    │ |
+│  │  └───────────────────────────────────────────────┘    │ |
+│  │                                                       │ |
+│  │  ┌───────────────────────────────────────────────┐    │ |
+│  │  │  Proxy DLLs (13) — IAT/EAT hooks: ntdll.dll,  │    │ |
+│  │  │  kernel32.dll, kernelbase.dll, advapi32.dll,  │    │ |
+│  │  │  user32.dll, wbem.dll, wtsapi32.dll,          │    │ |
+│  │  │  secur32.dll, crypt32.dll, winhttp.dll,       │    │ |
+│  │  │  dnsapi.dll, iphlpapi.dll, ws2_32.dll         │    │ |
+│  │  └───────────────────────────────────────────────┘    │ |
+│  │                                                       │ |
+│  │  ┌───────────────────────────────────────────────┐    │ |
+│  │  │  GpuBridge → ForwardVulkanIcd — real Vulkan   │    │ |
+│  │  │  ICD passthrough via VK_ICD_FILENAMES         │    │ |
+│  │  └───────────────────────────────────────────────┘    │ |
+│  └───────────────────────────────────────────────────────┘ │
+│                                                            │
+│  launcher.exe — CLI, injects engine.dll into target,       │
+│  calls Engine_Init, intercepts entry point                 │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Design Decisions
