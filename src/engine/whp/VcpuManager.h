@@ -106,19 +106,11 @@ private:
     static DWORD WINAPI ThreadBootstrapEntry(LPVOID param);
     void EnterVcpuFromBootstrap(uint32_t vcpuIndex);
 
-    // WHP #BP/#DB exception handling
-    bool HandleVpBreakpoint(uint32_t vcpuIndex, uint64_t rip);
+    // WHP #DB exception handling
     bool HandleVpSingleStep(uint32_t vcpuIndex, uint64_t rip);
 
     bool ReadVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count);
     bool WriteVcpuRegs(uint32_t vcpuIndex, WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count);
-
-    struct TrampolineEntry {
-        uint64_t address;
-        uint8_t  originalByte;
-        uint8_t  instrLen;
-    };
-    std::unordered_map<uint64_t, TrampolineEntry> m_trampolines;
 
     Logger* m_logger;
     Partition* m_partition;

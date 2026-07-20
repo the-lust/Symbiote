@@ -40,13 +40,6 @@ VcpuManager::~VcpuManager()
             VirtualFree(m_vcpus[i].allocatedStack, 0, MEM_RELEASE);
         }
     }
-    for (auto& kv : m_trampolines) {
-        DWORD old;
-        VirtualProtect((LPVOID)kv.first, 1, PAGE_EXECUTE_READWRITE, &old);
-        *(uint8_t*)kv.first = kv.second.originalByte;
-        VirtualProtect((LPVOID)kv.first, 1, old, &old);
-    }
-    m_trampolines.clear();
     m_threadHandleToVcpu.clear();
     DeleteCriticalSection(&m_vcpuAllocLock);
     s_instance = nullptr;
@@ -133,16 +126,6 @@ bool VcpuManager::Run(uint32_t vcpuIndex)
         }
 
         m_vcpus[vcpuIndex].exitCtx = exitCtx;
-
-        if (!m_trampolines.empty()) {
-            for (auto& kv : m_trampolines) {
-                DWORD old;
-                VirtualProtect((LPVOID)kv.first, 1, PAGE_EXECUTE_READWRITE, &old);
-                *(uint8_t*)kv.first = 0xCC;
-                VirtualProtect((LPVOID)kv.first, 1, old, &old);
-            }
-            m_trampolines.clear();
-        }
 
         if (!HandleExit(vcpuIndex)) {
             m_logger->Trace(LOG_WHP, "VCPU %u unhandled exit at reason=%d",
@@ -938,135 +921,6 @@ bool VcpuManager::SetupControlRegisters(uint32_t vcpuIndex)
     return true;
 }
 
-// ─── #BP / #DB exception handling ──────────────────────────────────────
-
-bool VcpuManager::HandleVpBreakpoint(uint32_t vcpuIndex, uint64_t rip)
-{
-    PatchEntryInfo patch;
-    if (!SystemSpoofer::LookupPatch(rip, patch)) {
-        WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
-        WHV_REGISTER_VALUE ripValue;
-        ripValue.Reg64 = rip + 1;
-        return WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1);
-    }
-
-    switch (patch.type) {
-        case PatchType::SYSCALL: {
-            WHV_REGISTER_NAME names[6] = {
-                WHvX64RegisterRax, WHvX64RegisterRcx, WHvX64RegisterRdx,
-                WHvX64RegisterR8,  WHvX64RegisterR9,  WHvX64RegisterRip
-            };
-            WHV_REGISTER_VALUE values[6];
-            if (!ReadVcpuRegs(vcpuIndex, names, values, 6))
-                return false;
-
-            uint32_t syscallNum = (uint32_t)values[0].Reg64;
-            uint64_t args[4] = {
-                values[1].Reg64,
-                values[2].Reg64,
-                values[3].Reg64,
-                values[4].Reg64
-            };
-            uint64_t result = 0;
-
-            if (m_syscallDispatch.DispatchRawSyscall(syscallNum, args, result)) {
-                values[0].Reg64 = result;
-                values[5].Reg64 = rip + 2;
-
-                WHV_REGISTER_NAME rflName = WHvX64RegisterRflags;
-                WHV_REGISTER_VALUE rflValue;
-                if (ReadVcpuRegs(vcpuIndex, &rflName, &rflValue, 1)) {
-                    rflValue.Reg64 &= ~0x100;
-                    WriteVcpuRegs(vcpuIndex, &rflName, &rflValue, 1);
-                }
-
-                return WriteVcpuRegs(vcpuIndex, names, values, 6);
-            }
-
-            DWORD old;
-            VirtualProtect((LPVOID)rip, 1, PAGE_EXECUTE_READWRITE, &old);
-            *(uint8_t*)rip = 0x0F;
-            VirtualProtect((LPVOID)rip, 1, old, &old);
-
-            TrampolineEntry te;
-            te.address = rip;
-            te.originalByte = 0x0F;
-            te.instrLen = 2;
-            m_trampolines[rip] = te;
-
-            values[5].Reg64 = rip;
-            return WriteVcpuRegs(vcpuIndex, &names[5], &values[5], 1);
-        }
-
-        case PatchType::RDMSR: {
-            WHV_REGISTER_NAME names[3] = { WHvX64RegisterRcx, WHvX64RegisterRax, WHvX64RegisterRdx };
-            WHV_REGISTER_VALUE values[3];
-            if (!ReadVcpuRegs(vcpuIndex, names, values, 3))
-                return false;
-
-            uint32_t msrIndex = (uint32_t)values[0].Reg64;
-            uint64_t msrValue = 0;
-
-            if (m_syscallDispatch.SpoofRdmsr(msrIndex, msrValue)) {
-                values[1].Reg64 = msrValue & 0xFFFFFFFF;
-                values[2].Reg64 = (msrValue >> 32) & 0xFFFFFFFF;
-
-                WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
-                WHV_REGISTER_VALUE ripValue;
-                ripValue.Reg64 = rip + 2;
-                if (!WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1))
-                    return false;
-
-                return WriteVcpuRegs(vcpuIndex, names, values, 3);
-            }
-
-            DWORD old;
-            VirtualProtect((LPVOID)rip, 1, PAGE_EXECUTE_READWRITE, &old);
-            *(uint8_t*)rip = 0x0F;
-            VirtualProtect((LPVOID)rip, 1, old, &old);
-
-            TrampolineEntry te;
-            te.address = rip;
-            te.originalByte = 0x0F;
-            te.instrLen = 2;
-            m_trampolines[rip] = te;
-
-            WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
-            WHV_REGISTER_VALUE ripValue;
-            ripValue.Reg64 = rip;
-            return WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1);
-        }
-
-        case PatchType::XGETBV: {
-            WHV_REGISTER_NAME names[3] = { WHvX64RegisterRcx, WHvX64RegisterRax, WHvX64RegisterRdx };
-            WHV_REGISTER_VALUE values[3];
-            if (!ReadVcpuRegs(vcpuIndex, names, values, 3)) return false;
-
-            uint32_t xcr = (uint32_t)values[0].Reg64;
-            if (xcr == 0) {
-                values[1].Reg64 = 0x07;
-                values[2].Reg64 = 0;
-            } else {
-                values[1].Reg64 = 0;
-                values[2].Reg64 = 0;
-            }
-            if (!WriteVcpuRegs(vcpuIndex, names, values, 3)) return false;
-
-            WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
-            WHV_REGISTER_VALUE ripValue;
-            ripValue.Reg64 = rip + 3;
-            return WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1);
-        }
-
-        default: {
-            WHV_REGISTER_NAME ripName = WHvX64RegisterRip;
-            WHV_REGISTER_VALUE ripValue;
-            ripValue.Reg64 = rip + patch.instrLen;
-            return WriteVcpuRegs(vcpuIndex, &ripName, &ripValue, 1);
-        }
-    }
-}
-
 bool VcpuManager::HandleVpSingleStep(uint32_t vcpuIndex, uint64_t)
 {
     // Check if this #DB is our internal EPT single-step completion
@@ -1099,11 +953,8 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
 
         // Dispatch by exception vector
         switch (exc.ExceptionType) {
-            case 0x01: // #DB — single step (trampoline restore, exec hook step)
+            case 0x01: // #DB — single step (exec hook step)
                 return HandleVpSingleStep(vcpuIndex, rip);
-
-            case 0x03: // #BP — breakpoint (syscall/RDMSR intercept)
-                return HandleVpBreakpoint(vcpuIndex, rip);
 
             case 0x06: { // #UD — invalid opcode
                 m_logger->Trace(LOG_WHP, "VCPU %u: #UD at RIP 0x%llX, skipping 1 byte",

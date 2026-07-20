@@ -132,6 +132,7 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/Snapshot.cpp
         src/engine/whp/VcpuManager.cpp
         src/engine/whp/WatchdogTracker.cpp
+        src/engine/whp/WhpHiding.cpp
         src/engine/whp/EptSplitView.cpp
         src/engine/whp/AcpiTimerHandler.cpp
         src/engine/whp/TimingCoordinator.cpp

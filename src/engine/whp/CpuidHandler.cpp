@@ -10,24 +10,11 @@
 #define CPUID_ECX_HYPERVISOR_BIT  (1u << 31)
 #define CPUID_ECX_SMX_BIT        (1u << 6)
 
-static void JitterDelay()
-{
-    LARGE_INTEGER freq, start, now;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&start);
-    uint64_t delayUs = (uint64_t)((double)rand() / RAND_MAX * 500.0);
-    uint64_t target = (uint64_t)start.QuadPart + (delayUs * (uint64_t)freq.QuadPart) / 1000000;
-    do {
-        QueryPerformanceCounter(&now);
-    } while ((uint64_t)now.QuadPart < target);
-}
-
 CpuidHandler::CpuidHandler(Logger* logger, IKernelBackend* backend)
     : m_logger(logger), m_backend(backend), m_magicCpuid(nullptr),
       m_timingCoordinator(nullptr), m_captureLogger(nullptr),
       m_hasBrandString(false), m_hasEnhancedBrand(false)
 {
-    srand((unsigned int)GetCurrentProcessId() ^ (unsigned int)GetTickCount64());
     m_brandString[0] = 0;
     m_enhancedBrand[0] = 0;
     m_cpuVendor[0] = 0;
@@ -102,9 +89,6 @@ bool CpuidHandler::HandleBrandStringLeaf(uint32_t leaf, uint64_t* rax, uint64_t*
 bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rbx,
                                 uint64_t* rcx, uint64_t* rdx, uint64_t*)
 {
-    // Apply VM exit timing jitter to mask hypervisor presence
-    JitterDelay();
-
     uint32_t leaf = (uint32_t)(*rax);
     uint32_t subleaf = (uint32_t)(*rcx);
 

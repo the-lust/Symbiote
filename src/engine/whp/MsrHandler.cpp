@@ -20,25 +20,11 @@ static void CacheVmxMsrs(uint64_t* out, uint32_t count)
     }
 }
 
-static void JitterDelay()
-{
-    LARGE_INTEGER freq, start, now;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&start);
-    uint64_t delayUs = (uint64_t)((double)rand() / RAND_MAX * 200.0);
-    uint64_t target = (uint64_t)start.QuadPart + (delayUs * (uint64_t)freq.QuadPart) / 1000000;
-    do {
-        QueryPerformanceCounter(&now);
-    } while ((uint64_t)now.QuadPart < target);
-}
-
 MsrHandler::MsrHandler(Logger* logger)
     : m_logger(logger), m_captureLogger(nullptr),
       m_efer(1), m_star(0), m_lstar(0), m_cstar(0), m_sfMask(0),
       m_sceAlwaysTrue(true)
 {
-    srand((unsigned int)GetCurrentProcessId() ^ (unsigned int)(GetTickCount64() ^ 0x80000000));
-
     // Cache real hardware VMX MSR values (raw helper avoids C++/SEH conflict)
     CacheVmxMsrs(m_vmxMsrs, MSR_IA32_VMX_COUNT);
 }
@@ -110,8 +96,6 @@ uint64_t MsrHandler::GetSpoofedMsr(uint32_t msr)
 
 bool MsrHandler::HandleMsrRead(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t* value)
 {
-    JitterDelay();
-
     if (!IsValidMsr(msr)) {
         m_logger->Trace(LOG_WARNING, "RDMSR invalid 0x%X => #GP injected", msr);
         return false; // Let WHP inject #GP
@@ -140,8 +124,6 @@ bool MsrHandler::HandleMsrRead(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t* val
 
 bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t value)
 {
-    JitterDelay();
-
     if (!IsValidMsr(msr)) {
         m_logger->Trace(LOG_WARNING, "WRMSR invalid 0x%X => #GP injected", msr);
         return false;
