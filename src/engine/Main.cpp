@@ -36,6 +36,7 @@
 #include "whp/Snapshot.h"
 #include "whp/VeSimulation.h"
 #include "whp/ConsistencyVerifier.h"
+#include "whp/WhpHiding.h"
 #include "emu/ThreadHider.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
@@ -75,6 +76,7 @@ static SystemProfile* g_systemProfile = nullptr;
 static KernelBackend* g_kernelBackend = nullptr;
 static SystemSpoofer* g_systemSpoofer = nullptr;
 extern GpuBridge* g_gpuBridge;
+WhpHiding* g_whpHiding = nullptr;
 static ThreadScheduler* g_threadScheduler = nullptr;
 static WatchdogTracker* g_watchdogTracker = nullptr;
 static EptSplitView* g_eptSplitView = nullptr;
@@ -155,6 +157,7 @@ static void CleanupAll()
     delete g_eptPageProtect; g_eptPageProtect = nullptr;
     delete g_stackSpoofer; g_stackSpoofer = nullptr;
     delete g_indirectSyscall; g_indirectSyscall = nullptr;
+    delete g_whpHiding; g_whpHiding = nullptr;
     delete g_snapshot; g_snapshot = nullptr;
 }
 
@@ -570,6 +573,16 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         if (g_kuserSync) {
             g_kuserSync->StartSyncThread();
         }
+    }
+
+    // WhpHiding: comprehensive WHP/Hyper-V detection countermeasures
+    if (whpAvailable) {
+        g_whpHiding = new WhpHiding(&g_logger);
+        uint32_t features = WhpHiding::FEATURE_ALL;
+        if (!g_whpHiding->Initialize(g_partition, g_cpuidHandler, g_msrHandler, g_rdtscHandler, features)) {
+            g_logger.Trace(LOG_WARNING, "WhpHiding initialization incomplete — some features may be inactive");
+        }
+        g_whpHiding->VerifyHiding();
     }
 
     bool spoofEat = configParser.GetBool("eat", "enabled", false);
