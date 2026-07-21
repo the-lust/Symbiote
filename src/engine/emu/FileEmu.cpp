@@ -10,6 +10,7 @@ typedef LONG NTSTATUS;
 #include <algorithm>
 #include <cstring>
 #include <sstream>
+#include "whp/SandboxFallthrough.h"
 
 // UNICODE_STRING and OBJECT_ATTRIBUTES come from winternl.h
 
@@ -77,6 +78,51 @@ bool FileEmu::HandleNtCreateFile(uint64_t* args, uint64_t* result)
     if (IsSensitiveFile(path)) {
         *result = (uint64_t)STATUS_OBJECT_NAME_NOT_FOUND;
         return true;
+    }
+
+    // Sandbox path redirection
+    if (g_sandboxFallthrough && g_sandboxFallthrough->IsInitialized()) {
+        ULONG createDisposition = (ULONG)args[7];
+        bool isWrite = (createDisposition != FILE_OPEN && createDisposition != FILE_OPEN_IF);
+        FileRedirection::FileInfo info;
+        if (g_sandboxFallthrough->HandleFileOperation(path.c_str(), isWrite, info)) {
+            if (info.isRedirected) {
+                std::wstring targetPath;
+                if (isWrite) {
+                    g_sandboxFallthrough->EnsureFileWriteCopy(info.truePath.c_str());
+                    targetPath = info.boxPath;
+                } else {
+                    targetPath = info.boxPath;
+                    if (GetFileAttributesW(targetPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                        targetPath = info.truePath;
+                    }
+                }
+                // Create a modified OBJECT_ATTRIBUTES pointing to the target path
+                UNICODE_STRING targetUs;
+                targetUs.Buffer = &targetPath[0];
+                targetUs.Length = (USHORT)(targetPath.size() * sizeof(wchar_t));
+                targetUs.MaximumLength = targetUs.Length;
+                OBJECT_ATTRIBUTES targetOa;
+                memcpy(&targetOa, (void*)(uintptr_t)args[2], sizeof(targetOa));
+                targetOa.RootDirectory = NULL;
+                targetOa.ObjectName = &targetUs;
+                // Call real NtCreateFile with redirected path
+                typedef NTSTATUS (NTAPI* RealNtCreateFile_t)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PVOID, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+                static RealNtCreateFile_t realFunc = (RealNtCreateFile_t)
+                    GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateFile");
+                if (realFunc) {
+                    HANDLE hFile = NULL;
+                    IO_STATUS_BLOCK iosb;
+                    NTSTATUS status = realFunc(&hFile, (ACCESS_MASK)args[1], &targetOa, &iosb,
+                        (PLARGE_INTEGER)args[4], (ULONG)args[5], (ULONG)args[6],
+                        (ULONG)args[7], (ULONG)args[8], (PVOID)args[9], (ULONG)args[10]);
+                    if (args[0]) *(HANDLE*)(uintptr_t)args[0] = hFile;
+                    if (args[3]) memcpy((void*)(uintptr_t)args[3], &iosb, sizeof(iosb));
+                    *result = (uint64_t)status;
+                    return true;
+                }
+            }
+        }
     }
 
     // not sensitive, fall through
@@ -229,6 +275,39 @@ bool FileEmu::HandleNtQueryAttributesFile(uint64_t* args, uint64_t* result)
 
 bool FileEmu::HandleNtOpenFile(uint64_t* args, uint64_t* result)
 {
+    // Sandbox path redirection for reads
+    if (g_sandboxFallthrough && g_sandboxFallthrough->IsInitialized()) {
+        std::wstring path = GetFilePathFromAttributes(args[2]);
+        if (!path.empty()) {
+            FileRedirection::FileInfo info;
+            if (g_sandboxFallthrough->HandleFileOperation(path.c_str(), false, info)) {
+                if (info.isRedirected) {
+                    std::wstring targetPath = info.boxPath;
+                    if (GetFileAttributesW(targetPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                        targetPath = info.truePath;
+                    }
+                    UNICODE_STRING targetUs;
+                    targetUs.Buffer = &targetPath[0];
+                    targetUs.Length = (USHORT)(targetPath.size() * sizeof(wchar_t));
+                    targetUs.MaximumLength = targetUs.Length;
+                    OBJECT_ATTRIBUTES targetOa;
+                    memcpy(&targetOa, (void*)(uintptr_t)args[2], sizeof(targetOa));
+                    targetOa.RootDirectory = NULL;
+                    targetOa.ObjectName = &targetUs;
+                    typedef NTSTATUS (WINAPI* RealNtOpenFile_t)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PVOID, ULONG, ULONG);
+                    static RealNtOpenFile_t realFunc = (RealNtOpenFile_t)
+                        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtOpenFile");
+                    if (realFunc) {
+                        NTSTATUS status = realFunc((PHANDLE)args[0], (ACCESS_MASK)args[1],
+                            &targetOa, (PVOID)args[3], (ULONG)args[4], (ULONG)args[5]);
+                        if (result) *result = (uint64_t)status;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
     // pass through to real NtOpenFile
     typedef NTSTATUS (WINAPI* NtOpenFileFunc)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PVOID, ULONG, ULONG);
     static NtOpenFileFunc realFunc = (NtOpenFileFunc)
@@ -246,6 +325,35 @@ bool FileEmu::HandleNtOpenFile(uint64_t* args, uint64_t* result)
 
 bool FileEmu::HandleNtDeleteFile(uint64_t* args, uint64_t* result)
 {
+    // Sandbox: redirect delete to box path
+    if (g_sandboxFallthrough && g_sandboxFallthrough->IsInitialized()) {
+        std::wstring path = GetFilePathFromAttributes(args[0]);
+        if (!path.empty()) {
+            FileRedirection::FileInfo info;
+            if (g_sandboxFallthrough->HandleFileOperation(path.c_str(), true, info)) {
+                if (info.isRedirected) {
+                    g_sandboxFallthrough->EnsureFileWriteCopy(info.truePath.c_str());
+                    UNICODE_STRING targetUs;
+                    targetUs.Buffer = &info.boxPath[0];
+                    targetUs.Length = (USHORT)(info.boxPath.size() * sizeof(wchar_t));
+                    targetUs.MaximumLength = targetUs.Length;
+                    OBJECT_ATTRIBUTES targetOa;
+                    memcpy(&targetOa, (void*)(uintptr_t)args[0], sizeof(targetOa));
+                    targetOa.RootDirectory = NULL;
+                    targetOa.ObjectName = &targetUs;
+                    typedef NTSTATUS (WINAPI* RealNtDeleteFile_t)(POBJECT_ATTRIBUTES);
+                    static RealNtDeleteFile_t realFunc = (RealNtDeleteFile_t)
+                        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtDeleteFile");
+                    if (realFunc) {
+                        NTSTATUS status = realFunc(&targetOa);
+                        if (result) *result = (uint64_t)status;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
     typedef NTSTATUS (WINAPI* NtDeleteFileFunc)(POBJECT_ATTRIBUTES);
     static NtDeleteFileFunc realFunc = (NtDeleteFileFunc)
         GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtDeleteFile");

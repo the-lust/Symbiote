@@ -61,7 +61,11 @@ bool RegistryRedirection::GetRedirectedKey(const wchar_t* hostKey, std::wstring&
     for (const auto& rule : m_rules) {
         std::wstring relative;
         if (IsKeyUnderRule(norm, rule, relative)) {
-            if (rule.readOnly && !isWrite) {
+            if (isWrite) {
+                outBoxKey = rule.boxKeyPrefix + relative;
+                return true;
+            }
+            if (rule.readOnly) {
                 outBoxKey = norm;
                 return true;
             }

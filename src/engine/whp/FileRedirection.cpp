@@ -54,7 +54,7 @@ void FileRedirection::AddRule(const PathRule& rule)
     m_rules.push_back(rule);
 }
 
-bool FileRedirection::GetRedirectedPath(const wchar_t* hostPath, std::wstring& outBoxPath, bool /*isWrite*/)
+bool FileRedirection::GetRedirectedPath(const wchar_t* hostPath, std::wstring& outBoxPath, bool isWrite)
 {
     if (!m_initialized) return false;
 
@@ -64,6 +64,10 @@ bool FileRedirection::GetRedirectedPath(const wchar_t* hostPath, std::wstring& o
     for (const auto& rule : m_rules) {
         std::wstring relative;
         if (IsPathUnderRule(norm, rule, relative)) {
+            if (isWrite) {
+                outBoxPath = rule.boxPathPrefix + relative;
+                return true;
+            }
             if (rule.readOnly) {
                 outBoxPath = norm;
                 return true;

@@ -14,6 +14,7 @@
 #include "emu/PeLoader.h"
 #include "proxy/ModuleCloak.h"
 #include "emu/DeviceIoEmu.h"
+#include "whp/SandboxFallthrough.h"
 
 MinimalKernel* MinimalKernel::s_instance = nullptr;
 
