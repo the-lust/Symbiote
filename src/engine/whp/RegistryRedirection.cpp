@@ -1,4 +1,5 @@
 #include "RegistryRedirection.h"
+#include <algorithm>
 
 RegistryRedirection* g_registryRedirection = nullptr;
 
@@ -226,6 +227,8 @@ std::wstring RegistryRedirection::NormalizeKey(const wchar_t* key)
     for (size_t i = 0; i < result.length(); i++) {
         if (result[i] == L'/') result[i] = L'\\';
     }
+    // Registry is case-insensitive; normalize to uppercase for consistent comparison
+    std::transform(result.begin(), result.end(), result.begin(), ::towupper);
     return result;
 }
 

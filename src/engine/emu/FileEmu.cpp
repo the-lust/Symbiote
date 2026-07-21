@@ -11,6 +11,7 @@ typedef LONG NTSTATUS;
 #include <cstring>
 #include <sstream>
 #include "whp/SandboxFallthrough.h"
+#include "whp/FileRedirection.h"
 
 // UNICODE_STRING and OBJECT_ATTRIBUTES come from winternl.h
 
@@ -83,7 +84,9 @@ bool FileEmu::HandleNtCreateFile(uint64_t* args, uint64_t* result)
     // Sandbox path redirection
     if (g_sandboxFallthrough && g_sandboxFallthrough->IsInitialized()) {
         ULONG createDisposition = (ULONG)args[7];
-        bool isWrite = (createDisposition != FILE_OPEN && createDisposition != FILE_OPEN_IF);
+        ULONG desiredAccess = (ULONG)args[1];
+        bool isWrite = (createDisposition != FILE_OPEN && createDisposition != FILE_OPEN_IF) ||
+                       (desiredAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA | GENERIC_WRITE | GENERIC_ALL | DELETE));
         FileRedirection::FileInfo info;
         if (g_sandboxFallthrough->HandleFileOperation(path.c_str(), isWrite, info)) {
             if (info.isRedirected) {
@@ -93,7 +96,7 @@ bool FileEmu::HandleNtCreateFile(uint64_t* args, uint64_t* result)
                     targetPath = info.boxPath;
                 } else {
                     targetPath = info.boxPath;
-                    if (GetFileAttributesW(targetPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                    if (GetFileAttributesW(FileRedirection::NtToWin32Path(targetPath).c_str()) == INVALID_FILE_ATTRIBUTES) {
                         targetPath = info.truePath;
                     }
                 }
@@ -105,6 +108,8 @@ bool FileEmu::HandleNtCreateFile(uint64_t* args, uint64_t* result)
                 OBJECT_ATTRIBUTES targetOa;
                 memcpy(&targetOa, (void*)(uintptr_t)args[2], sizeof(targetOa));
                 targetOa.RootDirectory = NULL;
+                targetOa.SecurityDescriptor = NULL;
+                targetOa.SecurityQualityOfService = NULL;
                 targetOa.ObjectName = &targetUs;
                 // Call real NtCreateFile with redirected path
                 typedef NTSTATUS (NTAPI* RealNtCreateFile_t)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PVOID, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
@@ -283,7 +288,7 @@ bool FileEmu::HandleNtOpenFile(uint64_t* args, uint64_t* result)
             if (g_sandboxFallthrough->HandleFileOperation(path.c_str(), false, info)) {
                 if (info.isRedirected) {
                     std::wstring targetPath = info.boxPath;
-                    if (GetFileAttributesW(targetPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                    if (GetFileAttributesW(FileRedirection::NtToWin32Path(targetPath).c_str()) == INVALID_FILE_ATTRIBUTES) {
                         targetPath = info.truePath;
                     }
                     UNICODE_STRING targetUs;
@@ -293,6 +298,8 @@ bool FileEmu::HandleNtOpenFile(uint64_t* args, uint64_t* result)
                     OBJECT_ATTRIBUTES targetOa;
                     memcpy(&targetOa, (void*)(uintptr_t)args[2], sizeof(targetOa));
                     targetOa.RootDirectory = NULL;
+                    targetOa.SecurityDescriptor = NULL;
+                    targetOa.SecurityQualityOfService = NULL;
                     targetOa.ObjectName = &targetUs;
                     typedef NTSTATUS (WINAPI* RealNtOpenFile_t)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PVOID, ULONG, ULONG);
                     static RealNtOpenFile_t realFunc = (RealNtOpenFile_t)
@@ -340,6 +347,8 @@ bool FileEmu::HandleNtDeleteFile(uint64_t* args, uint64_t* result)
                     OBJECT_ATTRIBUTES targetOa;
                     memcpy(&targetOa, (void*)(uintptr_t)args[0], sizeof(targetOa));
                     targetOa.RootDirectory = NULL;
+                    targetOa.SecurityDescriptor = NULL;
+                    targetOa.SecurityQualityOfService = NULL;
                     targetOa.ObjectName = &targetUs;
                     typedef NTSTATUS (WINAPI* RealNtDeleteFile_t)(POBJECT_ATTRIBUTES);
                     static RealNtDeleteFile_t realFunc = (RealNtDeleteFile_t)

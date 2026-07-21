@@ -102,7 +102,7 @@ static std::wstring GetKeyPathFromAttributes(uint64_t attrPtr)
 
 bool RegistryEmu::HandleNtOpenKey(uint64_t* args, uint64_t* result)
 {
-    uint64_t attrPtr = args[3];
+    uint64_t attrPtr = args[2];
 
     std::wstring path = GetKeyPathFromAttributes(attrPtr);
     bool sensitive = IsSensitiveKey(path);
@@ -113,28 +113,8 @@ bool RegistryEmu::HandleNtOpenKey(uint64_t* args, uint64_t* result)
         return true;
     }
 
-    // Sandbox registry redirection
-    if (g_sandboxFallthrough && g_sandboxFallthrough->IsInitialized()) {
-        RegistryRedirection::KeyInfo info;
-        if (g_sandboxFallthrough->HandleRegistryOperation(path.c_str(), false, info)) {
-            if (!info.isDeleted && info.isRedirected) {
-                // Try box key first, fall back to host key if not found
-                HKEY hKey = NULL;
-                LSTATUS ls = RegOpenKeyExW(HKEY_LOCAL_MACHINE, info.boxPath.c_str(), 0,
-                    KEY_READ, &hKey);
-                if (ls != ERROR_SUCCESS) {
-                    ls = RegOpenKeyExW(HKEY_LOCAL_MACHINE, info.truePath.c_str(), 0,
-                        KEY_READ, &hKey);
-                }
-                if (ls == ERROR_SUCCESS && args[0]) {
-                    *(HANDLE*)(uintptr_t)args[0] = (HANDLE)hKey;
-                }
-                *result = (uint64_t)(ls == ERROR_SUCCESS ? STATUS_SUCCESS : STATUS_OBJECT_NAME_NOT_FOUND);
-                return true;
-            }
-        }
-    }
-
+    // Sandbox: pass through to real system (registry redirection from
+    // this layer is deferred to proxy DLL hooks due to NT↔Win32 path mismatch)
     // non-sensitive, fall through
     m_logger->Trace(LOG_EMU, "NtOpenKey fall through: %s", path.c_str());
     return false;
@@ -218,26 +198,6 @@ bool RegistryEmu::HandleNtEnumerateValueKey(uint64_t* args, uint64_t* result)
 
 bool RegistryEmu::HandleNtCreateKey(uint64_t* args, uint64_t* result)
 {
-    uint64_t attrPtr = args[3];
-    std::wstring path = GetKeyPathFromAttributes(attrPtr);
-
-    // Sandbox registry redirection for creates
-    if (g_sandboxFallthrough && g_sandboxFallthrough->IsInitialized()) {
-        RegistryRedirection::KeyInfo info;
-        if (g_sandboxFallthrough->HandleRegistryOperation(path.c_str(), true, info)) {
-            g_sandboxFallthrough->EnsureRegWriteCopy(info.truePath.c_str());
-            HKEY hKey = NULL;
-            DWORD disp = 0;
-            LSTATUS ls = RegCreateKeyExW(HKEY_LOCAL_MACHINE, info.boxPath.c_str(),
-                0, NULL, 0, KEY_WRITE, NULL, &hKey, &disp);
-            if (ls == ERROR_SUCCESS && args[0]) {
-                *(HANDLE*)(uintptr_t)args[0] = (HANDLE)hKey;
-            }
-            *result = (uint64_t)(ls == ERROR_SUCCESS ? STATUS_SUCCESS : STATUS_ACCESS_DENIED);
-            return true;
-        }
-    }
-
     uint64_t keyHandlePtr = args[0];
     uint64_t handle = AllocHandle();
     m_virtualKeys.push_back({L"(created)", handle});
@@ -250,18 +210,8 @@ bool RegistryEmu::HandleNtCreateKey(uint64_t* args, uint64_t* result)
     return true;
 }
 
-bool RegistryEmu::HandleNtDeleteKey(uint64_t* args, uint64_t* result)
+bool RegistryEmu::HandleNtDeleteKey(uint64_t*, uint64_t* result)
 {
-    // Sandbox: mark key as deleted
-    if (g_sandboxFallthrough && g_sandboxFallthrough->IsInitialized()) {
-        uint64_t keyHandle = args[0];
-        // Find the key path from tracked handles (simplified: just return success)
-        // In a full implementation, we'd look up the handle -> path mapping
-        (void)keyHandle;
-        *result = (uint64_t)STATUS_SUCCESS;
-        return true;
-    }
-
     *result = (uint64_t)STATUS_SUCCESS;
     return true;
 }
