@@ -304,20 +304,51 @@ Default: `config/config.ini` (relative to launcher binary).
 [vm]                 cpu_count = 2           ; Virtual CPU count
 ```
 
+## Sandbox Profiles
+
+Inspired by [RedSand](https://github.com/redcode-labs/RedSand)'s `.wsb` profile system, Symbiote provides pre-configured `.ini` profiles for different use cases. Select one via `--profile`:
+
+| Profile | Use Case | Features |
+|---------|----------|----------|
+| `default` | General purpose | All spoofing on, WHP hiding active |
+| `stealth` | Anti-detection testing | Maximum hiding, watchdog off, AllocTracker/SystemSpoofer off |
+| `compat` | Compatibility | Minimal interception, target runs near-natively |
+| `analysis` | Reverse engineering | GDB stub on TCP :1234, capture logging, break on entry |
+| `capture` | Fingerprint collection | Log-only mode, no interception |
+
+```bat
+launcher.exe --profile stealth --target C:\Path\to\target.exe
+launcher.exe --profile analysis --target C:\Path\to\malware.exe
+launcher.exe --profile capture --target C:\Windows\System32\notepad.exe
+```
+
+Profiles live in `profiles/` — copy and customize to create your own.
+
 ### Capture Mode
 
 To log all fingerprint queries without interception (for analysis):
 
 ```bat
-copy config\capture.ini config\config.ini
-launcher.exe --target C:\Path\to\target.exe
+launcher.exe --profile capture --target C:\Path\to\target.exe
 ```
+
+## Developer Setup
+
+Run once after cloning:
+
+```bat
+powershell -ExecutionPolicy Bypass -File scripts\setup-dev.ps1
+```
+
+Checks Visual Studio, CMake, Windows SDK, and WHP availability. Modeled after RedSand's OnHost provisioning pattern.
 
 ## Related Work
 
 - **[Sogen](https://github.com/hedronium/Sogen)** (3.3k stars) — WHP+Unicorn+KVM backends, real system DLLs in guest, LSTAR→HLT syscall intercept, GDB stub, deterministic replay. Symbiote adopts the same CPU backend abstraction and real-DLL approach.
 - **[WinVisor](https://github.com/ionescu007/winvisor)** (666 stars) — Process cloning directly into WHP guest via identity-mapped EPT. Symbiote's ProcessCloner implements the same technique.
 - **[Sandboxie](https://github.com/sandboxie-plus/Sandboxie)** — User-mode API redirection for file, registry, process, and token isolation. Symbiote applies these patterns at the ntapi/kernel32 proxy DLL level.
+- **[RedSand](https://github.com/redcode-labs/RedSand)** (37 stars) — Pre-built `.wsb` profiles for Windows Sandbox security work. RedSand's profile system inspired Symbiote's `--profile` presets and its OnHost provisioning scripts inspired `scripts/setup-dev.ps1`.
+- **[sandbox-shenanigans](https://github.com/unrooted/sandbox-shenanigans)** (3 stars) — Demo of `wsb.exe` LOLBIN abuse. Demonstrates Windows Sandbox CLI headless execution patterns via `wsb start --config` + `wsb exec --id`.
 
 ## License
 
