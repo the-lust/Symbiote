@@ -37,6 +37,7 @@
 #include "whp/VeSimulation.h"
 #include "whp/ConsistencyVerifier.h"
 #include "whp/WhpHiding.h"
+#include "whp/SandboxFallthrough.h"
 #include "emu/ThreadHider.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
@@ -158,6 +159,7 @@ static void CleanupAll()
     delete g_stackSpoofer; g_stackSpoofer = nullptr;
     delete g_indirectSyscall; g_indirectSyscall = nullptr;
     delete g_whpHiding; g_whpHiding = nullptr;
+    delete g_sandboxFallthrough; g_sandboxFallthrough = nullptr;
     delete g_snapshot; g_snapshot = nullptr;
 }
 
@@ -583,6 +585,34 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             g_logger.Trace(LOG_WARNING, "WhpHiding initialization incomplete — some features may be inactive");
         }
         g_whpHiding->VerifyHiding();
+    }
+
+    // SandboxFallthrough: Sandboxie-style isolation (file/registry/IPC redirection + VHDX)
+    {
+        bool sandboxEnabled = configParser.GetBool("sandbox", "enabled", false);
+        if (sandboxEnabled) {
+            g_sandboxFallthrough = new SandboxFallthrough(&g_logger);
+            SandboxFallthrough::SandboxConfig sbCfg;
+            memset(&sbCfg, 0, sizeof(sbCfg));
+            std::string boxName = configParser.GetString("sandbox", "box_name", "DefaultBox");
+            MultiByteToWideChar(CP_UTF8, 0, boxName.c_str(), -1, sbCfg.boxName, 64);
+            sbCfg.enableFileRedirection = configParser.GetBool("sandbox", "file_redirection", true);
+            sbCfg.enableRegistryRedirection = configParser.GetBool("sandbox", "registry_redirection", true);
+            sbCfg.enableIpcFiltering = configParser.GetBool("sandbox", "ipc_filtering", true);
+            sbCfg.enableVirtualDisk = configParser.GetBool("sandbox", "virtual_disk", false);
+            if (sbCfg.enableVirtualDisk) {
+                std::string vhdxPath = configParser.GetString("sandbox", "vhdx_path", "");
+                if (!vhdxPath.empty()) {
+                    MultiByteToWideChar(CP_UTF8, 0, vhdxPath.c_str(), -1, sbCfg.vhdxPath, MAX_PATH);
+                }
+                sbCfg.vhdxSizeMb = (uint64_t)configParser.GetUint64("sandbox", "vhdx_size_mb", 4096);
+                std::string mountPoint = configParser.GetString("sandbox", "mount_point", "");
+                if (!mountPoint.empty()) {
+                    MultiByteToWideChar(CP_UTF8, 0, mountPoint.c_str(), -1, sbCfg.mountPoint, MAX_PATH);
+                }
+            }
+            g_sandboxFallthrough->Initialize(sbCfg);
+        }
     }
 
     bool spoofEat = configParser.GetBool("eat", "enabled", false);
