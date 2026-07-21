@@ -133,6 +133,12 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/VcpuManager.cpp
         src/engine/whp/WatchdogTracker.cpp
         src/engine/whp/WhpHiding.cpp
+        # Sandboxie-style isolation modules
+        src/engine/whp/VirtualDisk.cpp
+        src/engine/whp/FileRedirection.cpp
+        src/engine/whp/RegistryRedirection.cpp
+        src/engine/whp/IpcFilter.cpp
+        src/engine/whp/SandboxFallthrough.cpp
         src/engine/whp/EptSplitView.cpp
         src/engine/whp/AcpiTimerHandler.cpp
         src/engine/whp/TimingCoordinator.cpp
@@ -151,7 +157,7 @@ if(NOT SYMBIOTE_NO_WHP)
     target_link_libraries(engine PRIVATE ${WHP_LIBRARY})
 endif()
 if(WIN32)
-    target_link_libraries(engine PRIVATE dbghelp winmm)
+    target_link_libraries(engine PRIVATE dbghelp winmm virtdisk shlwapi)
 endif()
 
 # ─── Proxy DLL helper ────────────────────────────────────────────────
