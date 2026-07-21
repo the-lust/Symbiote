@@ -3,6 +3,7 @@
 IpcFilter* g_ipcFilter = nullptr;
 
 const wchar_t* IpcFilter::kEscapePorts[] = {
+    // ALPC escape vectors
     L"\\RPC Control\\sbiedll",
     L"\\RPC Control\\sbievc",
     L"\\RPC Control\\sbiectrl",
@@ -13,6 +14,20 @@ const wchar_t* IpcFilter::kEscapePorts[] = {
     L"\\RPC Control\\protected_audio",
     L"\\RPC Control\\netlogon",
     L"\\RPC Control\\spoolss",
+    L"\\RPC Control\\epmapper",
+    L"\\RPC Control\\DNSResolver",
+    L"\\RPC Control\\OLE",
+    L"\\RPC Control\\WindowsShutdown",
+    L"\\Windows\\ApiPort",
+    L"\\SmApiPort",
+    L"\\DbgSsApiPort",
+    L"\\DbgUiApiPort",
+    // Named pipe escape vectors
+    L"\\Device\\NamedPipe\\lsass",
+    L"\\Device\\NamedPipe\\samr",
+    L"\\Device\\NamedPipe\\srvsvc",
+    L"\\Device\\NamedPipe\\sbie",
+    L"\\Device\\NamedPipe\\sbiedll",
 };
 
 const uint32_t IpcFilter::kEscapePortCount = sizeof(kEscapePorts) / sizeof(kEscapePorts[0]);
@@ -35,7 +50,7 @@ bool IpcFilter::Initialize()
         IpcRule r;
         r.portName = kEscapePorts[i];
         r.action = ACTION_BLOCK;
-        r.isAlpc = true;
+        r.isAlpc = (wcsstr(kEscapePorts[i], L"\\Device\\NamedPipe\\") != 0) ? false : true;
         m_rules.push_back(r);
     }
 

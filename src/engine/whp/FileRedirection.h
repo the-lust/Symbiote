@@ -42,6 +42,8 @@ public:
     // Query redirection info for a given path
     bool Resolve(const wchar_t* path, bool isWrite, FileInfo& info);
 
+    static std::wstring NtToWin32Path(const std::wstring& ntPath);
+
     bool IsInitialized() const { return m_initialized; }
 
 private:

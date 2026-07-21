@@ -103,7 +103,8 @@ bool VirtualDisk::Attach(uint32_t* outDiskNumber)
     m_attached = true;
 
     if (outDiskNumber) {
-        *outDiskNumber = SyncAttach();
+        if (!SyncAttach()) return false;
+    *outDiskNumber = m_diskNumber;
     }
 
     m_logger->Trace(LOG_INFO, "VirtualDisk: attached as \\\\.\\PhysicalDrive%u", m_diskNumber);
@@ -141,8 +142,8 @@ bool VirtualDisk::MountVolume(wchar_t driveLetter, const wchar_t* mountPoint)
         return false;
     }
 
-    wchar_t volumePath[] = L"\\\\.\\PhysicalDrive0";
-    volumePath[18] = L'0' + (wchar_t)m_diskNumber;
+        wchar_t volumePath[] = L"\\\\.\\PhysicalDrive0";
+        volumePath[17] = L'0' + (wchar_t)m_diskNumber;
 
     HANDLE hVol = CreateFileW(volumePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_EXISTING, 0, NULL);
@@ -181,7 +182,7 @@ bool VirtualDisk::SyncAttach()
 {
     for (uint32_t i = 0; i < 32; i++) {
         wchar_t path[] = L"\\\\.\\PhysicalDrive0";
-        path[18] = L'0' + (wchar_t)i;
+        path[17] = L'0' + (wchar_t)i;
 
         HANDLE h = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
             NULL, OPEN_EXISTING, 0, NULL);

@@ -19,27 +19,29 @@ FileRedirection::~FileRedirection()
 bool FileRedirection::Initialize(const wchar_t* boxName)
 {
     m_boxName = boxName;
-    m_boxRoot = L"\\Sandbox\\" + std::wstring(boxName) + L"\\user\\current\\";
+
+    std::wstring boxRoot = L"\\??\\C:\\Sandbox\\" + std::wstring(boxName) + L"\\user\\current\\";
+    m_boxRoot = boxRoot;
 
     m_rules.clear();
 
     PathRule defaultRule;
     defaultRule.hostPrefix = L"\\??\\C:\\Users\\";
-    defaultRule.boxPathPrefix = L"\\Sandbox\\" + std::wstring(boxName) + L"\\user\\current\\";
+    defaultRule.boxPathPrefix = boxRoot;
     defaultRule.readOnly = false;
     defaultRule.recursive = true;
     m_rules.push_back(defaultRule);
 
     PathRule programRule;
     programRule.hostPrefix = L"\\??\\C:\\Program Files";
-    programRule.boxPathPrefix = L"\\Sandbox\\" + std::wstring(boxName) + L"\\user\\current\\ProgramFiles";
+    programRule.boxPathPrefix = boxRoot + L"ProgramFiles";
     programRule.readOnly = true;
     programRule.recursive = true;
     m_rules.push_back(programRule);
 
     PathRule systemRule;
     systemRule.hostPrefix = L"\\??\\C:\\Windows";
-    systemRule.boxPathPrefix = L"\\Sandbox\\" + std::wstring(boxName) + L"\\user\\current\\Windows";
+    systemRule.boxPathPrefix = boxRoot + L"Windows";
     systemRule.readOnly = true;
     systemRule.recursive = true;
     m_rules.push_back(systemRule);
@@ -106,7 +108,7 @@ bool FileRedirection::EnsureWriteCopy(const wchar_t* hostPath)
     if (boxPath == NormalizePath(hostPath))
         return true;
 
-    if (GetFileAttributesW(boxPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+    if (GetFileAttributesW(NtToWin32Path(boxPath).c_str()) != INVALID_FILE_ATTRIBUTES)
         return true;
 
     return CopyFileToBox(hostPath, boxPath.c_str());
@@ -121,7 +123,8 @@ bool FileRedirection::EnumerateMerged(const wchar_t* dirPath,
     std::wstring boxDir;
     GetRedirectedPath(norm.c_str(), boxDir, false);
 
-    std::wstring searchHost = norm + L"\\*";
+    std::wstring win32Norm = NtToWin32Path(norm);
+    std::wstring searchHost = win32Norm + L"\\*";
     WIN32_FIND_DATAW ffd;
     HANDLE hFind = FindFirstFileW(searchHost.c_str(), &ffd);
     if (hFind != INVALID_HANDLE_VALUE) {
@@ -133,7 +136,8 @@ bool FileRedirection::EnumerateMerged(const wchar_t* dirPath,
     }
 
     if (!boxDir.empty() && boxDir != norm) {
-        std::wstring searchBox = boxDir + L"\\*";
+        std::wstring win32BoxDir = NtToWin32Path(boxDir);
+        std::wstring searchBox = win32BoxDir + L"\\*";
         hFind = FindFirstFileW(searchBox.c_str(), &ffd);
         if (hFind != INVALID_HANDLE_VALUE) {
             do {
@@ -218,26 +222,37 @@ std::wstring FileRedirection::NormalizePath(const wchar_t* path)
     return result;
 }
 
+std::wstring FileRedirection::NtToWin32Path(const std::wstring& ntPath)
+{
+    if (ntPath.size() >= 4 && ntPath[0] == L'\\' && ntPath[1] == L'?' && ntPath[2] == L'?' && ntPath[3] == L'\\') {
+        return L"\\\\?\\" + ntPath.substr(4);
+    }
+    return ntPath;
+}
+
 bool FileRedirection::CopyFileToBox(const wchar_t* hostPath, const wchar_t* boxPath)
 {
-    if (!CopyFileW(hostPath, boxPath, FALSE)) {
+    std::wstring win32Host = NtToWin32Path(hostPath);
+    std::wstring win32Box = NtToWin32Path(boxPath);
+
+    if (!CopyFileW(win32Host.c_str(), win32Box.c_str(), FALSE)) {
         DWORD gle = GetLastError();
         if (gle == ERROR_PATH_NOT_FOUND) {
-            std::wstring dir = boxPath;
+            std::wstring dir = win32Box;
             size_t pos = dir.rfind(L'\\');
             if (pos != std::wstring::npos) {
                 dir = dir.substr(0, pos);
-                size_t cur = 3;
+                size_t cur = 4;
                 while ((cur = dir.find(L'\\', cur + 1)) != std::wstring::npos) {
                     CreateDirectoryW(dir.substr(0, cur).c_str(), NULL);
                 }
                 CreateDirectoryW(dir.c_str(), NULL);
-                if (CopyFileW(hostPath, boxPath, FALSE))
+                if (CopyFileW(win32Host.c_str(), win32Box.c_str(), FALSE))
                     return true;
             }
         }
         m_logger->Trace(LOG_WARNING, "FileRedirection: copy failed: %ls -> %ls (GLE=%u)",
-            hostPath, boxPath, GetLastError());
+            win32Host.c_str(), win32Box.c_str(), GetLastError());
         return false;
     }
     return true;
