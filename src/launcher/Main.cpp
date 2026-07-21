@@ -47,6 +47,7 @@ static void ShowUsage()
         L"   --target <exe>            Target executable path\n"
         L"   --args <...>              Arguments passed to target\n"
         L"   --sandbox <exe>           Run any .exe inside WHP sandbox\n"
+        L"   --profile <name>          Load profiles/<name>.ini (stealth|compat|analysis|capture)\n"
         L"   config=<path>             Path to config.ini (default: ./config/config.ini)\n\n"
         L"Examples:\n"
         L"   launcher.exe explorer\n"
@@ -65,6 +66,7 @@ int main(int, char**)
     bool useExplorer = false;
     bool debugMode = false;
     bool sandboxMode = false;
+    std::wstring profileName;
 
     int wargc = 0;
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
@@ -80,6 +82,8 @@ int main(int, char**)
                 if (i + 1 < wargc) {
                     targetExe = wargv[++i];
                 }
+            } else if (arg == L"--profile" && i + 1 < wargc) {
+                profileName = wargv[++i];
             } else if (arg == L"--target" && i + 1 < wargc) {
                 targetExe = wargv[++i];
             } else if (arg == L"--args" && i + 1 < wargc) {
@@ -121,7 +125,17 @@ int main(int, char**)
     size_t pos = exeDir.find_last_of(L"\\/");
     if (pos != std::wstring::npos) exeDir = exeDir.substr(0, pos);
 
-    std::wstring configPath = exeDir + L"\\config\\config.ini";
+    std::wstring configPath;
+    if (!profileName.empty()) {
+        configPath = exeDir + L"\\profiles\\" + profileName + L".ini";
+        std::wstring wmsg = L"Loading profile: " + configPath + L"\n";
+        int wlen = WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, NULL, 0, NULL, NULL);
+        std::string msgA(wlen, 0);
+        WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, &msgA[0], wlen, NULL, NULL);
+        LogMessage(msgA);
+    } else {
+        configPath = exeDir + L"\\config\\config.ini";
+    }
     int len = WideCharToMultiByte(CP_UTF8, 0, configPath.c_str(), -1, NULL, 0, NULL, NULL);
     std::string configPathA(len, 0);
     WideCharToMultiByte(CP_UTF8, 0, configPath.c_str(), -1, &configPathA[0], len, NULL, NULL);
