@@ -14,6 +14,8 @@
 #include "emu/PeLoader.h"
 #include "proxy/ModuleCloak.h"
 #include "emu/DeviceIoEmu.h"
+#include "emu/HwIdEmu.h"
+#include "emu/MemoryGuardEmu.h"
 #include "whp/SandboxFallthrough.h"
 
 MinimalKernel* MinimalKernel::s_instance = nullptr;
@@ -24,8 +26,10 @@ MinimalKernel::MinimalKernel(Logger* logger, IKernelBackend* backend)
       m_timingEmu(nullptr), m_registryEmu(nullptr), m_cryptoEmu(nullptr),
       m_virtualState(nullptr), m_threadManager(nullptr),
       m_sectionEmu(nullptr), m_objectEmu(nullptr),
-      m_moduleCloak(nullptr), m_peLoader(nullptr),
+      m_moduleCloak(nullptr),       m_peLoader(nullptr),
       m_deviceIoEmu(nullptr),
+      m_hwIdEmu(nullptr),
+      m_memoryGuardEmu(nullptr),
       m_spoofProcess(false), m_spoofRegistry(false), m_spoofFile(false),
       m_spoofTiming(false), m_spoofToken(false), m_spoofThread(false),
       m_cloakModule(false)
@@ -53,6 +57,8 @@ bool MinimalKernel::Initialize()
     m_objectEmu = new ObjectEmu(m_logger);
     m_peLoader = new PeLoader(m_logger);
     m_deviceIoEmu = new DeviceIoEmu(m_logger);
+    m_hwIdEmu = new HwIdEmu(m_logger);
+    m_memoryGuardEmu = new MemoryGuardEmu(m_logger);
 
     m_initialized = true;
     s_instance = this;
@@ -77,6 +83,8 @@ void MinimalKernel::Shutdown()
     delete m_fileEmu; m_fileEmu = nullptr;
     delete m_memoryEmu; m_memoryEmu = nullptr;
     delete m_processEmu; m_processEmu = nullptr;
+    delete m_memoryGuardEmu; m_memoryGuardEmu = nullptr;
+    delete m_hwIdEmu; m_hwIdEmu = nullptr;
     delete m_deviceIoEmu; m_deviceIoEmu = nullptr;
 
     m_initialized = false;
@@ -100,6 +108,15 @@ void MinimalKernel::LoadFromConfig(ConfigParser* config)
     m_spoofToken    = Check("token", "token", true);
     m_spoofThread   = Check("thread", "thread", true);
     m_cloakModule   = Check("module_cloak", "module_cloak", true);
+
+    if (m_hwIdEmu) {
+        m_hwIdEmu->LoadFromConfig(config);
+        m_hwIdEmu->Initialize();
+    }
+    if (m_memoryGuardEmu) {
+        m_memoryGuardEmu->LoadFromConfig(config);
+        m_memoryGuardEmu->Initialize();
+    }
 
     if (m_processEmu) {
         m_processEmu->LoadFromConfig(config);
@@ -134,6 +151,12 @@ bool MinimalKernel::HandleSyscall(uint64_t syscallNumber, uint64_t* args, uint64
             if (m_memoryEmu) return m_memoryEmu->HandleNtFreeVirtualMemory(args, result);
             return false;
         case 0x0005:
+            // NtProtectVirtualMemory: first check MemoryGuard tracking, then forward to MemoryEmu
+            if (m_memoryGuardEmu) {
+                m_memoryGuardEmu->HandleProtectVirtualMemory(
+                    args[0], args[1], args[2], (uint32_t)args[3],
+                    (uint32_t*)(uintptr_t)args[4], result);
+            }
             if (m_memoryEmu) return m_memoryEmu->HandleNtProtectVirtualMemory(args, result);
             return false;
         case 0x0006:
@@ -298,6 +321,22 @@ bool MinimalKernel::HandleSyscall(uint64_t syscallNumber, uint64_t* args, uint64
             return false;
         case 0x0038:
             if (m_sectionEmu) return m_sectionEmu->HandleNtUnmapViewOfSection(args, result);
+            return false;
+
+        // MemoryGuard: cross-process memory access filtering
+        case 0x0039:
+            // NtReadVirtualMemory: args[0]=ProcessHandle, args[1]=BaseAddr, args[2]=Buffer, args[3]=NumberOfBytes, args[4]=BytesRead
+            if (m_memoryGuardEmu && m_memoryGuardEmu->HandleReadVirtualMemory(
+                    args[0], args[1], (void*)(uintptr_t)args[2], args[3],
+                    (uint64_t*)(uintptr_t)args[4], result))
+                return true;
+            return false;
+        case 0x003A:
+            // NtWriteVirtualMemory: args[0]=ProcessHandle, args[1]=BaseAddr, args[2]=Buffer, args[3]=NumberOfBytes, args[4]=BytesWritten
+            if (m_memoryGuardEmu && m_memoryGuardEmu->HandleWriteVirtualMemory(
+                    args[0], args[1], (const void*)(uintptr_t)args[2], args[3],
+                    (uint64_t*)(uintptr_t)args[4], result))
+                return true;
             return false;
 
         default:

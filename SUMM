@@ -1,0 +1,22 @@
+## Progress
+
+### Done (this session)
+- **[HwIdEmu] Storage HWID spoofing module** (`emu/HwIdEmu.cpp/.h`, +294/-0): Intercepts NtDeviceIoControlFile + NtQueryVolumeInformationFile to spoof STORAGE_DEVICE_DESCRIPTOR (vendor, product, serial per [storage] config), ATA/NVMe IDENTIFY data, volume serial/label, S.M.A.R.T health. Adapted from negativespoofer + mutante.
+- **[MemoryGuardEmu] PAGE_GUARD memory hiding** (`emu/MemoryGuardEmu.cpp/.h`, +170/-0): Tracks NtProtectVirtualMemory calls with PAGE_GUARD flag, blocks NtReadVirtualMemory/NtWriteVirtualMemory on guarded pages. More robust than original PAGE_GUARD-on-VirtualProtect — filters at syscall level, not page fault level. Adapted from MemoryGuard.
+- **Wired into MinimalKernel dispatch**: HwIdEmu → extended FileEmu::HandleNtDeviceIoControlFile (IOCTL_STORAGE_QUERY_PROPERTY, ATA/SCSI/NVMe pass-through) + HandleNtQueryVolumeInformationFile (FileFsVolumeInformation). MemoryGuardEmu → new dispatch cases 0x0039 (NtReadVirtualMemory), 0x003A (NtWriteVirtualMemory), and hooked into existing 0x0005 (NtProtectVirtualMemory).
+- **Config**: [hwid_spoofing] and [memory_guard] sections added to config.ini + all 4 profiles (enabled in stealth/analysis, disabled in compat/capture).
+- **CMakeLists.txt**: Added HwIdEmu.cpp and MemoryGuardEmu.cpp to engine sources.
+- **Build**: All 22 targets compile clean /W4 /WX.
+- **README**: Component table entries for both modules; Credits table expanded with Samuel Tulach repos (negativespoofer, mutante, MemoryGuard).
+
+### Module summary
+| Module | Adaptation | Vectors spoofed |
+|--------|-----------|-----------------|
+| `HwIdEmu` | negativespoofer (SMBIOS at EFI level → syscall level) + mutante (kernel disk spoof → IOCTL emulation) | Storage device descriptor, ATA/NVMe identify, volume serial, S.M.A.R.T, WMI Win32_DiskDrive |
+| `MemoryGuardEmu` | MemoryGuard (PAGE_GUARD via VirtualProtect → syscall dispatch) | Cross-process NtReadVirtualMemory/NtWriteVirtualMemory on guarded pages |
+
+### Next steps
+1. Wire IpcFilter into ntdll proxy DLL — NtAlpcConnectPort / NtCreateNamedPipeFile hooks
+2. Wire RegistryRedirection via proxy DLL — NtOpenKey/NtCreateKey with proper HKEY root mapping
+3. Add VirtualDisk smoke test
+4. Add WMI proxy hooks for HwIdEmu in wbem_proxy (Win32_DiskDrive, Win32_BIOS spoofing)

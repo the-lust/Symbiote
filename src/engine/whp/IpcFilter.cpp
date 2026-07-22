@@ -1,3 +1,4 @@
+// Credits: ALPC/pipe block list pattern adapted from Sandboxie (https://github.com/sandboxie-plus/Sandboxie)
 #include "IpcFilter.h"
 
 IpcFilter* g_ipcFilter = nullptr;

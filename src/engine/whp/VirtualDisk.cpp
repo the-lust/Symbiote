@@ -1,3 +1,4 @@
+// Credits: Virtual disk (VHDX/VHD) sandbox storage pattern adapted from Sandboxie (https://github.com/sandboxie-plus/Sandboxie)
 #include "VirtualDisk.h"
 #include "Logger.h"
 #include <virtdisk.h>

@@ -1,3 +1,4 @@
+// Credits: Process cloning technique adapted from WinVisor by Alex Ionescu (https://github.com/ionescu007/winvisor)
 #include "ProcessCloner.h"
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")

@@ -50,6 +50,15 @@ Symbiote is a research hypervisor that runs a target process inside a Hyper-V VC
 │  │  │  │  ReplayLogger (deterministic record/replay) │   │ │
 │  │  │  │  GdbStub (remote debug over TCP :1234)      │   │ │
 │  │  │  └─────────────────────────────────────────────┘   │ │
+│  │  │                                                     │ │
+│  │  │  ┌─────────────────────────────────────────────┐   │ │
+│  │  │  │  Sandboxie Isolation Modules                │   │ │
+│  │  │  │  VirtualDisk (VHDX/VHD attach/mount)        │   │ │
+│  │  │  │  FileRedirection (COW + merge enumeration)  │   │ │
+│  │  │  │  RegistryRedirection (COW + delete marks)   │   │ │
+│  │  │  │  IpcFilter (ALPC/pipe block lists)          │   │ │
+│  │  │  │  SandboxFallthrough (unified coordinator)   │   │ │
+│  │  │  └─────────────────────────────────────────────┘   │ |
 │  │  └────────────────────────────────────────────────┘   │ |
 │  │                                                       │ |
 │  │  ┌───────────────────────────────────────────────┐    │ |
@@ -73,7 +82,8 @@ Symbiote is a research hypervisor that runs a target process inside a Hyper-V VC
 │  └───────────────────────────────────────────────────────┘ │
 │                                                            │
 │  launcher.exe — CLI, injects engine.dll into target,       │
-│  calls Engine_Init, intercepts entry point                 │
+│  calls Engine_Init, intercepts entry point,                │
+│  --profile selector for presets + sandbox                  │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -88,6 +98,11 @@ Symbiote is a research hypervisor that runs a target process inside a Hyper-V VC
 | **WHP hiding is multi-layer** | 13+ detection vectors covered: CPUID bits, hypervisor leaves, MSR range, RDTSC/RDTSCP timing, Red Pill, SIDT/SGDT/SLDT/STR, ACPI timers, topology, EPT scanning, cache/TLB |
 | **Process migration** | WinVisor-style — clone target process memory directly into guest via identity-mapped EPT, no kernel driver needed |
 | **BEL architecture** | Global exclusive lock (CriticalSection) + per-VCPU shared access for handler thread safety |
+| **Sandboxie file/registry isolation** | Copy-on-write path redirection, merge enumeration for reads, delete marks — wired into FileEmu/RegistryEmu syscall dispatch, coordinated by SandboxFallthrough |
+| **IPC filtering** | ALPC + named pipe block lists via engine IpcFilter module + ntdll_proxy NtAlpcConnectPort/NtCreateNamedPipeFile hooks |
+| **Virtual disk storage** | VHDX/VHD creation, attach, and volume mount via Win32 virtdisk API as guest-accessible storage backend |
+| **HWID spoofing via ring-3** | IOCTL emulation for disk serials, ATA/NVMe identify data, S.M.A.R.T hiding — no kernel driver needed |
+| **Memory hiding via syscall dispatch** | PAGE_GUARD tracking at NtProtectVirtualMemory, cross-process read/write filtering at syscall level |
 
 ## WHP Detection Countermeasures
 
@@ -105,7 +120,14 @@ Symbiote is a research hypervisor that runs a target process inside a Hyper-V VC
 | ACPI synthetic timer detection | Consistent timer values | AcpiTimerHandler |
 | TSC frequency consistency | Matches CPUID leaf 0x15/0x16 | WhpHiding |
 | Memory scanning for EPT hooks | No INT3 writes to host pages | All modules |
-| Host process/module detection | ModuleCloak + ThreadHider | proxy + emu |
+| Host process/module detection | ModuleCloak + ThreadHider + NtQuerySystemInformation spoofing | proxy + emu |
+| Debugger detection (PEB flags) | BeingDebugged=0, NtGlobalFlag=0, heap flags fixed | ntdll_proxy + PebRestoreThread |
+| ProcessInstrumentationCallback | Blocked at NtSetInformationProcess level | ntdll_proxy |
+| ALPC port enumeration | Blocked by IpcFilter at NtAlpcConnectPort | ntdll_proxy + IpcFilter |
+| Named pipe enumeration | Blocked by IpcFilter at NtCreateNamedPipeFile | ntdll_proxy + IpcFilter |
+| Storage IOCTL queries | Spoofed vendor/product/serial via HwIdEmu | FileEmu + HwIdEmu |
+| Cross-process memory reads | Blocked on guarded regions via MemoryGuardEmu | MinimalKernel + MemoryGuardEmu |
+| WMI queries (Win32_DiskDrive, Win32_BIOS, etc.) | COM wrapping returns configurable spoofed values | wbem_proxy + HwIdEmu |
 
 ## Quick Start
 
@@ -143,17 +165,18 @@ symbiote/
 │   └── build.bat                 # Build helper
 ├── tools/
 │   ├── handshake_test/           # CPUID handshake protocol test
+│   ├── virtualdisk_test/         # Storage IOCTL / volume info spoofing test
 │   ├── capture/                  # Standalone fingerprint capture tool
 │   ├── msr_reader/               # MSR register reader
 │   └── test_sections.ps1         # Section-by-section test script
 └── src/
     ├── launcher/                 # launcher.exe — CLI, process creation, engine injection
     ├── engine/                   # engine.dll — core hypervisor engine
-    │   ├── whp/                  # WHP partition, VCPU, handlers, hiding
+    │   ├── whp/                  # WHP partition, VCPU, handlers, hiding, sandbox isolation
     │   ├── backend/              # ICpuBackend + WhpBackend + UnicornBackend
     │   ├── kernel/               # MinimalKernel (syscall dispatcher)
     │   ├── emu/                  # Syscall emulators (Process, Memory, File, Registry...)
-    │   ├── proxy/                # IatPatch, InlineHook, GpuBridge, DxvkIntegration
+    │   ├── proxy/                # IatPatch, InlineHook, GpuBridge, DxvkIntegration, EngineExports
     │   ├── profile/              # GpuProfile, StorageProfile
     │   ├── capture/              # CaptureLogger (TSV structured logging)
     │   ├── debug/                # GdbStub (remote debug over TCP)
@@ -169,7 +192,7 @@ symbiote/
 
 | Component | Location | Role |
 |-----------|----------|------|
-| **launcher.exe** | `src/launcher/` | CLI: creates target suspended, injects engine.dll, calls Engine_Init, registers entry intercept |
+| **launcher.exe** | `src/launcher/` | CLI: creates target suspended, injects engine.dll, calls Engine_Init, registers entry intercept, `--profile` selector for presets + sandbox |
 | **engine.dll** | `src/engine/` | Core engine — all hypervisor, emulation, proxy logic |
 | **ICpuBackend** | `src/engine/backend/ICpuBackend.h` | Abstract CPU backend interface (run/stop/regs) |
 | **WhpBackend** | `src/engine/backend/WhpBackend.cpp/.h` | Primary CPU backend — WHP hardware virtualization |
@@ -205,6 +228,11 @@ symbiote/
 | **AllocTracker** | `whp/AllocTracker.cpp/.h` | Guard-page JIT memory monitor |
 | **Canary** | `whp/Canary.cpp/.h` | Guard-page memory scanner detector |
 | **VeSimulation** | `whp/VeSimulation.cpp/.h` | Virtual-Exemption simulation for EPT |
+| **VirtualDisk** | `whp/VirtualDisk.cpp/.h` | VHDX/VHD creation, attach, detach, volume mount via virtdisk API |
+| **FileRedirection** | `whp/FileRedirection.cpp/.h` | File COW + merge path enumeration — wired into FileEmu dispatch |
+| **RegistryRedirection** | `whp/RegistryRedirection.cpp/.h` | Registry COW + merge + delete marks — deferred to proxy DLL layer |
+| **IpcFilter** | `whp/IpcFilter.cpp/.h` | ALPC/pipe blocking — RPC Control, LSA/SAM/DRS ports, named pipe rules |
+| **SandboxFallthrough** | `whp/SandboxFallthrough.cpp/.h` | Unified coordinator — file/registry/IPC dispatch routing + config init |
 | **MinimalKernel** | `kernel/MinimalKernel.cpp/.h` | Unified syscall dispatcher + syscall emulator router |
 | **SystemProfile** | `kernel/SystemProfile.cpp/.h` | CPU/vendor feature profile |
 | **KernelBackend** | `kernel/KernelBackend.cpp/.h` | IKernelBackend implementation |
@@ -225,11 +253,14 @@ symbiote/
 | **VirtualState** | `emu/VirtualState.cpp/.h` | Virtual state management |
 | **PeLoader** | `emu/PeLoader.cpp/.h` | PE loading emulation |
 | **DeviceIoEmu** | `emu/DeviceIoEmu.cpp/.h` | Device IOCTL emulation |
+| **HwIdEmu** | `emu/HwIdEmu.cpp/.h` | Storage HWID spoofing: disk serials, volume serials, ATA/NVMe pass-through, S.M.A.R.T hiding |
+| **MemoryGuardEmu** | `emu/MemoryGuardEmu.cpp/.h` | PAGE_GUARD tracking + cross-process read/write filtering at syscall level |
 | **IatPatch** | `proxy/IatPatch.cpp/.h` | IAT + EAT patching with ApiSet resolution |
 | **InlineHook** | `proxy/InlineHook.cpp/.h` | 12-byte jmp hooks |
 | **GpuBridge** | `proxy/GpuBridge.cpp/.h` | GPU DLL passthrough, ForwardVulkanIcd |
 | **DxvkIntegration** | `proxy/DxvkIntegration.cpp/.h` | DXVK passthrough + Vulkan layer detection |
-| **SyscallBridge** | `proxy/SyscallBridge.cpp/.h` | Syscall forwarding bridge |
+| **SyscallBridge** | `proxy/SyscallBridge.cpp/.h` | Syscall forwarding bridge (RouteSyscall export) |
+| **EngineExports** | `proxy/EngineExports.cpp/.h` | C-style exports for proxy DLLs: HwIdEmu data, IpcFilter queries |
 | **ModuleCloak** | `proxy/ModuleCloak.cpp/.h` | Module hiding from PEB LDR lists |
 | **ApiSetResolver** | `proxy/ApiSetResolver.cpp/.h` | ApiSet schema parser from PEB |
 | **ProxyBase** | `proxy/ProxyBase.cpp/.h` | Common proxy DLL infrastructure |
@@ -301,6 +332,8 @@ Default: `config/config.ini` (relative to launcher binary).
 [file]               status = 1              ; File interception
 [timing]             status = 1              ; Timing interception
 [magic]              status = 0              ; MagicCpuid handshake
+[hwid_spoofing]      enabled = true          ; Storage HWID spoofing (HwIdEmu)
+[memory_guard]       enabled = true          ; PAGE_GUARD memory hiding (MemoryGuardEmu)
 [vm]                 cpu_count = 2           ; Virtual CPU count
 ```
 
@@ -311,10 +344,10 @@ Inspired by [RedSand](https://github.com/redcode-labs/RedSand)'s `.wsb` profile 
 | Profile | Use Case | Features |
 |---------|----------|----------|
 | `default` | General purpose | All spoofing on, WHP hiding active |
-| `stealth` | Anti-detection testing | Maximum hiding, watchdog off, AllocTracker/SystemSpoofer off |
-| `compat` | Compatibility | Minimal interception, target runs near-natively |
-| `analysis` | Reverse engineering | GDB stub on TCP :1234, capture logging, break on entry |
-| `capture` | Fingerprint collection | Log-only mode, no interception |
+| `stealth` | Anti-detection testing | Maximum hiding + sandbox isolation + HWID spoofing + memory guard, watchdog off, AllocTracker/SystemSpoofer off |
+| `compat` | Compatibility | Minimal interception, sandbox off, HWID/memory guard off, target runs near-natively |
+| `analysis` | Reverse engineering | GDB stub + sandbox isolation + HWID/memory guard, capture logging, break on entry |
+| `capture` | Fingerprint collection | Log-only mode, sandbox off, no interception |
 
 ```bat
 launcher.exe --profile stealth --target C:\Path\to\target.exe
@@ -323,6 +356,22 @@ launcher.exe --profile capture --target C:\Windows\System32\notepad.exe
 ```
 
 Profiles live in `profiles/` — copy and customize to create your own.
+
+Each profile includes an optional `[sandbox]` section enabling Sandboxie-style isolation, plus `[hwid_spoofing]` and `[memory_guard]` sections for hardware identity hiding:
+
+```ini
+[sandbox]
+enabled = true
+box_name = StealthBox
+
+[hwid_spoofing]
+enabled = true
+
+[memory_guard]
+enabled = true
+```
+
+The `stealth` and `analysis` profiles enable sandbox isolation, HWID spoofing, and memory guard by default; `compat` and `capture` keep them disabled for minimal interference.
 
 ### Capture Mode
 
@@ -344,11 +393,37 @@ Checks Visual Studio, CMake, Windows SDK, and WHP availability. Modeled after Re
 
 ## Related Work
 
-- **[Sogen](https://github.com/hedronium/Sogen)** (3.3k stars) — WHP+Unicorn+KVM backends, real system DLLs in guest, LSTAR→HLT syscall intercept, GDB stub, deterministic replay. Symbiote adopts the same CPU backend abstraction and real-DLL approach.
+- **[Sogen](https://github.com/hedronium/Sogen)** (3.3k stars) — WHP+Unicorn+KVM backends, real system DLLs in guest, LSTAR→HLT syscall intercept, GDB stub, deterministic replay. Symbiote adopts the same CPU backend abstraction and real-DLL approach. See [Credits](#credits) for full attribution.
 - **[WinVisor](https://github.com/ionescu007/winvisor)** (666 stars) — Process cloning directly into WHP guest via identity-mapped EPT. Symbiote's ProcessCloner implements the same technique.
-- **[Sandboxie](https://github.com/sandboxie-plus/Sandboxie)** — User-mode API redirection for file, registry, process, and token isolation. Symbiote applies these patterns at the ntapi/kernel32 proxy DLL level.
+- **[Sandboxie](https://github.com/sandboxie-plus/Sandboxie)** — User-mode API redirection for file, registry, process, and token isolation. Symbiote implements the same patterns directly at the syscall emulation layer: FileRedirection (prefix-based COW + merge enumeration), RegistryRedirection (COW + delete marks), IpcFilter (ALPC/pipe block lists), VirtualDisk (VHDX-backed sandbox storage), and WMI COM interface wrapping for Win32_* class spoofing.
 - **[RedSand](https://github.com/redcode-labs/RedSand)** (37 stars) — Pre-built `.wsb` profiles for Windows Sandbox security work. RedSand's profile system inspired Symbiote's `--profile` presets and its OnHost provisioning scripts inspired `scripts/setup-dev.ps1`.
-- **[sandbox-shenanigans](https://github.com/unrooted/sandbox-shenanigans)** (3 stars) — Demo of `wsb.exe` LOLBIN abuse. Demonstrates Windows Sandbox CLI headless execution patterns via `wsb start --config` + `wsb exec --id`.
+- **[negativespoofer](https://github.com/SamuelTulach/negativespoofer)** — EFI-level SMBIOS table spoofing. Symbiote adapts the technique to ring-3 syscall + IOCTL emulation for SMBIOS, disk serials, and volume info.
+- **[mutante](https://github.com/SamuelTulach/mutante)** — Kernel-mode disk serial spoofing and S.M.A.R.T hiding. Symbiote reimplements at the IOCTL dispatch level in FileEmu + HwIdEmu.
+- **[MemoryGuard](https://github.com/SamuelTulach/MemoryGuard)** — PAGE_GUARD memory hiding via VirtualProtect. Symbiote extends to syscall-level dispatch filtering in MinimalKernel.
+- **[libkrun](https://github.com/containers/libkrun)** — Virtualization library used by native Linux container runtimes. Symbiote adapts libkrun's TSC frequency detection (CPUID 0x15/0x16 + QPC) and CPUID brand string auto-generation for consistent timing.
+- **[DXVK](https://github.com/doitsujin/dxvk)** — DirectX-to-Vulkan translation layer. Symbiote's DxvkIntegration handles DXVK DLL passthrough and Vulkan layer detection.
+- **[Unicorn Engine](https://github.com/unicorn-engine/unicorn)** — CPU emulation framework (ARM/x86/MIPS). Used as the UnicornBackend software-only fallback when WHP is unavailable.
+
+## Credits
+
+Symbiote builds upon techniques and patterns from the following open-source projects. Full credit to their authors:
+
+| Project | Author | Technique Used | Files |
+|---------|--------|---------------|-------|
+| **[Sogen](https://github.com/hedronium/Sogen)** | hedronium | CPU backend abstraction (ICpuBackend/WhpBackend/UnicornBackend), LSTAR→HLT syscall intercept, real system DLLs in guest, deterministic replay | `ICpuBackend.h`, `WhpBackend.*`, `UnicornBackend.*`, `VcpuManager.*`, `ReplayLogger.*`, 13 proxy DLLs |
+| **[WinVisor](https://github.com/ionescu007/winvisor)** | Alex Ionescu | Process memory cloning into WHP guest via identity-mapped EPT | `ProcessCloner.*` |
+| **[Sandboxie](https://github.com/sandboxie-plus/Sandboxie)** | sandboxie-plus | File COW + merge enumeration, registry COW + delete marks, ALPC/pipe IPC filtering, VHDX-backed sandbox storage, WMI COM interface wrapping for Win32_* class spoofing | `VirtualDisk.*`, `FileRedirection.*`, `RegistryRedirection.*`, `IpcFilter.*`, `SandboxFallthrough.*`, `ntdll_proxy/dllmain.cpp`, `wbem_proxy/dllmain.cpp` |
+| **[RedSand](https://github.com/redcode-labs/RedSand)** | redcode-labs | `.ini` profile system with `--profile` presets, OnHost provisioning pattern | `profiles/*.ini`, `scripts/setup-dev.ps1` |
+| **[negativespoofer](https://github.com/SamuelTulach/negativespoofer)** | Samuel Tulach | SMBIOS table spoofing at firmware level — adapted to syscall emulation for SMBIOS + storage HWID | `HwIdEmu.*` |
+| **[mutante](https://github.com/SamuelTulach/mutante)** | Samuel Tulach | Kernel-mode disk serial spoofing (SATA/NVMe), S.M.A.R.T hiding — adapted to IOCTL emulation | `HwIdEmu.*` |
+| **[MemoryGuard](https://github.com/SamuelTulach/MemoryGuard)** | Samuel Tulach | PAGE_GUARD memory hiding technique — extended to syscall-level filtering | `MemoryGuardEmu.*` |
+| **[libkrun](https://github.com/containers/libkrun)** | containers | TSC frequency auto-detection (CPUID 0x15/0x16 + QPC), CPUID brand string auto-generation | `Main.cpp`, `CpuidHandler.*` |
+| **[DXVK](https://github.com/doitsujin/dxvk)** | doitsujin | DXVK DLL passthrough, Vulkan layer detection and forwarding | `DxvkIntegration.*`, `GpuBridge.*` |
+| **[Unicorn Engine](https://github.com/unicorn-engine/unicorn)** | unicorn-engine | CPU emulation framework used as software-only fallback backend | `UnicornBackend.*` |
+
+### Source-Level Attribution
+
+Every source file that directly implements a technique from an external project includes a `// Credits:` comment at its top linking to the original repository.
 
 ## License
 

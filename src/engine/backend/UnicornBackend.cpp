@@ -1,3 +1,4 @@
+// Credits: Unicorn fallback backend pattern adapted from Sogen (https://github.com/hedronium/Sogen)
 #include "UnicornBackend.h"
 
 UnicornBackend::UnicornBackend(Logger* logger)

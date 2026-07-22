@@ -18,6 +18,8 @@ class ObjectEmu;
 class ModuleCloak;
 class PeLoader;
 class DeviceIoEmu;
+class HwIdEmu;
+class MemoryGuardEmu;
 
 class MinimalKernel {
 public:
@@ -37,6 +39,8 @@ public:
     DeviceIoEmu* GetDeviceIoEmu() { return m_deviceIoEmu; }
     TimingEmu* GetTimingEmu() { return m_timingEmu; }
     ProcessEmu* GetProcessEmu() { return m_processEmu; }
+    HwIdEmu* GetHwIdEmu() { return m_hwIdEmu; }
+    MemoryGuardEmu* GetMemoryGuardEmu() { return m_memoryGuardEmu; }
     static MinimalKernel* s_instance;
 
     Logger* m_logger;
@@ -58,6 +62,8 @@ public:
     PeLoader* m_peLoader;
 
     DeviceIoEmu* m_deviceIoEmu;
+    HwIdEmu* m_hwIdEmu;
+    MemoryGuardEmu* m_memoryGuardEmu;
 
     // Config flags
     bool m_spoofProcess;

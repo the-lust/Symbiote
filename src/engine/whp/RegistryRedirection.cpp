@@ -1,3 +1,4 @@
+// Credits: Registry COW + delete marks pattern adapted from Sandboxie (https://github.com/sandboxie-plus/Sandboxie)
 #include "RegistryRedirection.h"
 #include <algorithm>
 

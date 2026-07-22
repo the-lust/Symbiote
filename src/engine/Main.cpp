@@ -192,7 +192,7 @@ static void SetupIatHooks(bool enableEat = false)
     };
 
     ProxyDll dlls[] = {
-        { L"ntdll.dll",        {{"ntdll.dll", "NtCreateFile"}, {"ntdll.dll", "NtQuerySystemInformation"}, {"ntdll.dll", "NtQueryInformationProcess"}, {"ntdll.dll", "NtOpenKey"}, {"ntdll.dll", "NtQueryValueKey"}}, 5 },
+        { L"ntdll.dll",        {{"ntdll.dll", "NtCreateFile"}, {"ntdll.dll", "NtQuerySystemInformation"}, {"ntdll.dll", "NtQueryInformationProcess"}, {"ntdll.dll", "NtOpenKey"}, {"ntdll.dll", "NtQueryValueKey"}, {"ntdll.dll", "NtAlpcConnectPort"}, {"ntdll.dll", "NtCreateNamedPipeFile"}, {"ntdll.dll", "NtCreateKey"}, {"ntdll.dll", "NtEnumerateKey"}, {"ntdll.dll", "NtEnumerateValueKey"}}, 10 },
         { L"kernel32.dll",     {{"kernel32.dll", "CreateProcessW"}, {"kernel32.dll", "VirtualAllocEx"}, {"kernel32.dll", "GetComputerNameW"}, {"kernel32.dll", "GetUserNameW"}, {"kernel32.dll", "CreateFileW"}, {"kernel32.dll", "CreateFileA"}, {"kernel32.dll", "GetVolumeInformationW"}, {"kernel32.dll", "GetWindowsDirectoryW"}}, 8 },
         { L"kernelbase.dll",   {{"kernelbase.dll", "GetSystemInfo"}, {"kernelbase.dll", "GetNativeSystemInfo"}}, 2 },
         { L"advapi32.dll",     {{"advapi32.dll", "RegOpenKeyExW"}, {"advapi32.dll", "RegQueryValueExW"}}, 2 },
@@ -268,9 +268,11 @@ static void SetupIatHooks(bool enableEat = false)
 
             // Register ntdll proxy functions
             const char* ntdlFuncs[] = {"NtCreateFile", "NtQuerySystemInformation",
-                "NtQueryInformationProcess", "NtOpenKey", "NtQueryValueKey"};
+                "NtQueryInformationProcess", "NtOpenKey", "NtQueryValueKey",
+                "NtAlpcConnectPort", "NtCreateNamedPipeFile", "NtCreateKey",
+                "NtEnumerateKey", "NtEnumerateValueKey"};
             if (hNtdllProxy)
-                registerProxy(hNtdllProxy, "ntdll.dll", ntdlFuncs, 5);
+                registerProxy(hNtdllProxy, "ntdll.dll", ntdlFuncs, 10);
 
             // Register kernel32 proxy functions
             const char* k32Funcs[] = {"GetComputerNameW", "GetUserNameW",
