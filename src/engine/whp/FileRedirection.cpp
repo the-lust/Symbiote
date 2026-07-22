@@ -1,3 +1,4 @@
+// Credits: File COW + merge enumeration pattern adapted from Sandboxie (https://github.com/sandboxie-plus/Sandboxie)
 #include "FileRedirection.h"
 #include <shlwapi.h>
 

@@ -1,3 +1,4 @@
+// Credits: Unified sandbox coordinator pattern adapted from Sandboxie (https://github.com/sandboxie-plus/Sandboxie)
 #include "SandboxFallthrough.h"
 #include "VirtualDisk.h"
 #include "FileRedirection.h"

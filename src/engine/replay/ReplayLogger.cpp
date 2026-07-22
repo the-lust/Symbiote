@@ -1,3 +1,4 @@
+// Credits: Deterministic record/replay pattern adapted from Sogen (https://github.com/hedronium/Sogen)
 #include "ReplayLogger.h"
 #include <algorithm>
 #include <cstring>

@@ -7,11 +7,27 @@ typedef LONG NTSTATUS;
 #undef WIN32_NO_STATUS
 #include <ntstatus.h>
 #include <winioctl.h>
+#include <ntddstor.h>
 #include <algorithm>
+
+#ifndef IOCTL_ATA_PASS_THROUGH
+#define IOCTL_ATA_PASS_THROUGH          CTL_CODE(FILE_DEVICE_CONTROLLER, 0x0800, METHOD_NEITHER, FILE_ANY_ACCESS)
+#endif
+#ifndef IOCTL_ATA_PASS_THROUGH_DIRECT
+#define IOCTL_ATA_PASS_THROUGH_DIRECT   CTL_CODE(FILE_DEVICE_CONTROLLER, 0x0801, METHOD_NEITHER, FILE_ANY_ACCESS)
+#endif
+#ifndef IOCTL_SCSI_PASS_THROUGH
+#define IOCTL_SCSI_PASS_THROUGH         CTL_CODE(FILE_DEVICE_CONTROLLER, 0x0401, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#endif
+#ifndef IOCTL_SCSI_PASS_THROUGH_DIRECT
+#define IOCTL_SCSI_PASS_THROUGH_DIRECT  CTL_CODE(FILE_DEVICE_CONTROLLER, 0x0402, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#endif
 #include <cstring>
 #include <sstream>
 #include "whp/SandboxFallthrough.h"
 #include "whp/FileRedirection.h"
+#include "HwIdEmu.h"
+#include "MemoryGuardEmu.h"
 
 // UNICODE_STRING and OBJECT_ATTRIBUTES come from winternl.h
 
@@ -194,6 +210,11 @@ bool FileEmu::HandleNtQueryVolumeInformationFile(uint64_t* args, uint64_t* resul
     uint64_t buffer = args[2];
     uint32_t length = (uint32_t)args[3];
 
+    // Delegate FileFsVolumeInformation to HwIdEmu for volume serial spoofing
+    if (infoClass == 1 && g_hwIdEmu && g_hwIdEmu->IsEnabled()) {
+        return g_hwIdEmu->HandleVolumeInformation(buffer, length, result);
+    }
+
     switch (infoClass) {
         case 5: { // FileFsSizeInformation
             if (length < 24) { *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH; return true; }
@@ -221,34 +242,49 @@ bool FileEmu::HandleNtQueryVolumeInformationFile(uint64_t* args, uint64_t* resul
 bool FileEmu::HandleNtDeviceIoControlFile(uint64_t* args, uint64_t* result)
 {
     uint32_t ioControlCode = (uint32_t)args[5];
+    uint64_t inputBuffer = args[6];
+    uint32_t inputLength = (uint32_t)args[10];
+    uint64_t outputBuffer = args[7];
+    uint32_t outputLength = (uint32_t)args[8];
 
     m_logger->Trace(LOG_EMU, "NtDeviceIoControlFile code=0x%X", ioControlCode);
 
     switch (ioControlCode) {
         case IOCTL_STORAGE_QUERY_PROPERTY: {
-            uint64_t outputBuffer = args[7];
-            uint32_t outputLength = (uint32_t)args[8];
-
+            if (g_hwIdEmu && g_hwIdEmu->IsEnabled()) {
+                // Extract disk index from input or use 0
+                uint32_t diskIndex = 0;
+                if (inputBuffer && inputLength >= sizeof(STORAGE_PROPERTY_QUERY)) {
+                    STORAGE_PROPERTY_QUERY query;
+                    memcpy(&query, (void*)(uintptr_t)inputBuffer, sizeof(query));
+                    if (query.QueryType == PropertyStandardQuery &&
+                        query.PropertyId == StorageDeviceProperty) {
+                        return g_hwIdEmu->HandleStorageQueryProperty(
+                            (void*)(uintptr_t)outputBuffer, outputLength, diskIndex, result);
+                    } else if (query.PropertyId == StorageDeviceSeekPenaltyProperty ||
+                               query.PropertyId == StorageDeviceTrimProperty ||
+                               query.PropertyId == StorageDeviceWriteCacheProperty) {
+                        // Return empty data for these queries
+                        if (outputBuffer && outputLength > 0) {
+                            memset((void*)(uintptr_t)outputBuffer, 0, outputLength);
+                        }
+                        *result = (uint64_t)STATUS_SUCCESS;
+                        return true;
+                    }
+                }
+            }
+            // Fallback: minimal descriptor
             if (outputLength < sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
                 *result = (uint64_t)STATUS_BUFFER_TOO_SMALL;
                 return true;
             }
-
             STORAGE_DEVICE_DESCRIPTOR desc;
             memset(&desc, 0, sizeof(desc));
             desc.Version = sizeof(STORAGE_DEVICE_DESCRIPTOR);
             desc.Size = sizeof(STORAGE_DEVICE_DESCRIPTOR);
             desc.DeviceType = FILE_DEVICE_DISK;
-            desc.DeviceTypeModifier = 0;
-            desc.CommandQueueing = TRUE;
-            desc.VendorIdOffset = 0;
-            desc.ProductIdOffset = 0;
-            desc.ProductRevisionOffset = 0;
-            desc.SerialNumberOffset = 0;
             desc.BusType = BusTypeSata;
-
             memcpy((void*)(uintptr_t)outputBuffer, &desc, sizeof(desc));
-
             if (outputLength > sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
                 memset((void*)((uintptr_t)outputBuffer + sizeof(STORAGE_DEVICE_DESCRIPTOR)), 0,
                        outputLength - sizeof(STORAGE_DEVICE_DESCRIPTOR));
@@ -256,6 +292,28 @@ bool FileEmu::HandleNtDeviceIoControlFile(uint64_t* args, uint64_t* result)
             *result = (uint64_t)STATUS_SUCCESS;
             return true;
         }
+
+        case IOCTL_ATA_PASS_THROUGH:
+        case IOCTL_ATA_PASS_THROUGH_DIRECT: {
+            if (g_hwIdEmu && g_hwIdEmu->IsEnabled()) {
+                return g_hwIdEmu->HandleAtaPassThrough(
+                    (void*)(uintptr_t)inputBuffer, inputLength,
+                    (void*)(uintptr_t)outputBuffer, outputLength, result);
+            }
+            return false;
+        }
+
+        case IOCTL_SCSI_PASS_THROUGH:
+        case IOCTL_SCSI_PASS_THROUGH_DIRECT: {
+            // Check for NVMe query inside SCSI pass-through
+            if (g_hwIdEmu && g_hwIdEmu->IsEnabled()) {
+                return g_hwIdEmu->HandleNvmePassThrough(
+                    (void*)(uintptr_t)inputBuffer, inputLength,
+                    (void*)(uintptr_t)outputBuffer, outputLength, result);
+            }
+            return false;
+        }
+
         default:
             // GPU IOCTLs and other non-storage DeviceIoControl: fall through to real system
             return false;

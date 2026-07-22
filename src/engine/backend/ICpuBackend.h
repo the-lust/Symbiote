@@ -1,3 +1,4 @@
+// Credits: CPU backend abstraction pattern adapted from Sogen (https://github.com/hedronium/Sogen)
 #pragma once
 #include <windows.h>
 #include <cstdint>

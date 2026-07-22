@@ -1,3 +1,5 @@
+// Credits: WMI spoofing via COM interface wrapping — adapted from Sandboxie (https://github.com/sandboxie-plus/Sandboxie)
+// HwIdEmu integration for configurable disk/BIOS/system HWID values
 #define _WIN32_DCOM
 #include <windows.h>
 #include <wbemidl.h>
@@ -15,6 +17,122 @@ class CSpoofWbemClassObject;
 class CSpoofEnumWbemClassObject;
 class CSpoofWbemServices;
 class CSpoofWbemLocator;
+
+// ── HwIdEmu bridge (lazy-loaded from engine.dll exports) ───────────────
+typedef uint32_t (__stdcall* HwIdEmu_GetDiskCount_t)();
+typedef BOOL     (__stdcall* HwIdEmu_GetDisk_t)(uint32_t, wchar_t*, uint32_t*, wchar_t*, uint32_t*, uint64_t*);
+typedef BOOL     (__stdcall* HwIdEmu_GetSystemInfo_t)(uint32_t, wchar_t*, uint32_t*);
+
+static HwIdEmu_GetDiskCount_t    g_fnDiskCount = nullptr;
+static HwIdEmu_GetDisk_t         g_fnGetDisk   = nullptr;
+static HwIdEmu_GetSystemInfo_t   g_fnSysInfo   = nullptr;
+
+static void InitHwIdEmuBridge()
+{
+    static bool init = false;
+    if (init) return;
+    init = true;
+    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
+    if (!hEngine) return;
+    g_fnDiskCount = (HwIdEmu_GetDiskCount_t)GetProcAddress(hEngine, "HwIdEmu_GetDiskCount");
+    g_fnGetDisk   = (HwIdEmu_GetDisk_t)GetProcAddress(hEngine, "HwIdEmu_GetDisk");
+    g_fnSysInfo   = (HwIdEmu_GetSystemInfo_t)GetProcAddress(hEngine, "HwIdEmu_GetSystemInfo");
+}
+
+static bool HwIdEmuAvailable() { return g_fnDiskCount && g_fnGetDisk && g_fnSysInfo; }
+
+// ── HwIdEmu-backed data ──────────────────────────────────────────────────
+// These replace the hardcoded structs for HwIdEmu-managed WMI classes
+
+// System info type constants (mirror EngineExports.h)
+#define HWID_SYSTEM_MANUFACTURER 1
+#define HWID_SYSTEM_PRODUCT      2
+#define HWID_SYSTEM_SERIAL       3
+#define HWID_BIOS_VENDOR         4
+
+static bool GetHwIdStr(uint32_t infoType, wchar_t* buf, uint32_t bufLen)
+{
+    if (!HwIdEmuAvailable()) return false;
+    uint32_t len = bufLen;
+    return g_fnSysInfo(infoType, buf, &len) == TRUE;
+}
+
+static bool GetHwIdBiosVendor(wchar_t* buf, uint32_t bufLen)
+{
+    return GetHwIdStr(HWID_BIOS_VENDOR, buf, bufLen);
+}
+
+static bool GetHwIdSystemManufacturer(wchar_t* buf, uint32_t bufLen)
+{
+    return GetHwIdStr(HWID_SYSTEM_MANUFACTURER, buf, bufLen);
+}
+
+// Default fallback values (same as before but used as fallbacks)
+#define FALLBACK_DISK_MODEL      L"CT500BX500SSD1"
+#define FALLBACK_DISK_SERIAL     L"2324E6E428AC"
+#define FALLBACK_DISK_SIZE       500105249280ULL
+#define FALLBACK_SYSTEM_MFR      L"Dell Inc."
+#define FALLBACK_SYSTEM_MODEL    L"Inspiron 3542"
+#define FALLBACK_SYSTEM_SERIAL   L".5RSJB12.CN3MF00A3L00D3."
+#define FALLBACK_BIOS_VENDOR     L"Dell Inc."
+#define FALLBACK_BIOS_VERSION    L"DELL   - 20140527"
+#define FALLBACK_BIOS_SMBIOS_VER L"A03"
+#define FALLBACK_BIOS_DATE       L"20140527000000.000000+000"
+#define FALLBACK_BIOS_SERIAL     L"5RSJB12"
+
+// ── Spoofed data accessors (HwIdEmu-backed, with fallback) ────────────
+
+static const wchar_t* GetDiskModel(int index)
+{
+    static wchar_t buf[128];
+    static bool cached = false;
+    static bool hasHwId = false;
+    if (!cached) { InitHwIdEmuBridge(); cached = true; }
+    if (hasHwId) return buf;
+    if (HwIdEmuAvailable() && index >= 0 && g_fnDiskCount() > 0) {
+        uint32_t modelLen = 128;
+        uint32_t serialLen = 128;
+        wchar_t serial[128];
+        uint64_t size;
+        if (g_fnGetDisk((uint32_t)index, buf, &modelLen, serial, &serialLen, &size)) {
+            hasHwId = true;
+            return buf;
+        }
+    }
+    return FALLBACK_DISK_MODEL;
+}
+
+static const wchar_t* GetDiskSerial(int index)
+{
+    static wchar_t buf[128];
+    static bool cached = false;
+    static bool hasHwId = false;
+    if (!cached) { InitHwIdEmuBridge(); cached = true; }
+    if (hasHwId) return buf;
+    if (HwIdEmuAvailable() && index >= 0 && g_fnDiskCount() > 0) {
+        uint32_t modelLen = 128;
+        uint32_t serialLen = 128;
+        wchar_t model[128];
+        uint64_t size;
+        if (g_fnGetDisk((uint32_t)index, model, &modelLen, buf, &serialLen, &size)) {
+            hasHwId = true;
+            return buf;
+        }
+    }
+    return FALLBACK_DISK_SERIAL;
+}
+
+static uint64_t GetDiskSize(int index)
+{
+    if (HwIdEmuAvailable() && index >= 0 && g_fnDiskCount() > 0) {
+        uint32_t modelLen = 0;
+        uint32_t serialLen = 0;
+        uint64_t size = 0;
+        if (g_fnGetDisk((uint32_t)index, nullptr, &modelLen, nullptr, &serialLen, &size))
+            return size;
+    }
+    return FALLBACK_DISK_SIZE;
+}
 
 // ============================================================================
 // Spoofed Win32_Processor props (i9-10900K)
@@ -35,11 +153,15 @@ struct SpoofedProcessor {
 };
 
 // ============================================================================
-// Spoofed Win32_ComputerSystem props (hide hypervisor)
+// Spoofed Win32_ComputerSystem props (hide hypervisor — HwIdEmu-backed)
 // ============================================================================
 struct SpoofedComputerSystem {
-    static const wchar_t* Manufacturer() { return L"Dell Inc."; }
-    static const wchar_t* Model() { return L"Inspiron 3542"; }
+    static const wchar_t* Manufacturer() {
+        static wchar_t buf[128];
+        if (GetHwIdSystemManufacturer(buf, 128)) return buf;
+        return FALLBACK_SYSTEM_MFR;
+    }
+    static const wchar_t* Model() { return FALLBACK_SYSTEM_MODEL; }
     static const wchar_t* SystemType() { return L"x64-based PC"; }
     static const wchar_t* Domain() { return L"WORKGROUP"; }
     static const wchar_t* UserName() { return L"DESKTOP-I3542\\User"; }
@@ -47,40 +169,48 @@ struct SpoofedComputerSystem {
     static bool HypervisorPresent() { return false; }
     static DWORD NumberOfProcessors() { return 1; }
     static DWORD NumberOfLogicalProcessors() { return 4; }
-    static uint64_t TotalPhysicalMemory() { return 8589934592ULL; } // 8 GB
+    static uint64_t TotalPhysicalMemory() { return 8589934592ULL; }
 };
 
 // ============================================================================
-// Spoofed Win32_BaseBoard props (Dell Inspiron 3542)
+// Spoofed Win32_BaseBoard props (HwIdEmu-backed for manufacturer)
 // ============================================================================
 struct SpoofedBaseBoard {
-    static const wchar_t* Manufacturer() { return L"Dell Inc."; }
+    static const wchar_t* Manufacturer() {
+        static wchar_t buf[128];
+        if (GetHwIdSystemManufacturer(buf, 128)) return buf;
+        return FALLBACK_SYSTEM_MFR;
+    }
     static const wchar_t* Product() { return L"0WW73H"; }
     static const wchar_t* Version() { return L"A03"; }
-    static const wchar_t* SerialNumber() { return L".5RSJB12.CN3MF00A3L00D3."; }
+    static const wchar_t* SerialNumber() { return FALLBACK_SYSTEM_SERIAL; }
 };
 
 // ============================================================================
-// Spoofed Win32_BIOS props (Dell A03)
+// Spoofed Win32_BIOS props (HwIdEmu-backed for vendor)
 // ============================================================================
 struct SpoofedBIOS {
-    static const wchar_t* Manufacturer() { return L"Dell Inc."; }
-    static const wchar_t* Name() { return L"A03"; }
-    static const wchar_t* Version() { return L"DELL   - 20140527"; }
-    static const wchar_t* SerialNumber() { return L"5RSJB12"; }
-    static const wchar_t* SMBIOSBIOSVersion() { return L"A03"; }
-    static const wchar_t* ReleaseDate() { return L"20140527000000.000000+000"; }
+    static const wchar_t* Manufacturer() {
+        static wchar_t buf[128];
+        if (GetHwIdBiosVendor(buf, 128)) return buf;
+        return FALLBACK_BIOS_VENDOR;
+    }
+    static const wchar_t* Name() { return FALLBACK_BIOS_SMBIOS_VER; }
+    static const wchar_t* Version() { return FALLBACK_BIOS_VERSION; }
+    static const wchar_t* SerialNumber() { return FALLBACK_BIOS_SERIAL; }
+    static const wchar_t* SMBIOSBIOSVersion() { return FALLBACK_BIOS_SMBIOS_VER; }
+    static const wchar_t* ReleaseDate() { return FALLBACK_BIOS_DATE; }
 };
 
 // ============================================================================
-// Spoofed Win32_DiskDrive props
+// Spoofed Win32_DiskDrive props (HwIdEmu-backed)
 // ============================================================================
 struct SpoofedDiskDrive {
-    static const wchar_t* Model() { return L"CT500BX500SSD1"; }
-    static const wchar_t* SerialNumber() { return L"2324E6E428AC"; }
+    static const wchar_t* Model() { return GetDiskModel(0); }
+    static const wchar_t* SerialNumber() { return GetDiskSerial(0); }
     static const wchar_t* InterfaceType() { return L"Serial ATA"; }
     static const wchar_t* MediaType() { return L"Fixed hard disk media"; }
-    static uint64_t Size() { return 500105249280ULL; }
+    static uint64_t Size() { return GetDiskSize(0); }
     static DWORD BytesPerSector() { return 512; }
     static DWORD SectorsPerTrack() { return 63; }
     static DWORD TotalHeads() { return 255; }
@@ -98,12 +228,12 @@ struct SpoofedVideoController {
     static const wchar_t* AdapterCompatibility() { return L"NVIDIA"; }
     static const wchar_t* DriverVersion() { return L"31.0.15.3742"; }
     static const wchar_t* PNPDeviceID() { return L"PCI\\VEN_10DE&DEV_2206&SUBSYS_38811462&REV_A1"; }
-    static uint32_t AdapterRAM() { return 2147483648UL; } // 2GB (fits uint32_t)
+    static uint32_t AdapterRAM() { return 2147483648UL; }
     static uint32_t CurrentHorizontalResolution() { return 2560; }
     static uint32_t CurrentVerticalResolution() { return 1440; }
     static uint32_t CurrentRefreshRate() { return 144; }
     static uint32_t CurrentBitsPerPixel() { return 32; }
-    static uint32_t VideoMemoryType() { return 2; } // DDR6
+    static uint32_t VideoMemoryType() { return 2; }
 };
 
 // ============================================================================
@@ -112,9 +242,9 @@ struct SpoofedVideoController {
 struct SpoofedNetworkAdapter {
     static const wchar_t* Name() { return L"Intel(R) Ethernet Connection I225-V"; }
     static const wchar_t* Manufacturer() { return L"Intel Corporation"; }
-    static const wchar_t* MACAddress() { return L"B8:2A:72:C9:38:7E"; } // Dell OUI
+    static const wchar_t* MACAddress() { return L"B8:2A:72:C9:38:7E"; }
     static const wchar_t* AdapterType() { return L"Ethernet 802.3"; }
-    static uint64_t Speed() { return 1000000000ULL; } // 1 Gbps
+    static uint64_t Speed() { return 1000000000ULL; }
     static bool PhysicalAdapter() { return true; }
 };
 
@@ -126,10 +256,10 @@ struct SpoofedPhysicalMemory {
     static const wchar_t* Manufacturer() { return L"Kingston"; }
     static const wchar_t* PartNumber() { return L"KVR26N19D8/16"; }
     static const wchar_t* SerialNumber() { return L"2C2C8D1A"; }
-    static uint64_t Capacity() { return 17179869184ULL; } // 16GB
+    static uint64_t Capacity() { return 17179869184ULL; }
     static uint32_t Speed() { return 2666; }
-    static uint32_t MemoryType() { return 26; } // DDR4
-    static uint32_t FormFactor() { return 8; } // DIMM
+    static uint32_t MemoryType() { return 26; }
+    static uint32_t FormFactor() { return 8; }
 };
 
 // ============================================================================
@@ -143,7 +273,7 @@ struct SpoofedUSBController {
 };
 
 // ============================================================================
-// Spoofed Sensor classes (return non-empty to avoid VM detection)
+// Spoofed Sensor classes
 // ============================================================================
 struct SpoofedSensor {
     static const wchar_t* Name() { return L"CPU Temperature Sensor"; }
@@ -155,7 +285,7 @@ struct SpoofedSensor {
 struct SpoofedTemperatureProbe {
     static const wchar_t* Name() { return L"CPU Diode Temperature"; }
     static const wchar_t* Manufacturer() { return L"Intel Corporation"; }
-    static uint32_t CurrentReading() { return 45; } // 45C
+    static uint32_t CurrentReading() { return 45; }
     static uint32_t NormalMin() { return 30; }
     static uint32_t NormalMax() { return 85; }
 };
@@ -163,15 +293,16 @@ struct SpoofedTemperatureProbe {
 struct SpoofedFan {
     static const wchar_t* Name() { return L"Chassis Fan"; }
     static const wchar_t* Manufacturer() { return L"Dell Inc."; }
-    static uint64_t DesiredSpeed() { return 1200; } // RPM
+    static uint64_t DesiredSpeed() { return 1200; }
 };
 
 struct SpoofedVoltageProbe {
     static const wchar_t* Name() { return L"CPU Core Voltage"; }
     static const wchar_t* Manufacturer() { return L"Intel Corporation"; }
-    static uint32_t CurrentReading() { return 1200; } // 1.2V
+    static uint32_t CurrentReading() { return 1200; }
 };
 
+// ── The rest of the file (CSpoofWbemClassObject, CSpoofEnumWbemClassObject, etc.) is identical ──
 // ============================================================================
 // CSpoofWbemClassObject - wraps IWbemClassObject, spoofs Get() for WMI props
 // ============================================================================
@@ -420,7 +551,7 @@ public:
 };
 
 // ============================================================================
-// CSpoofEnumWbemClassObject - wraps IEnumWbemClassObject, spoofs Next()
+// CSpoofEnumWbemClassObject
 // ============================================================================
 class CSpoofEnumWbemClassObject : public IEnumWbemClassObject {
 private:
@@ -484,7 +615,7 @@ public:
 };
 
 // ============================================================================
-// CSpoofWbemServices - wraps IWbemServices, intercepts ExecQuery
+// CSpoofWbemServices
 // ============================================================================
 class CSpoofWbemServices : public IWbemServices {
 private:
@@ -631,7 +762,7 @@ public:
 };
 
 // ============================================================================
-// CSpoofWbemLocator - wraps IWbemLocator
+// CSpoofWbemLocator
 // ============================================================================
 class CSpoofWbemLocator : public IWbemLocator {
 private:

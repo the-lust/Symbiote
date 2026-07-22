@@ -84,6 +84,8 @@ set(ENGINE_SOURCES
     src/engine/emu/TimingEmu.cpp
     src/engine/emu/VirtualState.cpp
     src/engine/emu/DeviceIoEmu.cpp
+    src/engine/emu/HwIdEmu.cpp
+    src/engine/emu/MemoryGuardEmu.cpp
     src/engine/emu/StackSpoofer.cpp
     # Kernel abstraction
     src/engine/kernel/MinimalKernel.cpp
@@ -104,6 +106,7 @@ set(ENGINE_SOURCES
     src/engine/proxy/ModuleCloak.cpp
     src/engine/proxy/ProxyBase.cpp
     src/engine/proxy/SyscallBridge.cpp
+    src/engine/proxy/EngineExports.cpp
     src/engine/proxy/ApiSetResolver.cpp
     # Backend abstraction
     src/engine/backend/WhpBackend.cpp
@@ -202,5 +205,9 @@ add_executable(capture_tool tools/capture/Main.cpp)
 
 # ─── MSR Reader Tool (requires semav6msr64 driver) ─────────────────────
 add_executable(msr_reader tools/msr_reader/Main.cpp)
+
+# ─── VirtualDisk Smoke Test ───────────────────────────────────────────
+add_executable(virtualdisk_test tools/virtualdisk_test/Main.cpp)
+target_include_directories(virtualdisk_test PRIVATE src/engine/log src/engine/emu)
 
 

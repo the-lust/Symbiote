@@ -1,3 +1,4 @@
+// Credits: WHP backend pattern adapted from Sogen (https://github.com/hedronium/Sogen)
 #include "WhpBackend.h"
 #include "whp/Partition.h"
 #include "whp/VcpuManager.h"

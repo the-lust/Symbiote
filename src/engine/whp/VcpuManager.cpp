@@ -1,3 +1,4 @@
+// Credits: LSTAR→HLT syscall intercept pattern adapted from Sogen (https://github.com/hedronium/Sogen)
 #include "VcpuManager.h"
 #include "Partition.h"
 #include "GuestPageTable.h"
