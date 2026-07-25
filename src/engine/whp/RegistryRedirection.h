@@ -24,6 +24,12 @@ public:
         bool         isDeleted;
     };
 
+    // Holds a redirected registry value — used by EngineExports for proxy DLL queries
+    struct RedirectedValue {
+        std::vector<uint8_t> data;
+        uint32_t type;
+    };
+
     bool Initialize(const wchar_t* boxName);
     void AddRule(const KeyRule& rule);
 
@@ -40,6 +46,12 @@ public:
                          std::vector<std::wstring>& outValues);
 
     bool Resolve(const wchar_t* path, bool isWrite, KeyInfo& info);
+
+    // Returns whether a given registry key path should be redirected
+    bool ShouldRedirect(const wchar_t* keyPath) const;
+
+    // Returns a spoofed value for the given key+name (for proxy DLL use)
+    bool GetRedirectedValue(const wchar_t* keyPath, const wchar_t* valueName, RedirectedValue& outValue) const;
 
     bool IsInitialized() const { return m_initialized; }
 

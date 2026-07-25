@@ -264,3 +264,117 @@ bool RegistryRedirection::CopyKeyToBox(const wchar_t* hostKey, const wchar_t* bo
     RegCloseKey(hSrc);
     return true;
 }
+
+bool RegistryRedirection::ShouldRedirect(const wchar_t* keyPath) const
+{
+    if (!m_initialized || !keyPath) return false;
+
+    std::wstring norm;
+    norm.resize(wcslen(keyPath) + 1);
+    norm.assign(keyPath);
+    for (size_t i = 0; i < norm.length(); i++) {
+        if (norm[i] == L'/') norm[i] = L'\\';
+    }
+    std::transform(norm.begin(), norm.end(), norm.begin(), ::towupper);
+
+    for (const auto& rule : m_rules) {
+        if (norm.find(rule.hostKeyPrefix) == 0) {
+            return true;
+        }
+    }
+
+    // Default: redirect known VM-detection registry paths
+    static const wchar_t* kVmDetectionPaths[] = {
+        L"\\REGISTRY\\MACHINE\\SOFTWARE\\MICROSOFT\\HYPER-V",
+        L"\\REGISTRY\\MACHINE\\SOFTWARE\\MICROSOFT\\VIRTUAL MACHINE",
+        L"\\REGISTRY\\MACHINE\\HARDWARE\\DESCRIPTION\\SYSTEM\\BIOS",
+        L"\\REGISTRY\\MACHINE\\SYSTEM\\CONTROLSET001\\SERVICES\\VMTRAY",
+        L"\\REGISTRY\\MACHINE\\SYSTEM\\CONTROLSET001\\SERVICES\\VBOXGUEST",
+        L"\\REGISTRY\\MACHINE\\SYSTEM\\CONTROLSET001\\SERVICES\\VMSCI",
+        nullptr
+    };
+
+    for (int i = 0; kVmDetectionPaths[i]; i++) {
+        if (norm.find(kVmDetectionPaths[i]) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool RegistryRedirection::GetRedirectedValue(const wchar_t* keyPath, const wchar_t* valueName, RedirectedValue& outValue) const
+{
+    if (!m_initialized || !keyPath || !valueName) return false;
+
+    // Sanitize VM-detection values that Denuvo/EAC query via registry
+    std::wstring normKey;
+    normKey.assign(keyPath);
+    for (size_t i = 0; i < normKey.length(); i++) {
+        if (normKey[i] == L'/') normKey[i] = L'\\';
+    }
+    std::transform(normKey.begin(), normKey.end(), normKey.begin(), ::towupper);
+
+    std::wstring normVal;
+    normVal.assign(valueName);
+    std::transform(normVal.begin(), normVal.end(), normVal.begin(), ::towupper);
+
+    // Known Hyper-V detection values to redirect
+    struct {
+        const wchar_t* keyPattern;
+        const wchar_t* valuePattern;
+        uint32_t type;
+        const uint8_t* data;
+        uint32_t dataSize;
+    } kSpoofedValues[] = {
+        // Hyper-V presence: return "not present"
+        { L"SOFTWARE\\MICROSOFT\\HYPER-V", L"INSTALLED", REG_DWORD },
+        { L"SOFTWARE\\MICROSOFT\\VIRTUAL MACHINE", L"INSTALLED", REG_DWORD },
+        // BIOS vendor: return a real vendor
+        { L"DESCRIPTION\\SYSTEM\\BIOS", L"BIOSVENDOR", REG_SZ },
+        { L"DESCRIPTION\\SYSTEM\\BIOS", L"SYSTEMMANUFACTURER", REG_SZ },
+        { L"DESCRIPTION\\SYSTEM\\BIOS", L"SYSTEMPRODUCTNAME", REG_SZ },
+        // CPU vendor: match our spoofed CPUID
+        { L"DESCRIPTION\\SYSTEM\\CENTRALPROCESSOR\\0", L"VENDORIDENTIFIER", REG_SZ },
+        { L"DESCRIPTION\\SYSTEM\\CENTRALPROCESSOR\\0", L"PROCESSORNAMESTRING", REG_SZ },
+    };
+
+    for (const auto& sv : kSpoofedValues) {
+        if (normKey.find(sv.keyPattern) != std::wstring::npos &&
+            normVal == sv.valuePattern) {
+            // Build spoofed value data per entry
+            outValue.type = sv.type;
+            if (wcscmp(sv.valuePattern, L"INSTALLED") == 0) {
+                // DWORD 0 = not installed
+                uint32_t zero = 0;
+                outValue.data.resize(sizeof(zero));
+                memcpy(outValue.data.data(), &zero, sizeof(zero));
+            } else if (wcscmp(sv.valuePattern, L"BIOSVENDOR") == 0) {
+                std::wstring val = L"American Megatrends Inc.";
+                outValue.data.resize((val.length() + 1) * sizeof(wchar_t));
+                memcpy(outValue.data.data(), val.c_str(), (val.length() + 1) * sizeof(wchar_t));
+            } else if (wcscmp(sv.valuePattern, L"SYSTEMMANUFACTURER") == 0) {
+                std::wstring val = L"Dell Inc.";
+                outValue.data.resize((val.length() + 1) * sizeof(wchar_t));
+                memcpy(outValue.data.data(), val.c_str(), (val.length() + 1) * sizeof(wchar_t));
+            } else if (wcscmp(sv.valuePattern, L"SYSTEMPRODUCTNAME") == 0) {
+                std::wstring val = L"Precision Tower 5810";
+                outValue.data.resize((val.length() + 1) * sizeof(wchar_t));
+                memcpy(outValue.data.data(), val.c_str(), (val.length() + 1) * sizeof(wchar_t));
+            } else if (wcscmp(sv.valuePattern, L"VENDORIDENTIFIER") == 0) {
+                std::wstring val = L"GenuineIntel";
+                outValue.data.resize((val.length() + 1) * sizeof(wchar_t));
+                memcpy(outValue.data.data(), val.c_str(), (val.length() + 1) * sizeof(wchar_t));
+            } else if (wcscmp(sv.valuePattern, L"PROCESSORNAMESTRING") == 0) {
+                std::wstring val = L"Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz";
+                outValue.data.resize((val.length() + 1) * sizeof(wchar_t));
+                memcpy(outValue.data.data(), val.c_str(), (val.length() + 1) * sizeof(wchar_t));
+            } else {
+                return false;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}

@@ -5,6 +5,7 @@
 #include <winternl.h>
 #include <string>
 #include <algorithm>
+#include <vector>
 #ifndef NTSTATUS
 typedef LONG NTSTATUS;
 #endif
@@ -20,6 +21,15 @@ typedef struct _KEY_VALUE_PARTIAL_INFORMATION {
     ULONG DataLength;
     UCHAR Data[1];
 } KEY_VALUE_PARTIAL_INFORMATION, *PKEY_VALUE_PARTIAL_INFORMATION;
+
+// SYSTEM_FIRMWARE_TABLE_INFORMATION from ntddk.h
+typedef struct _SYSTEM_FIRMWARE_TABLE_INFORMATION {
+    ULONG ProviderSignature;
+    ULONG Action;
+    ULONG TableID;
+    ULONG TableBufferLength;
+    UCHAR TableBuffer[1];
+} SYSTEM_FIRMWARE_TABLE_INFORMATION, *PSYSTEM_FIRMWARE_TABLE_INFORMATION;
 
 static Logger g_logger;
 
@@ -51,7 +61,60 @@ static RouteSyscall_t GetRouteSyscall()
     return route;
 }
 
-// ── IpcFilter exports (lazy-loaded from engine.dll) ──────────────────────
+// ── FirmwareTableSpoofer exports (lazy-loaded from engine.dll) ────────────
+typedef BOOL (__stdcall* FwTable_GetSmbios_t)(uint32_t*, uint8_t*);
+typedef BOOL (__stdcall* FwTable_SanitizeSmbios_t)(uint8_t*, uint32_t);
+typedef BOOL (__stdcall* FwTable_GetAcpi_t)(const char*, uint32_t*, uint8_t*);
+typedef BOOL (__stdcall* FwTable_SanitizeAcpi_t)(uint8_t*, uint32_t);
+
+static FwTable_GetSmbios_t g_fnGetSmbios = nullptr;
+static FwTable_SanitizeSmbios_t g_fnSanitizeSmbios = nullptr;
+static FwTable_GetAcpi_t g_fnGetAcpi = nullptr;
+static FwTable_SanitizeAcpi_t g_fnSanitizeAcpi = nullptr;
+
+// ── RegistryRedirection exports (lazy-loaded from engine.dll) ─────────────
+typedef BOOL (__stdcall* RegRedir_ShouldRedirect_t)(const wchar_t*);
+typedef BOOL (__stdcall* RegRedir_GetRedirectedValue_t)(const wchar_t*, const wchar_t*, uint8_t*, uint32_t*, uint32_t*);
+
+static RegRedir_ShouldRedirect_t g_fnRegRedir_ShouldRedirect = nullptr;
+static RegRedir_GetRedirectedValue_t g_fnRegRedir_GetRedirectedValue = nullptr;
+
+static void InitFirmwareExports()
+{
+    static bool init = false;
+    if (init) return;
+    init = true;
+    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
+    if (hEngine) {
+        g_fnGetSmbios = (FwTable_GetSmbios_t)GetProcAddress(hEngine, "FwTable_GetSmbios");
+        g_fnSanitizeSmbios = (FwTable_SanitizeSmbios_t)GetProcAddress(hEngine, "FwTable_SanitizeSmbios");
+        g_fnGetAcpi = (FwTable_GetAcpi_t)GetProcAddress(hEngine, "FwTable_GetAcpi");
+        g_fnSanitizeAcpi = (FwTable_SanitizeAcpi_t)GetProcAddress(hEngine, "FwTable_SanitizeAcpi");
+    }
+}
+
+static void InitRegistryRedirExports()
+{
+    static bool init = false;
+    if (init) return;
+    init = true;
+    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
+    if (hEngine) {
+        g_fnRegRedir_ShouldRedirect = (RegRedir_ShouldRedirect_t)GetProcAddress(hEngine, "RegRedir_ShouldRedirect");
+        g_fnRegRedir_GetRedirectedValue = (RegRedir_GetRedirectedValue_t)GetProcAddress(hEngine, "RegRedir_GetRedirectedValue");
+    }
+}
+
+// ── Helper: check and get a redirected registry value ─────────────────────
+static bool GetRedirectedValue(const wchar_t* keyPath, const wchar_t* valueName,
+                                uint8_t* data, uint32_t* dataSize, uint32_t* type)
+{
+    InitRegistryRedirExports();
+    if (g_fnRegRedir_GetRedirectedValue) {
+        return g_fnRegRedir_GetRedirectedValue(keyPath, valueName, data, dataSize, type) ? true : false;
+    }
+    return false;
+}
 typedef BOOL (__stdcall* IpcFilter_ShouldBlockAlpc_t)(const wchar_t*);
 typedef BOOL (__stdcall* IpcFilter_ShouldBlockPipe_t)(const wchar_t*);
 
@@ -181,17 +244,55 @@ struct NtQuerySystemInfoArgs {
 extern "C" NTSTATUS NTAPI Proxy_NtQuerySystemInformation(
     ULONG InfoClass, PVOID Info, ULONG Length, PULONG ReturnLength)
 {
-    static const char* sysInfoClasses[] = {
-        "SystemBasicInformation", "SystemProcessorInformation",
-        "SystemPerformanceInformation", "SystemTimeOfDayInformation",
-        "SystemNotImplemented1", "SystemProcessInformation",
-        "SystemProcessorPerformanceInformation", "SystemInterruptInformation",
-        "SystemExceptionInformation", "SystemNotImplemented2"
-    };
-    g_logger.Trace(LOG_PROXY, "CAPTURE NtQuerySystemInformation class=%u (%s) len=%u",
-        InfoClass,
-        InfoClass < 10 ? sysInfoClasses[InfoClass] : "unknown",
-        Length);
+    // ── SystemFirmwareTableInformation (0x16) ────────────────────────────
+    // Denuvo and VMProtect read SMBIOS/ACPI firmware tables via this class
+    // to detect VMs. Intercept and serve sanitized tables from engine.dll.
+    if (InfoClass == 0x16 && Info && Length >= sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION)) {
+        PSYSTEM_FIRMWARE_TABLE_INFORMATION fti = (PSYSTEM_FIRMWARE_TABLE_INFORMATION)Info;
+        InitFirmwareExports();
+
+        // Action 0 = query size, Action 1 = get table
+        if (fti->Action == 0) {
+            uint32_t bufSize = 0;
+            BOOL ok = FALSE;
+            if (fti->ProviderSignature == 'RSMB' && g_fnGetSmbios) {
+                ok = g_fnGetSmbios(&bufSize, NULL);
+            } else if (g_fnGetAcpi) {
+                char sig[5] = {0};
+                memcpy(sig, &fti->TableID, 4);
+                ok = g_fnGetAcpi(sig, &bufSize, NULL);
+            }
+            if (ok) {
+                fti->TableBufferLength = bufSize;
+                if (ReturnLength) *ReturnLength = sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION);
+                return STATUS_SUCCESS;
+            }
+            // Fall through to real NtQuerySystemInformation
+        } else if (fti->Action == 1) {
+            uint32_t bufSize = fti->TableBufferLength;
+            uint8_t* buffer = fti->TableBuffer;
+            BOOL ok = FALSE;
+            if (fti->ProviderSignature == 'RSMB' && g_fnGetSmbios) {
+                ok = g_fnGetSmbios(&bufSize, buffer);
+                if (ok && g_fnSanitizeSmbios) {
+                    g_fnSanitizeSmbios(buffer, bufSize);
+                }
+            } else if (g_fnGetAcpi) {
+                char sig[5] = {0};
+                memcpy(sig, &fti->TableID, 4);
+                ok = g_fnGetAcpi(sig, &bufSize, buffer);
+                if (ok && g_fnSanitizeAcpi) {
+                    g_fnSanitizeAcpi(buffer, bufSize);
+                }
+            }
+            if (ok) {
+                fti->TableBufferLength = bufSize;
+                if (ReturnLength) *ReturnLength = sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION) + bufSize;
+                return STATUS_SUCCESS;
+            }
+            // Fall through to real NtQuerySystemInformation
+        }
+    }
 
     RouteSyscall_t route = GetRouteSyscall();
     if (route) {
@@ -210,10 +311,6 @@ extern "C" NTSTATUS NTAPI Proxy_NtQuerySystemInformation(
         if (realNtdll) realFunc = (decltype(&Proxy_NtQuerySystemInformation))GetProcAddress(realNtdll, "NtQuerySystemInformation");
     }
     NTSTATUS ret = realFunc ? realFunc(InfoClass, Info, Length, ReturnLength) : STATUS_UNSUCCESSFUL;
-    if (InfoClass == 0x8 && ReturnLength) {
-        g_logger.Trace(LOG_PROXY, "CAPTURE NtQuerySysInfo[SystemProcessorPerf] result=0x%X retLen=%u",
-            ret, ReturnLength ? *ReturnLength : 0);
-    }
     return ret;
 }
 
@@ -357,6 +454,7 @@ extern "C" NTSTATUS NTAPI Proxy_NtQueryValueKey(
     ULONG KeyValueInformationClass, PVOID KeyValueInformation,
     ULONG KeyValueInformationLength, PULONG ResultLength)
 {
+    (void)KeyValueInformationClass;
     EnterCriticalSection(&s_trackedCs);
     int slot = FindTrackedSlot(KeyHandle);
     bool isCp = (slot >= 0 && s_trackedKeys[slot].isCentralProcessor);
@@ -378,7 +476,29 @@ extern "C" NTSTATUS NTAPI Proxy_NtQueryValueKey(
                     pvi->DataLength = brandLen;
                     memcpy(pvi->Data, SPOOFED_BRAND, brandLen);
                     if (ResultLength) *ResultLength = needed;
-                    g_logger.Trace(LOG_PROXY, "NtQueryValueKey: spoofed ProcessorNameString");
+                    return STATUS_SUCCESS;
+                }
+            }
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+    }
+
+    // ── RegistryRedirection: spoof VM-detection values ─────────────────
+    if (ValueName && ValueName->Buffer && ValueName->Length > 0 && !isCp) {
+        std::wstring valName(ValueName->Buffer, ValueName->Length / sizeof(wchar_t));
+
+        // Check redirected values from engine.dll's RegistryRedirection
+        uint32_t dataSize = 0;
+        uint32_t type = 0;
+        if (GetRedirectedValue(L"", valName.c_str(), NULL, &dataSize, &type)) {
+            if (KeyValueInformationLength >= sizeof(KEY_VALUE_PARTIAL_INFORMATION) + dataSize) {
+                std::vector<uint8_t> buf(dataSize);
+                if (GetRedirectedValue(L"", valName.c_str(), buf.data(), &dataSize, &type)) {
+                    PKEY_VALUE_PARTIAL_INFORMATION pvi = (PKEY_VALUE_PARTIAL_INFORMATION)KeyValueInformation;
+                    pvi->Type = type;
+                    pvi->DataLength = dataSize;
+                    memcpy(pvi->Data, buf.data(), dataSize);
+                    if (ResultLength) *ResultLength = sizeof(KEY_VALUE_PARTIAL_INFORMATION) + dataSize;
                     return STATUS_SUCCESS;
                 }
             }

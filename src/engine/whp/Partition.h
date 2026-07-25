@@ -19,6 +19,7 @@ public:
     bool SetupCpuidResultList(CpuidHandler* cpuidHandler);
     bool SetupAntiDetectionCpuidResultList(CpuidHandler* cpuidHandler);
     bool SetupExceptionBitmap();
+    bool SetupSelectiveExits();
     bool Init();
     void Destroy();
 
@@ -40,6 +41,16 @@ public:
 
     void* AllocateGuestMemory(uint64_t sizeInBytes);
     void FreeGuestMemory(void* ptr);
+
+    // Pre-mapped working set — allocate + map critical GPA ranges up front
+    // to eliminate runtime EPT violation exits during game startup and gameplay.
+    struct WorkingSetRegion {
+        const char* name;           // descriptive label for logging
+        uint64_t    sizeMB;         // size in MB (aligned to 2MB for large pages)
+        uint64_t    baseGpa;        // starting GPA (in MB units, shifted left by 20)
+        WHV_MAP_GPA_RANGE_FLAGS flags;
+    };
+    bool SetupWorkingSet(const WorkingSetRegion* regions, int regionCount);
 
 public:
     // On-demand mapping — track GPA ranges but defer mapping until page fault

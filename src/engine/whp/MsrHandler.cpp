@@ -23,10 +23,15 @@ static void CacheVmxMsrs(uint64_t* out, uint32_t count)
 MsrHandler::MsrHandler(Logger* logger)
     : m_logger(logger), m_captureLogger(nullptr),
       m_efer(1), m_star(0), m_lstar(0), m_cstar(0), m_sfMask(0),
-      m_sceAlwaysTrue(true)
+      m_sceAlwaysTrue(true),
+      m_aperfBase(0), m_mperfBase(0),
+      m_aperfLastDelta(0), m_mperfLastDelta(0), m_lastAperfSyncTick(0)
 {
     // Cache real hardware VMX MSR values (raw helper avoids C++/SEH conflict)
     CacheVmxMsrs(m_vmxMsrs, MSR_IA32_VMX_COUNT);
+
+    // Capture APERF/MPERF base values for BattlEye consistency tracking
+    SnapshotAperfMperf();
 }
 
 bool MsrHandler::IsValidMsr(uint32_t msr)
@@ -90,8 +95,74 @@ uint64_t MsrHandler::GetSpoofedMsr(uint32_t msr)
         case MSR_IA32_KERNEL_GS_BASE:     return 0x0ULL;
         case MSR_HV_GUEST_IDLE:           return 0x0ULL;
         case MSR_IA32_TSC:                return __rdtsc();
+        // APERF/MPERF — return spoofed values consistent with TSC
+        case MSR_IA32_APERF:              return GetSpoofedAperf();
+        case MSR_IA32_MPERF:              return GetSpoofedMperf();
+        // PerfMon MSRs — return 0 to indicate no active counters
+        case MSR_IA32_PERF_FIXED_CTR0:
+        case MSR_IA32_PERF_FIXED_CTR1:
+        case MSR_IA32_PERF_FIXED_CTR2:
+        case MSR_IA32_PERF_GLOBAL_CTRL:
+        case MSR_IA32_PERF_GLOBAL_STATUS:
+        case MSR_IA32_PERF_GLOBAL_OVF_CTRL:
+                                          return 0x0ULL;
         default:                          return 0x0ULL; // All valid-range MSRs return 0
     }
+}
+
+void MsrHandler::SnapshotAperfMperf()
+{
+    __try {
+        m_aperfBase = __readmsr(MSR_IA32_APERF);
+        m_mperfBase = __readmsr(MSR_IA32_MPERF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        m_aperfBase = 0;
+        m_mperfBase = 0;
+    }
+    m_aperfLastDelta = 0;
+    m_mperfLastDelta = 0;
+    m_lastAperfSyncTick = GetTickCount64();
+}
+
+uint64_t MsrHandler::ComputeAperfDelta() const
+{
+    // Estimate VM-exit overhead in APERF cycles.
+    // A typical VM exit costs ~1500 cycles on modern hardware.
+    // We subtract a fixed overhead + jitter to make the APERF/MPERF
+    // ratio match what bare metal would show.
+    uint64_t baseExitCost = 1500;
+    uint64_t jitter = (GetTickCount64() & 0xFF) * 10;
+    if (jitter > 500) jitter = 500;
+    return baseExitCost + jitter;
+}
+
+uint64_t MsrHandler::GetSpoofedAperf() const
+{
+    // Return real APERF minus a small delta to account for VM-exit overhead.
+    // This keeps the APERF/MPERF ratio close to 1.0 (guest is never idle),
+    // matching game workloads on bare metal where cores are active.
+    uint64_t realAperf = 0;
+    __try {
+        realAperf = __readmsr(MSR_IA32_APERF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return m_aperfBase;
+    }
+    uint64_t delta = ComputeAperfDelta();
+    return (realAperf > delta) ? (realAperf - delta) : realAperf;
+}
+
+uint64_t MsrHandler::GetSpoofedMperf() const
+{
+    // MPERF counts at max frequency regardless of C-state.
+    // Return real MPERF minus same delta as APERF so ratio stays consistent.
+    uint64_t realMperf = 0;
+    __try {
+        realMperf = __readmsr(MSR_IA32_MPERF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return m_mperfBase;
+    }
+    uint64_t delta = ComputeAperfDelta();
+    return (realMperf > delta) ? (realMperf - delta) : realMperf;
 }
 
 bool MsrHandler::HandleMsrRead(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t* value)

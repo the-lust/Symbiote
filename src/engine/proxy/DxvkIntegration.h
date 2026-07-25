@@ -30,6 +30,11 @@ public:
     static std::vector<std::wstring> DetectVulkanLayers();
     static bool IsVulkanLayer(const std::wstring& moduleName);
 
+    // Vulkan ICD forwarding — set VK_ICD_FILENAMES to real host ICD so DXVK
+    // finds the actual GPU driver instead of a stub.
+    static std::wstring GetHostVulkanIcdPath();
+    static bool SetVulkanIcdEnvironment(const std::wstring& targetExePath);
+
     // DXVK DLL names
     static const wchar_t* kDxvkDlls[];
 

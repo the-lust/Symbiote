@@ -326,6 +326,178 @@ static void TestNetwork() {
     }
 }
 
+static void TestFirmwareTable() {
+    printf("\n=== Firmware Tables ===\n");
+
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll) return;
+    auto NtQSI = (NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG, PULONG))GetProcAddress(hNtdll, "NtQuerySystemInformation");
+    if (!NtQSI) return;
+
+    // SystemFirmwareTableInformation with provider 'RSMB' (SMBIOS)
+    struct {
+        ULONG ProviderSignature;
+        ULONG Action;
+        ULONG TableID;
+        ULONG TableBufferLength;
+        UCHAR TableBuffer[4096];
+    } smbiosInfo;
+    smbiosInfo.Action = 0;
+    smbiosInfo.ProviderSignature = 'RSMB';
+    smbiosInfo.TableID = 0;
+    smbiosInfo.TableBufferLength = 0;
+    ULONG retLen = 0;
+
+    NTSTATUS status = NtQSI(0x16, &smbiosInfo, sizeof(smbiosInfo), &retLen);
+    snprintf(g_buf, sizeof(g_buf), "status=0x%X retLen=%u bufLen=%u",
+        (uint32_t)status, retLen, smbiosInfo.TableBufferLength);
+    LogResult("FW", "SMBIOS query size", g_buf, NT_SUCCESS(status) && smbiosInfo.TableBufferLength > 0);
+
+    if (NT_SUCCESS(status) && smbiosInfo.TableBufferLength > 0 && smbiosInfo.TableBufferLength <= sizeof(smbiosInfo.TableBuffer)) {
+        smbiosInfo.Action = 1;
+        smbiosInfo.TableBufferLength = smbiosInfo.TableBufferLength;
+        status = NtQSI(0x16, &smbiosInfo, sizeof(smbiosInfo), &retLen);
+        if (NT_SUCCESS(status)) {
+            // Scan for VM vendor strings — should be sanitized
+            const char* kVmStrings[] = { "VMware", "VMWARE", "VirtualBox", "VBOX", "QEMU", "Bochs", "Oracle", "Innotek", "Parallels", "KVM", nullptr };
+            bool foundVM = false;
+            for (uint32_t i = 0; i + 4 < smbiosInfo.TableBufferLength; i++) {
+                for (int s = 0; kVmStrings[s]; s++) {
+                    size_t slen = strlen(kVmStrings[s]);
+                    if (i + slen <= smbiosInfo.TableBufferLength) {
+                        if (memcmp(&smbiosInfo.TableBuffer[i], kVmStrings[s], slen) == 0) {
+                            foundVM = true;
+                            snprintf(g_buf, sizeof(g_buf), "Found '%s' at offset %u", kVmStrings[s], i);
+                            break;
+                        }
+                    }
+                }
+                if (foundVM) break;
+            }
+            LogResult("FW", "SMBIOS VM strings sanitized", foundVM ? g_buf : "clean", !foundVM);
+        } else {
+            LogResult("FW", "SMBIOS get table", "FAILED", false);
+        }
+    }
+
+    // ACPI table check — sanitize OEM ID fields
+    struct {
+        ULONG ProviderSignature;
+        ULONG Action;
+        ULONG TableID;
+        ULONG TableBufferLength;
+        UCHAR TableBuffer[4096];
+    } acpiInfo;
+    acpiInfo.Action = 0;
+    acpiInfo.ProviderSignature = 'ACPI';
+    acpiInfo.TableID = 'DSDT';
+    acpiInfo.TableBufferLength = 0;
+    retLen = 0;
+
+    status = NtQSI(0x16, &acpiInfo, sizeof(acpiInfo), &retLen);
+    if (NT_SUCCESS(status) && acpiInfo.TableBufferLength > 0 && acpiInfo.TableBufferLength <= sizeof(acpiInfo.TableBuffer)) {
+        acpiInfo.Action = 1;
+        status = NtQSI(0x16, &acpiInfo, sizeof(acpiInfo), &retLen);
+        if (NT_SUCCESS(status)) {
+            bool foundVMOem = false;
+            const char* kVmOem[] = { "VBOX__", "VMW__", "BXPC", "BOCHS", "QEMU", nullptr };
+            for (int s = 0; kVmOem[s]; s++) {
+                size_t slen = strlen(kVmOem[s]);
+                if (acpiInfo.TableBufferLength >= 10 + slen && memcmp(acpiInfo.TableBuffer + 10, kVmOem[s], slen) == 0) {
+                    foundVMOem = true;
+                    char oemId[7] = {0};
+                    memcpy(oemId, acpiInfo.TableBuffer + 10, 6);
+                    snprintf(g_buf, sizeof(g_buf), "OEM ID='%s'", oemId);
+                    break;
+                }
+            }
+            LogResult("FW", "ACPI DSDT OEM ID sanitized", foundVMOem ? g_buf : "clean", !foundVMOem);
+        }
+    }
+}
+
+static void TestRegistryRedirection() {
+    printf("\n=== Registry Redirection ===\n");
+
+    // Check Hyper-V detection registry keys — should return clean values
+    HKEY hKey;
+    LONG st = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+        L"SOFTWARE\\Microsoft\\Hyper-V", 0, KEY_READ, &hKey);
+    if (st == ERROR_SUCCESS) {
+        DWORD installed = 1;
+        DWORD size = sizeof(installed);
+        st = RegQueryValueExW(hKey, L"Installed", NULL, NULL, (LPBYTE)&installed, &size);
+        if (st == ERROR_SUCCESS) {
+            LogResult("REG_REDIR", "Hyper-V Installed", installed == 0 ? "0 (hidden)" : "1 (present)", installed == 0);
+        } else {
+            LogResult("REG_REDIR", "Hyper-V Installed", "key exists but value not found", true);
+        }
+        RegCloseKey(hKey);
+    } else {
+        // Key doesn't exist — DRM won't find it either, which is fine
+        LogResult("REG_REDIR", "Hyper-V Installed", "key not found (clean)", true);
+    }
+
+    // Check BIOS vendor via registry — should match spoofed value
+    st = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+        L"HARDWARE\\DESCRIPTION\\System\\BIOS", 0, KEY_READ, &hKey);
+    if (st == ERROR_SUCCESS) {
+        wchar_t vendor[128] = {0};
+        DWORD size = sizeof(vendor);
+        st = RegQueryValueExW(hKey, L"BIOSVendor", NULL, NULL, (LPBYTE)vendor, &size);
+        if (st == ERROR_SUCCESS) {
+            char vendorA[128] = {0};
+            WideCharToMultiByte(CP_UTF8, 0, vendor, -1, vendorA, sizeof(vendorA), NULL, NULL);
+            bool hasAM = strstr(vendorA, "American Megatrends") != nullptr;
+            LogResult("REG_REDIR", "BIOSVendor", vendorA, hasAM);
+        }
+        RegCloseKey(hKey);
+    }
+
+    // Check SystemManufacturer via registry
+    st = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+        L"HARDWARE\\DESCRIPTION\\System\\BIOS", 0, KEY_READ, &hKey);
+    if (st == ERROR_SUCCESS) {
+        wchar_t mfg[128] = {0};
+        DWORD size = sizeof(mfg);
+        st = RegQueryValueExW(hKey, L"SystemManufacturer", NULL, NULL, (LPBYTE)mfg, &size);
+        if (st == ERROR_SUCCESS) {
+            char mfgA[128] = {0};
+            WideCharToMultiByte(CP_UTF8, 0, mfg, -1, mfgA, sizeof(mfgA), NULL, NULL);
+            bool isDell = strstr(mfgA, "Dell") != nullptr;
+            LogResult("REG_REDIR", "SystemManufacturer", mfgA, isDell);
+        }
+        RegCloseKey(hKey);
+    }
+}
+
+// Perfmon counter sanity checks (user-mode accessible)
+static void TestPerfCounters() {
+    printf("\n=== Performance Counters ===\n");
+
+    // Check via QPC that time appears normal (no hypervisor-induced jumps)
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
+    Sleep(15); // ~15ms
+    QueryPerformanceCounter(&end);
+
+    double elapsedMs = (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
+    snprintf(g_buf, sizeof(g_buf), "%.2f ms over Sleep(15)", elapsedMs);
+    LogResult("PERF", "QPC Sleep(15) timing", g_buf, elapsedMs > 10.0 && elapsedMs < 50.0);
+
+    // Verify RDTSCP monotonicity (if supported)
+    int cpuInfo[4] = {0};
+    __cpuid(cpuInfo, 0x80000001);
+    if (cpuInfo[2] & (1u << 27)) {
+        uint32_t aux;
+        uint64_t tsc1 = __rdtscp(&aux);
+        uint64_t tsc2 = __rdtscp(&aux);
+        LogResult("PERF", "RDTSCP monotonic", tsc2 > tsc1 ? "yes" : "no", tsc2 > tsc1);
+    }
+}
+
 int main() {
     printf("========================================\n");
     printf(" Symbiote Spoof Verification Tool\n");
@@ -343,6 +515,9 @@ int main() {
     TestRegistry();
     TestWmi();
     TestNetwork();
+    TestFirmwareTable();
+    TestRegistryRedirection();
+    TestPerfCounters();
 
     printf("\n========================================\n");
     printf(" Summary\n");

@@ -17,6 +17,23 @@ extern "C" {
     BOOL __stdcall IpcFilter_ShouldBlockPipe(const wchar_t* pipeName);
 }
 
+// FirmwareTableSpoofer exports — SMBIOS/ACPI table spoofing for Denuvo HWID checks
+// Called by ntdll_proxy when NtQuerySystemInformation(SystemFirmwareTableInformation) is intercepted
+extern "C" {
+    BOOL __stdcall FwTable_GetSmbios(uint32_t* bufferSize, uint8_t* buffer);
+    BOOL __stdcall FwTable_GetAcpi(const char* tableSignature, uint32_t* bufferSize, uint8_t* buffer);
+    BOOL __stdcall FwTable_GetFirmware(uint32_t* bufferSize, uint8_t* buffer);
+    BOOL __stdcall FwTable_SanitizeSmbios(uint8_t* smbiosData, uint32_t dataSize);
+    BOOL __stdcall FwTable_SanitizeAcpi(uint8_t* acpiData, uint32_t dataSize);
+}
+
+// RegistryRedirection exports — called by ntdll_proxy for registry COW
+extern "C" {
+    BOOL __stdcall RegRedir_ShouldRedirect(const wchar_t* keyPath);
+    BOOL __stdcall RegRedir_GetRedirectedValue(const wchar_t* keyPath, const wchar_t* valueName,
+                                                uint8_t* data, uint32_t* dataSize, uint32_t* type);
+}
+
 // System info types for HwIdEmu_GetSystemInfo
 #define HWID_SYSTEM_MANUFACTURER  1
 #define HWID_SYSTEM_PRODUCT       2

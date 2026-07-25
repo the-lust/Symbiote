@@ -4,7 +4,7 @@
 IpcFilter* g_ipcFilter = nullptr;
 
 const wchar_t* IpcFilter::kEscapePorts[] = {
-    // ALPC escape vectors
+    // ALPC escape vectors — Sandboxie derived
     L"\\RPC Control\\sbiedll",
     L"\\RPC Control\\sbievc",
     L"\\RPC Control\\sbiectrl",
@@ -23,12 +23,44 @@ const wchar_t* IpcFilter::kEscapePorts[] = {
     L"\\SmApiPort",
     L"\\DbgSsApiPort",
     L"\\DbgUiApiPort",
+
+    // DRM / anti-cheat evasion — Denuvo + EAC + BattlEye
+    // Denuvo token validation and anti-debug communication ports
+    L"\\RPC Control\\DenuvoToken",
+    L"\\RPC Control\\DenuvoClient",
+    L"\\RPC Control\\DenuvOService",
+    L"\\RPC Control\\denuvo_anti_debug",
+    // EAC user-mode service communication
+    L"\\RPC Control\\EasyAntiCheat",
+    L"\\RPC Control\\EACService",
+    L"\\RPC Control\\EasyAntiCheat_Server",
+    L"\\RPC Control\\EasyAntiCheat_Client",
+    // BattlEye service ports
+    L"\\RPC Control\\BEDaisy",
+    L"\\RPC Control\\BattlEye",
+    L"\\RPC Control\\BEService",
+    // Anti-cheat detection tool ports
+    L"\\RPC Control\\vmdetect",
+    L"\\RPC Control\\hyperv_check",
+    L"\\RPC Control\\antivm",
+    L"\\RPC Control\\vmware_check",
+    L"\\RPC Control\\vbox_check",
+
     // Named pipe escape vectors
     L"\\Device\\NamedPipe\\lsass",
     L"\\Device\\NamedPipe\\samr",
     L"\\Device\\NamedPipe\\srvsvc",
     L"\\Device\\NamedPipe\\sbie",
     L"\\Device\\NamedPipe\\sbiedll",
+    // Anti-cheat named pipes
+    L"\\Device\\NamedPipe\\EasyAntiCheat",
+    L"\\Device\\NamedPipe\\EAC",
+    L"\\Device\\NamedPipe\\BattlEye",
+    L"\\Device\\NamedPipe\\BEDaisy",
+    // Virtual machine detection pipes
+    L"\\Device\\NamedPipe\\VMwareGuest",
+    L"\\Device\\NamedPipe\\VBoxGuest",
+    L"\\Device\\NamedPipe\\hyperv_guest",
 };
 
 const uint32_t IpcFilter::kEscapePortCount = sizeof(kEscapePorts) / sizeof(kEscapePorts[0]);

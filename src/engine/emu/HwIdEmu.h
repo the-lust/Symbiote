@@ -44,9 +44,12 @@ public:
     uint32_t GetDiskCount() const { return (uint32_t)m_disks.size(); }
     const DiskSpoofInfo* GetDisk(uint32_t index) const;
     const std::wstring& GetBiosVendor() const { return m_biosVendor; }
+    const std::wstring& GetBiosVersion() const { return m_biosVersion; }
     const std::wstring& GetSystemManufacturer() const { return m_systemManufacturer; }
     const std::wstring& GetSystemProduct() const { return m_systemProduct; }
     const std::wstring& GetSystemSerial() const { return m_systemSerial; }
+    const std::wstring& GetBaseboardSerial() const { return m_baseboardSerial; }
+    const std::wstring& GetChassisSerial() const { return m_chassisSerial; }
 
 private:
     Logger* m_logger;

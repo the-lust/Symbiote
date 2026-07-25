@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <WinHvPlatform.h>
 #include <unordered_map>
+#include <atomic>
 #include "Logger.h"
 
 class CaptureLogger;
@@ -14,6 +15,13 @@ public:
 
     bool HandleMsrRead(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t* value);
     bool HandleMsrWrite(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t value);
+
+    // APERF/MPERF consistency — track cycle counts for BattlEye timing detection
+    void SnapshotAperfMperf();
+    uint64_t GetSpoofedAperf() const;
+    uint64_t GetSpoofedMperf() const;
+    uint64_t GetAperfBase() const { return m_aperfBase; }
+    uint64_t GetMperfBase() const { return m_mperfBase; }
 
 private:
     Logger* m_logger;
@@ -31,6 +39,14 @@ private:
     static const uint32_t MSR_IA32_ENERGY_PERF_BIAS = 0x1B0;
     static const uint32_t MSR_IA32_MCG_CAP       = 0x179;
     static const uint32_t MSR_IA32_MCG_STAT      = 0x17A;
+    static const uint32_t MSR_IA32_APERF          = 0xE8;
+    static const uint32_t MSR_IA32_MPERF          = 0xE7;
+    static const uint32_t MSR_IA32_PERF_FIXED_CTR0 = 0x309;
+    static const uint32_t MSR_IA32_PERF_FIXED_CTR1 = 0x30A;
+    static const uint32_t MSR_IA32_PERF_FIXED_CTR2 = 0x30B;
+    static const uint32_t MSR_IA32_PERF_GLOBAL_CTRL = 0x38F;
+    static const uint32_t MSR_IA32_PERF_GLOBAL_STATUS = 0x390;
+    static const uint32_t MSR_IA32_PERF_GLOBAL_OVF_CTRL = 0x391;
     static const uint32_t MSR_IA32_DEBUGCTL      = 0x1D9;
     static const uint32_t MSR_IA32_LASTBRANCHFROM = 0x1DB;
     static const uint32_t MSR_IA32_LASTBRANCHTO  = 0x1DC;
@@ -97,6 +113,14 @@ private:
     std::unordered_map<uint32_t, uint64_t> m_trackedMsrs;
     uint64_t m_vmxMsrs[MSR_IA32_VMX_COUNT]; // cached real HW values for 0x480-0x493
 
+    // APERF/MPERF base values captured at handler creation for BattlEye timing evasion
+    uint64_t m_aperfBase;
+    uint64_t m_mperfBase;
+    uint64_t m_aperfLastDelta;
+    uint64_t m_mperfLastDelta;
+    uint64_t m_lastAperfSyncTick;
+
     bool IsValidMsr(uint32_t msr);
     uint64_t GetSpoofedMsr(uint32_t msr);
+    uint64_t ComputeAperfDelta() const;
 };
