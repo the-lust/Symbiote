@@ -16,7 +16,7 @@ public:
     bool HandleMsrRead(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t* value);
     bool HandleMsrWrite(WHV_VP_EXIT_CONTEXT* ctx, uint32_t msr, uint64_t value);
 
-    // APERF/MPERF consistency — track cycle counts for BattlEye timing detection
+    // APERF/MPERF consistency — track cycle counts for guest timing accuracy
     void SnapshotAperfMperf();
     uint64_t GetSpoofedAperf() const;
     uint64_t GetSpoofedMperf() const;
@@ -113,7 +113,7 @@ private:
     std::unordered_map<uint32_t, uint64_t> m_trackedMsrs;
     uint64_t m_vmxMsrs[MSR_IA32_VMX_COUNT]; // cached real HW values for 0x480-0x493
 
-    // APERF/MPERF base values captured at handler creation for BattlEye timing evasion
+    // APERF/MPERF base values captured at handler creation for timing consistency
     uint64_t m_aperfBase;
     uint64_t m_mperfBase;
     uint64_t m_aperfLastDelta;

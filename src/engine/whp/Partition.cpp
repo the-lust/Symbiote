@@ -45,17 +45,17 @@ bool Partition::SetupMsrBitmap()
     //   bit 1: TscMsrWrite         — WRMSR to 0x10
     //   bit 2: TscMsrRead          — RDMSR from 0x10
     //   bit 3: ApicBaseMsrWrite    — WRMSR to 0x1B
-    //   bit 4: MiscEnableMsrRead   — RDMSR from 0x1A0 (Denuvo)
+    //   bit 4: MiscEnableMsrRead   — RDMSR from 0x1A0
     //   bit 5: McUpdatePatchLevelMsrRead — RDMSR from 0x8B (microcode rev)
     // Extended-range MSRs (0xC0000000-0xC0001FFF: EFER, LSTAR, STAR, CSTAR, SFMASK)
     // are NOT in this bitmap; they fall through to UnhandledMsrs handling.
     WHV_X64_MSR_EXIT_BITMAP bitmap;
     bitmap.AsUINT64 = 0;
     bitmap.UnhandledMsrs = 1;            // intercept ALL MSRs not explicitly listed
-    bitmap.TscMsrRead = 1;               // 0x10 RDTSC: timing checks (Denuvo/EAC/BE)
+    bitmap.TscMsrRead = 1;               // 0x10 RDTSC: timing checks
     bitmap.TscMsrWrite = 1;              // 0x10 WRMSR TSC
     bitmap.ApicBaseMsrWrite = 1;         // 0x1B APIC_BASE writes
-    bitmap.MiscEnableMsrRead = 1;        // 0x1A0 MISC_ENABLE reads (Denuvo)
+    bitmap.MiscEnableMsrRead = 1;        // 0x1A0 MISC_ENABLE reads
     bitmap.McUpdatePatchLevelMsrRead = 1; // 0x8B BIOS_SIGN_ID (microcode rev check)
 
     HRESULT hr = WHvSetPartitionProperty(m_handle,
@@ -189,11 +189,11 @@ bool Partition::SetupAntiDetectionCpuidResultList(CpuidHandler* cpuidHandler)
         WHvPartitionPropertyCodeCpuidResultList,
         results, (uint32_t)(count * sizeof(WHV_X64_CPUID_RESULT)));
     if (FAILED(hr)) {
-        m_logger->Trace(LOG_ERROR, "WHvSetPartitionProperty(CpuidResultList/anti-detect) failed: 0x%08X", hr);
+        m_logger->Trace(LOG_ERROR, "WHvSetPartitionProperty(CpuidResultList/comprehensive) failed: 0x%08X", hr);
         return SetupCpuidResultList(cpuidHandler);
     }
 
-    m_logger->Trace(LOG_WHP, "Anti-detection CPUID result list set: %d leaves (0 VM-exits for standard ranges)", count);
+    m_logger->Trace(LOG_WHP, "Comprehensive CPUID result list set: %d leaves (0 VM-exits for standard ranges)", count);
     return true;
 }
 
@@ -334,10 +334,10 @@ bool Partition::SetupSelectiveExits()
     // since VT-x doesn't need to check for disabled exit conditions.
     //
     // We need:
-    //   X64CpuidExit       — CPUID instruction (anti-detection)
-    //   X64MsrExit         — RDMSR/WRMSR (Denuvo timing checks)
+    //   X64CpuidExit       — CPUID instruction (guest CPU feature reporting)
+    //   X64MsrExit         — RDMSR/WRMSR (guest MSR access monitoring)
     //   ExceptionExit      — #BP syscall intercept, #DB trampoline
-    //   X64RdtscExit       — RDTSC (Denuvo/EAC timing)
+    //   X64RdtscExit       — RDTSC (guest timing observations)
     //   HypercallExit      — VMCALL (need to intercept or inject #UD)
     //
     // We don't need:
@@ -355,9 +355,8 @@ bool Partition::SetupSelectiveExits()
     exits.X64RdtscExit = 1;
     exits.HypercallExit = 1;
 
-    // Optionally enable GPA access fault exits (for EPT-based memory hiding)
-    // This is left as 0 by default; enable when implementing execute-disconnect
-    // EPT protection for Denuvo.
+    // GPA access fault exits — left as 0 by default; enable for comprehensive
+    // memory access monitoring in future research work.
     exits.GpaAccessFaultExit = 0;
 
     HRESULT hr = WHvSetPartitionProperty(m_handle,

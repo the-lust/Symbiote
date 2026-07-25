@@ -30,7 +30,7 @@ MsrHandler::MsrHandler(Logger* logger)
     // Cache real hardware VMX MSR values (raw helper avoids C++/SEH conflict)
     CacheVmxMsrs(m_vmxMsrs, MSR_IA32_VMX_COUNT);
 
-    // Capture APERF/MPERF base values for BattlEye consistency tracking
+    // Capture APERF/MPERF base values for timing consistency tracking
     SnapshotAperfMperf();
 }
 

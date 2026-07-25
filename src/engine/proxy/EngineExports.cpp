@@ -78,8 +78,7 @@ BOOL __stdcall HwIdEmu_GetVolumeSerial(uint32_t* serialNumber)
 //
 // These exports allow proxy DLLs (ntdll_proxy, wbem_proxy) to sanitize
 // SMBIOS/ACPI firmware tables when NtQuerySystemInformation is called
-// with SystemFirmwareTableInformation. Denuvo and VMProtect read these
-// tables to detect virtualized environments.
+// with SystemFirmwareTableInformation.
 
 #pragma comment(linker, "/EXPORT:FwTable_GetSmbios=FwTable_GetSmbios")
 BOOL __stdcall FwTable_GetSmbios(uint32_t* bufferSize, uint8_t* buffer)
@@ -239,7 +238,7 @@ BOOL __stdcall FwTable_SanitizeAcpi(uint8_t* acpiData, uint32_t dataSize)
 // ── RegistryRedirection exports ───────────────────────────────────────────
 //
 // These exports allow ntdll_proxy to query the registry COW layer for
-// spoofed values that bypass DRM detection (e.g., Hyper-V registry keys).
+// spoofed values that ensure consistent system information under virtualization.
 
 #pragma comment(linker, "/EXPORT:RegRedir_ShouldRedirect=RegRedir_ShouldRedirect")
 BOOL __stdcall RegRedir_ShouldRedirect(const wchar_t* keyPath)

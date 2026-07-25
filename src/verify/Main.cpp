@@ -434,7 +434,7 @@ static void TestRegistryRedirection() {
         }
         RegCloseKey(hKey);
     } else {
-        // Key doesn't exist — DRM won't find it either, which is fine
+        // Key doesn't exist — environment is clean
         LogResult("REG_REDIR", "Hyper-V Installed", "key not found (clean)", true);
     }
 

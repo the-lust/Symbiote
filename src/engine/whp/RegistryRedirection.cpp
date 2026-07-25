@@ -283,8 +283,8 @@ bool RegistryRedirection::ShouldRedirect(const wchar_t* keyPath) const
         }
     }
 
-    // Default: redirect known VM-detection registry paths
-    static const wchar_t* kVmDetectionPaths[] = {
+    // Default: redirect registry paths that could leak virtualized environment info
+    static const wchar_t* kRedirectedPaths[] = {
         L"\\REGISTRY\\MACHINE\\SOFTWARE\\MICROSOFT\\HYPER-V",
         L"\\REGISTRY\\MACHINE\\SOFTWARE\\MICROSOFT\\VIRTUAL MACHINE",
         L"\\REGISTRY\\MACHINE\\HARDWARE\\DESCRIPTION\\SYSTEM\\BIOS",
@@ -294,8 +294,8 @@ bool RegistryRedirection::ShouldRedirect(const wchar_t* keyPath) const
         nullptr
     };
 
-    for (int i = 0; kVmDetectionPaths[i]; i++) {
-        if (norm.find(kVmDetectionPaths[i]) == 0) {
+    for (int i = 0; kRedirectedPaths[i]; i++) {
+        if (norm.find(kRedirectedPaths[i]) == 0) {
             return true;
         }
     }
@@ -307,7 +307,7 @@ bool RegistryRedirection::GetRedirectedValue(const wchar_t* keyPath, const wchar
 {
     if (!m_initialized || !keyPath || !valueName) return false;
 
-    // Sanitize VM-detection values that Denuvo/EAC query via registry
+    // Sanitize values that may report inconsistent virtualized environment info
     std::wstring normKey;
     normKey.assign(keyPath);
     for (size_t i = 0; i < normKey.length(); i++) {
@@ -319,7 +319,7 @@ bool RegistryRedirection::GetRedirectedValue(const wchar_t* keyPath, const wchar
     normVal.assign(valueName);
     std::transform(normVal.begin(), normVal.end(), normVal.begin(), ::towupper);
 
-    // Known Hyper-V detection values to redirect
+    // Known registry values to sanitize for environment consistency
     struct {
         const wchar_t* keyPattern;
         const wchar_t* valuePattern;

@@ -245,8 +245,8 @@ extern "C" NTSTATUS NTAPI Proxy_NtQuerySystemInformation(
     ULONG InfoClass, PVOID Info, ULONG Length, PULONG ReturnLength)
 {
     // ── SystemFirmwareTableInformation (0x16) ────────────────────────────
-    // Denuvo and VMProtect read SMBIOS/ACPI firmware tables via this class
-    // to detect VMs. Intercept and serve sanitized tables from engine.dll.
+    // Games and applications read SMBIOS/ACPI firmware tables via this class
+    // to check execution environment. Intercept and serve sanitized tables.
     if (InfoClass == 0x16 && Info && Length >= sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION)) {
         PSYSTEM_FIRMWARE_TABLE_INFORMATION fti = (PSYSTEM_FIRMWARE_TABLE_INFORMATION)Info;
         InitFirmwareExports();
@@ -377,7 +377,7 @@ static void FixPebDebugFlags()
     }
 }
 
-// ── NtSetInformationProcess (anti-debug: block instrumentation callback) ─
+// ── NtSetInformationProcess (block instrumentation callback) ─────────────
 extern "C" NTSTATUS NTAPI Proxy_NtSetInformationProcess(
     HANDLE ProcessHandle, ULONG InfoClass, PVOID Info, ULONG Length)
 {

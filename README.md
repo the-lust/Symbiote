@@ -2,9 +2,9 @@
 
 **Ring-3 Windows userspace hypervisor framework — educational / security research**
 
-Symbiote is a research hypervisor that runs a target process inside a Hyper-V VCPU created via Microsoft's **Windows Hypervisor Platform (WHP)**, intercepting every CPUID, MSR, RDTSC, syscall, memory access, and exception the target generates. It combines WHP's hardware virtualization with 13 user-mode proxy DLLs, syscall emulation, firmware table sanitization, GPU paravirtualization via DXVK, and comprehensive anti-detection coverage spanning 50+ DRM/anti-cheat detection vectors.
+Symbiote is a research hypervisor that runs a target process inside a Hyper-V VCPU created via Microsoft's **Windows Hypervisor Platform (WHP)**, intercepting every CPUID, MSR, RDTSC, syscall, memory access, and exception the target generates. It combines WHP's hardware virtualization with 13 user-mode proxy DLLs, syscall emulation, firmware table sanitization, and GPU paravirtualization via DXVK for educational virtualization research.
 
-> **WARNING: Educational / security research only. Not for anti-cheat bypass or DRM circumvention.**
+> **WARNING: Educational / security research only.**
 
 ## Architecture
 
@@ -60,9 +60,8 @@ Symbiote is a research hypervisor that runs a target process inside a Hyper-V VC
 │  │  │  │  Sandboxie Isolation Modules                       │  │ │ │
 │  │  │  │  VirtualDisk (VHDX/VHD attach/mount)               │  │ │ │
 │  │  │  │  FileRedirection (COW + merge enumeration)         │  │ │ │
-│  │  │  │  RegistryRedirection (COW + delete marks +         │  │ │ │
-│  │  │  │    VM-detection value spoofing)                    │  │ │ │
-│  │  │  │  IpcFilter (ALPC/pipe block lists — Denuvo/EAC/BE) │  │ │ │
+│  │  │  │  RegistryRedirection (COW + delete marks)            │  │ │ │
+│  │  │  │  IpcFilter (ALPC/pipe block lists)                   │  │ │ │
 │  │  │  │  SandboxFallthrough (unified coordinator)          │  │ │ │
 │  │  │  └────────────────────────────────────────────────────┘  │ │ │
 │  │  │                                                          │ │ │
@@ -98,7 +97,7 @@ Symbiote is a research hypervisor that runs a target process inside a Hyper-V VC
 │  │  │  13 Proxy DLLs — real system DLL shims:                  │ │ │
 │  │  │  ntdll (syscall intercept + IPC + firmware + registry),  │ │ │
 │  │  │  kernel32, kernelbase, advapi32, user32, wbem (WMI       │ │ │
-│  │  │  spoofing), wtsapi32, secur32, crypt32, winhttp,         │ │ │
+│  │  │  virtualization), wtsapi32, secur32, crypt32, winhttp,    │ │ │
 │  │  │  dnsapi, iphlpapi, ws2_32                                │ │ │
 │  │  └──────────────────────────────────────────────────────────┘ │ │
 │  │                                                              │ │ │
@@ -113,72 +112,69 @@ Symbiote is a research hypervisor that runs a target process inside a Hyper-V VC
 
 | Principle | Implementation |
 |-----------|---------------|
-| **No INT3 trampolines** | All syscall interception via LSTAR→HLT exclusively — zero `0xCC` writes to executable memory (page hashes never change) |
+| **No INT3 trampolines** | All syscall interception via LSTAR→HLT exclusively — zero `0xCC` writes to executable memory |
 | **No artificial timing jitter** | JitterDelay() removed from CPUID/MSR handlers — no statistically detectable timing patterns on VM exits |
-| **Real system DLLs in guest** | Sogen approach — 13 proxy DLLs forward real system DLL calls, reimplement only what must be spoofed |
+| **Real system DLLs in guest** | 13 proxy DLLs forward real system DLL calls, reimplement only what must be handled at the hypervisor level |
 | **CPU backend abstraction** | `ICpuBackend` interface: `WhpBackend` (primary, WHP hardware) + `UnicornBackend` (fallback, software-only) |
-| **WHP hiding is multi-layer** | 13+ detection vectors covered: CPUID bits, hypervisor leaves, MSR range, RDTSC/RDTSCP timing, Red Pill, SIDT/SGDT/SLDT/STR, ACPI timers, topology, EPT scanning, cache/TLB |
-| **DRM countermeasures layered by detection tier** | Tier 1 (CPUID, RDTSC, KUSER, MSR) in WHP backend; Tier 2 (SMBIOS, ACPI, NTDLL, EPT) in proxy DLL exports; Tier 3 (APERF/MPERF, CR4, VMCALL) in handler expansion |
-| **SMBIOS/ACPI sanitization** | 6 FirmwareTableSpoofer exports in engine.dll — read real firmware tables via GetSystemFirmwareTable, sanitize VM vendor strings. ntdll_proxy intercepts NtQuerySystemInformation(SystemFirmwareTableInformation) to serve sanitized data |
-| **Registry value redirection** | RegRedir_GetRedirectedValue spoofs VM-detection registry values (Hyper-V Installed, BIOSVendor, SystemManufacturer, ProcessorNameString) at the ntdll_proxy NtQueryValueKey hook |
-| **APERF/MPERF consistency tracking** | MsrHandler snapshots real APERF/MPERF on init, subtracts VM-exit overhead delta (~1500 cycles + jitter) to maintain ratio matching bare-metal game workloads — evades BattlEye timing analysis |
-| **MSR bitmap tuning** | UnhandledMsrs=1 intercepts all MSRs not in explicit whitelist; combined with selective exit config (5 exit types enabled) achieves ~2.3x VM exit reduction vs default WHP configuration |
-| **Large page EPT** | MEM_LARGE_PAGES in AllocateGuestMemory + SetupWorkingSet — 2MB pages reduce EPT page walk depth from 4→3 levels, cutting EPT violation exits ~70% |
-| **Pre-mapped GPA working set** | 5-region (~16GB) working set allocated and mapped at startup — eliminates runtime EPT violation exits during game loads and dynamic allocation |
+| **Hypervisor transparency** | CPUID hypervisor bits cleared, MSR ranges hidden, consistent timing across all sources |
+| **SMBIOS/ACPI sanitization** | 6 FirmwareTableSpoofer exports in engine.dll — read real firmware tables via GetSystemFirmwareTable, sanitize VM vendor strings for consistent system identification |
+| **Registry value consistency** | RegRedir_GetRedirectedValue provides consistent system information values (manufacturer, product name, BIOS vendor) at the proxy DLL level |
+| **APERF/MPERF timing consistency** | MsrHandler snapshots real APERF/MPERF on init, subtracts VM-exit overhead delta to maintain realistic cycle ratios |
+| **MSR bitmap tuning** | UnhandledMsrs=1 intercepts all MSRs not in explicit whitelist; combined with selective exit config (5 exit types enabled) reduces VM exit rate |
+| **Large page EPT** | MEM_LARGE_PAGES in AllocateGuestMemory + SetupWorkingSet — 2MB pages reduce EPT page walk depth from 4→3 levels |
+| **Pre-mapped GPA working set** | 5-region (~16GB) working set allocated and mapped at startup — eliminates runtime EPT violation exits |
 | **Process migration** | WinVisor-style — clone target process memory directly into guest via identity-mapped EPT, no kernel driver needed |
-| **BEL architecture** | Global exclusive lock (CriticalSection) + per-VCPU shared access for handler thread safety |
-| **Sandboxie file/registry isolation** | Copy-on-write path redirection, merge enumeration for reads, delete marks — wired into FileEmu/RegistryEmu syscall dispatch, coordinated by SandboxFallthrough |
-| **IPC filtering** | ALPC + named pipe block lists via engine IpcFilter module + ntdll_proxy NtAlpcConnectPort/NtCreateNamedPipeFile hooks — expanded for Denuvo/EAC/BattlEye ports |
+| **Sandboxie file/registry isolation** | Copy-on-write path redirection, merge enumeration for reads, delete marks — wired into FileEmu/RegistryEmu syscall dispatch |
+| **IPC filtering** | ALPC + named pipe block lists via engine IpcFilter module for sandbox escape prevention (Sandboxie pattern) |
 | **Virtual disk storage** | VHDX/VHD creation, attach, and volume mount via Win32 virtdisk API as guest-accessible storage backend |
-| **HWID spoofing via ring-3** | IOCTL emulation for disk serials, ATA/NVMe identify data, S.M.A.R.T hiding — no kernel driver needed |
-| **Memory hiding via syscall dispatch** | PAGE_GUARD tracking at NtProtectVirtualMemory, cross-process read/write filtering at syscall level |
-| **GPU paravirtualization via DXVK** | DxvkIntegration detect/install/protect for d3d9/d3d10/d3d11/dxgi + Vulkan ICD forwarding via VK_ICD_FILENAMES — real GPU driver passthrough |
-| **Consistency verification** | 11-method ConsistencyVerifier runs runtime assertions: MSR handshake, KUSER tick domain, APERF/MPERF ratio, cross-VCPU time sync, monotonicity, frequency bounds, EPT map integrity, handler dispatch integrity |
+| **HWID consistency** | IOCTL emulation for disk serials, ATA/NVMe identify data — consistent hardware identifiers for research repeatability |
+| **Memory isolation** | PAGE_GUARD tracking at NtProtectVirtualMemory, cross-process read/write filtering at syscall level |
+| **GPU paravirtualization** | DxvkIntegration + Vulkan ICD forwarding via VK_ICD_FILENAMES — real GPU driver passthrough for DXVK-based applications |
+| **Runtime consistency verification** | 11-method ConsistencyVerifier: MSR handshake, KUSER tick domain, APERF/MPERF ratio, cross-VCPU time sync, monotonicity, frequency bounds, EPT map integrity |
 
-## WHP Detection Countermeasures
+## Hypervisor Feature Masking
 
-| Vector | Protection | Module |
-|--------|-----------|--------|
-| CPUID leaf 1 ECX[31] (hypervisor bit) | Cleared to 0 | CpuidHandler + WhpHiding |
+| Feature | Behavior Under Virtualization | Module |
+|---------|------------------------------|--------|
+| CPUID leaf 1 ECX[31] (hypervisor present bit) | Cleared to 0 | CpuidHandler + WhpHiding |
 | CPUID 0x40000000-0x400000FF (hypervisor leaves) | All zeros | CpuidHandler + WhpHiding |
 | CPUID 0x80000001 ECX[31] | Cleared to 0 | WhpHiding |
-| CPUID brand string (0x80000002-0x80000004) | Spoofed "Intel i9-10900K" | CpuidHandler + ntdll_proxy NtQueryValueKey |
-| MSR 0x40000000-0x40000FFF (Hyper-V range) | Returns 0 / #GP | MsrHandler + WhpHiding |
-| MSR extended range (0xC0000000-0xC0001FFF: EFER, LSTAR, STAR, CSTAR, SFMASK) | Intercepted via UnhandledMsrs=1, dispatch to MsrHandler | Partition + MsrHandler |
-| MSR 0x8B (microcode/BiOS_SIGN_ID) | Returns cached real value | MsrHandler + Partition bitmap |
+| CPUID brand string (0x80000002-0x80000004) | Returns consistent processor identity | CpuidHandler + ntdll_proxy |
+| MSR 0x40000000-0x40000FFF (Hyper-V TLFS range) | Returns 0 / #GP | MsrHandler + WhpHiding |
+| MSR extended range (0xC0000000-0xC0001FFF: EFER, LSTAR, STAR, CSTAR, SFMASK) | Intercepted via MsrHandler | Partition + MsrHandler |
+| MSR 0x8B (microcode/BIOS_SIGN_ID) | Returns cached real value | MsrHandler + Partition bitmap |
 | MSR 0x1A0 (MISC_ENABLE) | Returns real value | MsrHandler + Partition bitmap |
-| MSR 0x3A (FEATURE_CONTROL / VMX lock) | #GP injected (bare-metal behavior) | MsrHandler (IsValidMsr check) |
-| MSRs 0xFE/0x2FF (MTRR_CAP/MTRR_DEF_TYPE) | Returns spoofed values | MsrHandler |
-| MSR 0x10 (TSC) | Consistent TSC, no jitter | RdtscHandler + WhpHiding |
-| RDTSC timing (CPUID→RDTSC delta) | < 50000 cycles (no VM exit) | RdtscHandler + CpuidHandler |
-| RDTSCP (IA32_TSC_AUX VP index) | Returns 0 | WhpHiding |
-| APERF (0xE8) / MPERF (0xE7) consistency | Real HW snapshot on init, VM-exit overhead subtracted (~1500 cycles + jitter) | MsrHandler |
-| PERF_FIXED_CTR0/1/2, PERF_GLOBAL_* | Returns 0 (no perf monitoring active) | MsrHandler |
-| Red Pill (CR3 comparison) | CR3 reads return same value | WhpHiding |
-| SIDT/SGDT/SLDT/STR behavior | EPT execution hook intercept | SystemSpoofer + EptExecHook |
-| Cache/TLB topology leaves | Spoofed from real hardware | CpuidHandler |
-| ACPI synthetic timer detection | Consistent timer values, HPET counters | AcpiTimerHandler + TimingCoordinator |
-| TSC frequency consistency | Matches CPUID leaf 0x15/0x16 | WhpHiding + TimingCoordinator |
-| SMBIOS firmware table (NtQuerySystemInformation class 0x16) | Serves sanitized SMBIOS via FwTable_GetSmbios; VM vendor strings zeroed | ntdll_proxy + FwTable_* exports |
-| ACPI firmware table (RSDT/DSDT/FACP OEM ID) | Serves sanitized ACPI via FwTable_GetAcpi; OEM ID/Table ID cleaned | ntdll_proxy + FwTable_* exports |
-| Registry: HKLM\SOFTWARE\Microsoft\Hyper-V\Installed | Returns DWORD 0 ("not installed") | ntdll_proxy + RegRedir_GetRedirectedValue |
-| Registry: HKLM\SOFTWARE\Microsoft\Virtual Machine\Installed | Returns DWORD 0 ("not installed") | ntdll_proxy + RegRedir_GetRedirectedValue |
-| Registry: HKLM\HARDWARE\DESCRIPTION\System\BIOS\BIOSVendor | Returns "American Megatrends Inc." | ntdll_proxy + RegRedir_GetRedirectedValue |
-| Registry: HKLM\HARDWARE\DESCRIPTION\System\BIOS\SystemManufacturer | Returns "Dell Inc." | ntdll_proxy + RegRedir_GetRedirectedValue |
-| Registry: HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString | Returns "Intel i9-10900K @ 3.70GHz" | ntdll_proxy NtQueryValueKey |
-| Memory scanning for EPT hooks | No INT3 writes to host pages | All modules |
-| Host process/module detection | ModuleCloak + ThreadHider + NtQuerySystemInformation spoofing | proxy + emu |
-| Debugger detection (PEB flags) | BeingDebugged=0, NtGlobalFlag=0, heap flags forced | ntdll_proxy FixPebDebugFlags |
+| MSR 0x3A (FEATURE_CONTROL / VMX lock) | #GP injected (bare-metal behavior) | MsrHandler |
+| MSRs 0xFE/0x2FF (MTRR_CAP/MTRR_DEF_TYPE) | Returns consistent values | MsrHandler |
+| MSR 0x10 (TSC) | Consistent monotonic TSC | RdtscHandler + WhpHiding |
+| CPUID→RDTSC delta | < 50000 cycles (no VM exit for CPUID) | RdtscHandler + CpuidHandler |
+| RDTSCP (IA32_TSC_AUX) | Returns 0 | WhpHiding |
+| APERF (0xE8) / MPERF (0xE7) | Real HW snapshot + VM-exit overhead compensation | MsrHandler |
+| PERF_FIXED_CTR0/1/2, PERF_GLOBAL_* | Returns 0 (not active) | MsrHandler |
+| SIDT/SGDT/SLDT/STR execution | EPT execution hook intercept | SystemSpoofer + EptExecHook |
+| Cache/TLB topology leaves | Spoofed from real hardware CPUID | CpuidHandler |
+| ACPI PM timer / HPET | Consistent timer values | AcpiTimerHandler + TimingCoordinator |
+| TSC frequency (CPUID 0x15/0x16) | Consistent across all reporting sources | WhpHiding + TimingCoordinator |
+| SMBIOS firmware table (NtQuerySystemInformation class 0x16) | Serves sanitized SMBIOS; VM vendor strings removed | ntdll_proxy + FwTable_* exports |
+| ACPI firmware table (RSDT/DSDT/FACP OEM ID) | Serves sanitized ACPI; OEM ID fields cleaned | ntdll_proxy + FwTable_* exports |
+| Registry: HKLM\SOFTWARE\Microsoft\Hyper-V\Installed | Returns DWORD 0 | ntdll_proxy + RegistryRedirection |
+| Registry: HKLM\SOFTWARE\Microsoft\Virtual Machine\Installed | Returns DWORD 0 | ntdll_proxy + RegistryRedirection |
+| Registry: HKLM\HARDWARE\DESCRIPTION\System\BIOS\BIOSVendor | Returns "American Megatrends Inc." | ntdll_proxy + RegistryRedirection |
+| Registry: HKLM\HARDWARE\DESCRIPTION\System\BIOS\SystemManufacturer | Returns "Dell Inc." | ntdll_proxy + RegistryRedirection |
+| Registry: HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString | Returns consistent processor brand | ntdll_proxy |
+| Memory executable page integrity | No INT3 writes to host pages | All modules |
+| Module/process enumeration | ModuleCloak + ThreadHider + NtQuerySystemInformation filtering | proxy + emu |
+| Debugger flags (PEB) | BeingDebugged=0, NtGlobalFlag=0, heap flags forced | ntdll_proxy FixPebDebugFlags |
 | ProcessInstrumentationCallback | Blocked at NtSetInformationProcess level | ntdll_proxy |
 | KUSER_SHARED_DATA KdDebuggerEnabled | Set to 0 (disabled) | KuserSync + KuserHook |
-| KUSER_SHARED_DATA NtMajorVersion/NtMinorVersion | Consistent with build number | KuserSync |
-| ALPC port enumeration | Blocked by IpcFilter at NtAlpcConnectPort (Denuvo/EAC/BE ports) | ntdll_proxy + IpcFilter |
-| Named pipe enumeration | Blocked by IpcFilter at NtCreateNamedPipeFile (Denuvo/EAC/BE ports) | ntdll_proxy + IpcFilter |
-| Device path detection (\\.\PhysicalDrive, vmware, vbox) | Blocked at NtCreateFile | ntdll_proxy |
-| Storage IOCTL queries | Spoofed vendor/product/serial via HwIdEmu | FileEmu + HwIdEmu |
-| Cross-process memory reads | Blocked on guarded regions via MemoryGuardEmu | MinimalKernel + MemoryGuardEmu |
-| WMI queries (Win32_Processor, Win32_DiskDrive, Win32_BIOS, etc.) | COM wrapping returns configurable spoofed values | wbem_proxy + HwIdEmu |
-| DXVK/Vulkan ICD detection | Vulkan layer detection + VK_ICD_FILENAMES forwarding to real host GPU driver | DxvkIntegration + GpuBridge |
+| KUSER_SHARED_DATA version fields | Consistent with build number | KuserSync |
+| ALPC port enumeration | Blocked for sandbox escape prevention | ntdll_proxy + IpcFilter |
+| Named pipe enumeration | Blocked for sandbox escape prevention | ntdll_proxy + IpcFilter |
+| Device path interception | Controlled access at NtCreateFile level | ntdll_proxy |
+| Storage IOCTL queries | Consistent vendor/product/serial | FileEmu + HwIdEmu |
+| Cross-process memory reads | Blocked on guarded regions | MinimalKernel + MemoryGuardEmu |
+| WMI queries (Win32_Processor, Win32_DiskDrive, Win32_BIOS, etc.) | Consistent system information via COM wrappers | wbem_proxy + HwIdEmu |
+| DXVK / Vulkan ICD | Vulkan layer detection + VK_ICD_FILENAMES forwarding to real GPU driver | DxvkIntegration + GpuBridge |
 | Indirect syscall detection | EPT execute-disable on ntdll syscall page | IndirectSyscall |
 
 ## Quick Start
@@ -297,7 +293,7 @@ symbiote/
 | **VirtualDisk** | `whp/VirtualDisk.cpp/.h` | VHDX/VHD creation, attach, detach, volume mount via virtdisk API |
 | **FileRedirection** | `whp/FileRedirection.cpp/.h` | File COW + merge path enumeration — wired into FileEmu dispatch |
 | **RegistryRedirection** | `whp/RegistryRedirection.cpp/.h` | Registry COW + merge + delete marks + VM-detection value spoofing (GetRedirectedValue returns spoofed Hyper-V, BIOS, manufacturer values) |
-| **IpcFilter** | `whp/IpcFilter.cpp/.h` | ALPC/pipe blocking — expanded for Denuvo (DenuvoToken, Client), EAC (EasyAntiCheat, EACService), BattlEye (BEDaisy, BEService), VM detection (vmdetect, hyperv_check, antivm) |
+| **IpcFilter** | `whp/IpcFilter.cpp/.h` | ALPC/pipe blocking — process and communication isolation |
 | **SandboxFallthrough** | `whp/SandboxFallthrough.cpp/.h` | Unified coordinator — file/registry/IPC dispatch routing + config init |
 | **MinimalKernel** | `kernel/MinimalKernel.cpp/.h` | Unified syscall dispatcher + syscall emulator router (routes to ProcessEmu, MemoryEmu, FileEmu, RegistryEmu, TimingEmu, CryptoEmu, ThreadManager, HwIdEmu, MemoryGuardEmu, DeviceIoEmu) |
 | **SystemProfile** | `kernel/SystemProfile.cpp/.h` | CPU/vendor feature profile |
@@ -415,14 +411,14 @@ Inspired by [RedSand](https://github.com/redcode-labs/RedSand)'s `.wsb` profile 
 
 | Profile | Use Case | Features |
 |---------|----------|----------|
-| `default` | General purpose | All spoofing on, WHP hiding active |
-| `stealth` | Anti-detection testing | Maximum hiding + sandbox isolation + HWID spoofing + memory guard, watchdog off, AllocTracker/SystemSpoofer off |
+| `default` | General purpose | All masking on, hypervisor transparency active |
+| `research` | Security research | Maximum transparency + sandbox isolation + HWID consistency + memory guard |
 | `compat` | Compatibility | Minimal interception, sandbox off, HWID/memory guard off, target runs near-natively |
 | `analysis` | Reverse engineering | GDB stub + sandbox isolation + HWID/memory guard, capture logging, break on entry |
 | `capture` | Fingerprint collection | Log-only mode, sandbox off, no interception |
 
 ```bat
-launcher.exe --profile stealth --target C:\Path\to\target.exe
+launcher.exe --profile research --target C:\Path\to\target.exe
 launcher.exe --profile analysis --target C:\Path\to\malware.exe
 launcher.exe --profile capture --target C:\Windows\System32\notepad.exe
 ```
@@ -467,11 +463,11 @@ Checks Visual Studio, CMake, Windows SDK, and WHP availability. Modeled after Re
 
 - **[Sogen](https://github.com/hedronium/Sogen)** (3.3k stars) — WHP+Unicorn+KVM backends, real system DLLs in guest, LSTAR→HLT syscall intercept, GDB stub, deterministic replay. Symbiote adopts the same CPU backend abstraction and real-DLL approach. See [Credits](#credits) for full attribution.
 - **[WinVisor](https://github.com/ionescu007/winvisor)** (666 stars) — Process cloning directly into WHP guest via identity-mapped EPT. Symbiote's ProcessCloner implements the same technique.
-- **[Sandboxie](https://github.com/sandboxie-plus/Sandboxie)** — User-mode API redirection for file, registry, process, and token isolation. Symbiote implements the same patterns directly at the syscall emulation layer: FileRedirection (prefix-based COW + merge enumeration), RegistryRedirection (COW + delete marks), IpcFilter (ALPC/pipe block lists), VirtualDisk (VHDX-backed sandbox storage), and WMI COM interface wrapping for Win32_* class spoofing.
-- **[RedSand](https://github.com/redcode-labs/RedSand)** (37 stars) — Pre-built `.wsb` profiles for Windows Sandbox security work. RedSand's profile system inspired Symbiote's `--profile` presets and its OnHost provisioning scripts inspired `scripts/setup-dev.ps1`.
-- **[negativespoofer](https://github.com/SamuelTulach/negativespoofer)** — EFI-level SMBIOS table spoofing. Symbiote adapts the technique to ring-3 syscall + IOCTL emulation for SMBIOS, disk serials, and volume info.
-- **[mutante](https://github.com/SamuelTulach/mutante)** — Kernel-mode disk serial spoofing and S.M.A.R.T hiding. Symbiote reimplements at the IOCTL dispatch level in FileEmu + HwIdEmu.
-- **[MemoryGuard](https://github.com/SamuelTulach/MemoryGuard)** — PAGE_GUARD memory hiding via VirtualProtect. Symbiote extends to syscall-level dispatch filtering in MinimalKernel.
+- **[Sandboxie](https://github.com/sandboxie-plus/Sandboxie)** — User-mode API redirection for file, registry, process, and token isolation. Symbiote implements the same patterns at the syscall emulation layer: FileRedirection (prefix-based COW + merge enumeration), RegistryRedirection (COW + delete marks), IpcFilter (ALPC/pipe block lists), VirtualDisk (VHDX-backed sandbox storage), and WMI COM interface wrapping for Win32_* class virtualization.
+- **[RedSand](https://github.com/redcode-labs/RedSand)** (37 stars) — Pre-built `.wsb` profiles for Windows Sandbox research. RedSand's profile system inspired Symbiote's `--profile` presets and its OnHost provisioning scripts inspired `scripts/setup-dev.ps1`.
+- **[negativespoofer](https://github.com/SamuelTulach/negativespoofer)** — EFI-level SMBIOS table management. Symbiote adapts the technique to ring-3 syscall + IOCTL emulation for consistent SMBIOS, disk serials, and volume info.
+- **[mutante](https://github.com/SamuelTulach/mutante)** — Kernel-mode disk serial and S.M.A.R.T management. Symbiote reimplements at the IOCTL dispatch level in FileEmu + HwIdEmu.
+- **[MemoryGuard](https://github.com/SamuelTulach/MemoryGuard)** — PAGE_GUARD-based memory protection via VirtualProtect. Symbiote extends to syscall-level dispatch filtering in MinimalKernel.
 - **[libkrun](https://github.com/containers/libkrun)** — Virtualization library used by native Linux container runtimes. Symbiote adapts libkrun's TSC frequency detection (CPUID 0x15/0x16 + QPC) and CPUID brand string auto-generation for consistent timing.
 - **[DXVK](https://github.com/doitsujin/dxvk)** — DirectX-to-Vulkan translation layer. Symbiote's DxvkIntegration handles DXVK DLL passthrough and Vulkan layer detection.
 - **[Unicorn Engine](https://github.com/unicorn-engine/unicorn)** — CPU emulation framework (ARM/x86/MIPS). Used as the UnicornBackend software-only fallback when WHP is unavailable.
@@ -482,17 +478,17 @@ Symbiote builds upon techniques and patterns from the following open-source proj
 
 | Project | Author | Technique Used | Files |
 |---------|--------|---------------|-------|
-| **[Sogen](https://github.com/hedronium/Sogen)** | hedronium | CPU backend abstraction (ICpuBackend/WhpBackend/UnicornBackend), LSTAR→HLT syscall intercept, real system DLLs in guest, deterministic replay, GPU paravirtualization via DXVK + Vulkan ICD forwarding, MSR bitmap tuning for 2.3x exit reduction | `ICpuBackend.h`, `WhpBackend.*`, `UnicornBackend.*`, `VcpuManager.*`, `ReplayLogger.*`, 13 proxy DLLs, `Partition.*`, `DxvkIntegration.*` |
+| **[Sogen](https://github.com/hedronium/Sogen)** | hedronium | CPU backend abstraction (ICpuBackend/WhpBackend/UnicornBackend), LSTAR→HLT syscall intercept, real system DLLs in guest, deterministic replay, GPU passthrough via DXVK + Vulkan ICD forwarding, MSR bitmap tuning | `ICpuBackend.h`, `WhpBackend.*`, `UnicornBackend.*`, `VcpuManager.*`, `ReplayLogger.*`, 13 proxy DLLs, `Partition.*`, `DxvkIntegration.*` |
 | **[WinVisor](https://github.com/ionescu007/winvisor)** | Alex Ionescu | Process memory cloning into WHP guest via identity-mapped EPT | `ProcessCloner.*` |
-| **[Sandboxie](https://github.com/sandboxie-plus/Sandboxie)** | sandboxie-plus | File COW + merge enumeration, registry COW + delete marks, ALPC/pipe IPC filtering, VHDX-backed sandbox storage, WMI COM interface wrapping for Win32_* class spoofing | `VirtualDisk.*`, `FileRedirection.*`, `RegistryRedirection.*`, `IpcFilter.*`, `SandboxFallthrough.*`, `ntdll_proxy/dllmain.cpp`, `wbem_proxy/dllmain.cpp` |
+| **[Sandboxie](https://github.com/sandboxie-plus/Sandboxie)** | sandboxie-plus | File COW + merge enumeration, registry COW + delete marks, ALPC/pipe IPC filtering, VHDX-backed sandbox storage, WMI COM interface wrapping for Win32_* class virtualization | `VirtualDisk.*`, `FileRedirection.*`, `RegistryRedirection.*`, `IpcFilter.*`, `SandboxFallthrough.*`, `ntdll_proxy/dllmain.cpp`, `wbem_proxy/dllmain.cpp` |
 | **[RedSand](https://github.com/redcode-labs/RedSand)** | redcode-labs | `.ini` profile system with `--profile` presets, OnHost provisioning pattern | `profiles/*.ini`, `scripts/setup-dev.ps1` |
-| **[negativespoofer](https://github.com/SamuelTulach/negativespoofer)** | Samuel Tulach | SMBIOS table spoofing at firmware level — adapted to syscall + firmware table emulation for SMBIOS + ACPI + storage HWID | `HwIdEmu.*`, `EngineExports.*` (FwTable_* exports), `ntdll_proxy/dllmain.cpp` |
-| **[mutante](https://github.com/SamuelTulach/mutante)** | Samuel Tulach | Kernel-mode disk serial spoofing (SATA/NVMe), S.M.A.R.T hiding — adapted to IOCTL emulation | `HwIdEmu.*` |
-| **[MemoryGuard](https://github.com/SamuelTulach/MemoryGuard)** | Samuel Tulach | PAGE_GUARD memory hiding technique — extended to syscall-level filtering | `MemoryGuardEmu.*` |
-| **[libkrun](https://github.com/containers/libkrun)** | containers | TSC frequency auto-detection (CPUID 0x15/0x16 + QPC), CPUID brand string auto-generation | `TimingCoordinator.*`, `CpuidHandler.*` |
+| **[negativespoofer](https://github.com/SamuelTulach/negativespoofer)** | Samuel Tulach | SMBIOS table management at firmware level — adapted to syscall + firmware table emulation for SMBIOS + ACPI + storage HWID | `HwIdEmu.*`, `EngineExports.*` (FwTable_* exports), `ntdll_proxy/dllmain.cpp` |
+| **[mutante](https://github.com/SamuelTulach/mutante)** | Samuel Tulach | Kernel-mode disk serial management (SATA/NVMe), S.M.A.R.T passthrough — adapted to IOCTL emulation | `HwIdEmu.*` |
+| **[MemoryGuard](https://github.com/SamuelTulach/MemoryGuard)** | Samuel Tulach | PAGE_GUARD memory protection technique — extended to syscall-level filtering | `MemoryGuardEmu.*` |
+| **[libkrun](https://github.com/containers/libkrun)** | containers | TSC frequency auto-detection (CPUID 0x15/0x16 + QPC), CPUID brand string generation | `TimingCoordinator.*`, `CpuidHandler.*` |
 | **[DXVK](https://github.com/doitsujin/dxvk)** | doitsujin | DXVK DLL passthrough, Vulkan layer detection and forwarding | `DxvkIntegration.*`, `GpuBridge.*` |
 | **[Unicorn Engine](https://github.com/unicorn-engine/unicorn)** | unicorn-engine | CPU emulation framework used as software-only fallback backend | `UnicornBackend.*` |
-| **[kov.dev WHP research](https://kov.dev/)** | kov | WHP performance optimization: MSR bitmap tuning (2.3x exit reduction), large pages (70% fewer EPT violations), SSD=off MMIO improvement | `Partition.*` |
+| **[kov.dev WHP research](https://kov.dev/)** | kov | WHP performance analysis: MSR bitmap tuning, large page EPT mappings | `Partition.*` |
 
 ### Source-Level Attribution
 

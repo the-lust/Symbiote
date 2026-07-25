@@ -17,7 +17,7 @@ extern "C" {
     BOOL __stdcall IpcFilter_ShouldBlockPipe(const wchar_t* pipeName);
 }
 
-// FirmwareTableSpoofer exports — SMBIOS/ACPI table spoofing for Denuvo HWID checks
+// FirmwareTableSpoofer exports — SMBIOS/ACPI table sanitization for research consistency
 // Called by ntdll_proxy when NtQuerySystemInformation(SystemFirmwareTableInformation) is intercepted
 extern "C" {
     BOOL __stdcall FwTable_GetSmbios(uint32_t* bufferSize, uint8_t* buffer);
