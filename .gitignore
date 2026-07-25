@@ -41,5 +41,7 @@ emu.log
 .DS_Store
 Thumbs.db
 
-# Config overrides (don't commit personal config)
+# Config overrides (don't commit personal config, including backups/copies of it)
 config/config.ini
+*.bak
+config/*.bak
