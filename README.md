@@ -27,22 +27,7 @@ It exists to answer a fairly specific question: what does a piece of commercial 
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    L["launcher.exe\nCLI — creates target suspended, injects engine.dll, calls Engine_Init"]
-    L --> T
-
-    subgraph T["Target process — ring 3"]
-        P["13 proxy DLLs\nntdll · kernel32 · kernelbase · advapi32 · user32 · wbem · ..."]
-        E["engine.dll"]
-        P --> E
-    end
-
-    E --> W["WHP partition\nGuestPageTable · EptMemoryManager · VcpuManager"]
-    W --> X["ExitDispatcher\nCpuidHandler · MsrHandler · RdtscHandler · EPT hooks · ExceptionHandler"]
-    X --> K["MinimalKernel\nsyscall dispatch to 17 emulators (Process, Memory, File, Registry, Timing, HwId, ...)"]
-    K --> H["Real Windows kernel + GPU driver\nfallthrough for unhandled syscalls, native D3D/Vulkan via DXVK"]
-```
+<img src="assets/img/architecture.svg" alt="Architecture diagram" width="800">
 
 `launcher.exe` creates the target suspended, injects `engine.dll`, and calls its exported `Engine_Init`. From there the engine does three things at once: it creates a WHP partition and clones the target's own memory into it via identity-mapped EPT (the same technique [WinVisor](https://github.com/ionescu007/winvisor) uses, so no separate guest image or kernel driver is needed), it installs the proxy DLLs' hooks for the syscalls and API calls that need spoofed answers, and it starts a VCPU per configured core with `SYSCALL` redirected to a page of `HLT` instructions so every syscall the target makes exits back to the engine instead of running natively.
 
