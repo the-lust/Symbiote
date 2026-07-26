@@ -92,18 +92,27 @@ void KuserSync::ApplyStaticSpoofs()
 
     // ProcessorFeatures - comprehensive feature bitmask matching i7-4510U
     // Layout: 64 bytes starting at 0x270, first half at 0x270, second half at 0x2B0
+    //
+    // A prior version wrote 12 values here at offsets that overlapped each other by up to
+    // 7 bytes (0x270 then 0x272 then 0x273, 0x281 then 0x282 then 0x283, ...), each clobbering
+    // most of the write before it — the same bug as KuserHook::CopyStaticSpoofs, fixed there
+    // the same way. Laid out sequentially, the first 9 of these 12 values exactly fill the
+    // 0x270-0x2B0 range (64 bytes) where the separately-written "second half" block below
+    // begins; the remaining 3 values (originally at the overlapping 0x29C/0x2A4/0x2AC offsets)
+    // have nowhere left to go without spilling into that block, so they're dropped rather than
+    // corrupting it. This means the intended full 12-value pattern doesn't actually fit in real
+    // KUSER_SHARED_DATA's ProcessorFeatures field as originally written — getting bit-exact
+    // parity with a real i7-4510U here would need the layout re-derived from a real reference
+    // dump, not just a self-consistency fix.
     *(uint64_t*)(kuser + 0x270) = 0x00ULL;
-    *(uint64_t*)(kuser + 0x272) = 0x010100000000ULL;
-    *(uint64_t*)(kuser + 0x273) = 0x0100000101000000ULL;
-    *(uint64_t*)(kuser + 0x281) = 0x0100000100000101ULL;
-    *(uint64_t*)(kuser + 0x282) = 0x0101000001000001ULL;
-    *(uint64_t*)(kuser + 0x283) = 0x0101010000010000ULL;
-    *(uint32_t*)(kuser + 0x288) = 0x01010101;
-    *(uint32_t*)(kuser + 0x290) = 0x01010101;
-    *(uint64_t*)(kuser + 0x294) = 0x0101010101010101ULL;
-    *(uint64_t*)(kuser + 0x29C) = 0x0101010101010101ULL;
-    *(uint64_t*)(kuser + 0x2A4) = 0x0001010101010101ULL;
-    *(uint32_t*)(kuser + 0x2AC) = 0x01010101;
+    *(uint64_t*)(kuser + 0x278) = 0x010100000000ULL;
+    *(uint64_t*)(kuser + 0x280) = 0x0100000101000000ULL;
+    *(uint64_t*)(kuser + 0x288) = 0x0100000100000101ULL;
+    *(uint64_t*)(kuser + 0x290) = 0x0101000001000001ULL;
+    *(uint64_t*)(kuser + 0x298) = 0x0101010000010000ULL;
+    *(uint32_t*)(kuser + 0x2A0) = 0x01010101;
+    *(uint32_t*)(kuser + 0x2A4) = 0x01010101;
+    *(uint64_t*)(kuser + 0x2A8) = 0x0101010101010101ULL;
     // Second half of ProcessorFeatures (0x2B0-0x2CF)
     *(uint64_t*)(kuser + 0x2B0) = 0x0000000000000000ULL;
     *(uint64_t*)(kuser + 0x2B8) = 0x0000000000000000ULL;

@@ -113,7 +113,15 @@ static void TestRdtsc() {
 
 static void TestMsr() {
     printf("\n=== MSR ===\n");
-    LogResult("MSR", "RDMSR from user-mode (kernel protected)", "Blocked by Windows", true);
+    bool blocked = false;
+    __try {
+        volatile unsigned __int64 val = __readmsr(0x10); // IA32_TIME_STAMP_COUNTER — harmless MSR to probe with
+        (void)val;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        blocked = true; // expected: real Windows raises #GP -> STATUS_PRIVILEGED_INSTRUCTION from user mode
+    }
+    LogResult("MSR", "RDMSR from user-mode (kernel protected)",
+        blocked ? "Blocked by Windows" : "NOT blocked (unexpected)", blocked);
 }
 
 static void TestKuserSharedData() {
@@ -122,7 +130,7 @@ static void TestKuserSharedData() {
 
     uint32_t buildNum = *(uint32_t*)(kuser + 0x260);
     snprintf(g_buf, sizeof(g_buf), "NtBuildNumber=%u (0x%X)", buildNum, buildNum);
-    LogResult("KUSER", "NtBuildNumber", g_buf, true);
+    LogResult("KUSER", "NtBuildNumber", g_buf, buildNum > 0 && buildNum < 100000);
 
     uint8_t kdDebugger = kuser[0x2D4];
     LogResult("KUSER", "KdDebuggerEnabled", kdDebugger ? "ENABLED" : "DISABLED", !kdDebugger);

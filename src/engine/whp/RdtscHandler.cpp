@@ -197,7 +197,11 @@ bool RdtscHandler::HandleRdtsc(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rd
         }
         spoofedTsc = m_timingCoordinator->AddJitter(spoofedTsc, m_tscFrequency);
     } else {
-        spoofedTsc = AddRealisticNoise(spoofedTsc);
+        // AddTimingNoise (not AddRealisticNoise) so the [timing] tsc_noise config value —
+        // wired to m_noiseEnabled/m_noiseAmplitude via SetNoiseEnabled/SetNoiseAmplitude in
+        // Main.cpp — actually has an effect. A prior version called AddRealisticNoise here
+        // unconditionally, which never reads those fields, making tsc_noise a silent no-op.
+        spoofedTsc = AddTimingNoise(spoofedTsc);
     }
 
     *rax = spoofedTsc & 0xFFFFFFFF;
@@ -245,7 +249,11 @@ bool RdtscHandler::HandleRdtscp(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* r
         }
         spoofedTsc = m_timingCoordinator->AddJitter(spoofedTsc, m_tscFrequency);
     } else {
-        spoofedTsc = AddRealisticNoise(spoofedTsc);
+        // AddTimingNoise (not AddRealisticNoise) so the [timing] tsc_noise config value —
+        // wired to m_noiseEnabled/m_noiseAmplitude via SetNoiseEnabled/SetNoiseAmplitude in
+        // Main.cpp — actually has an effect. A prior version called AddRealisticNoise here
+        // unconditionally, which never reads those fields, making tsc_noise a silent no-op.
+        spoofedTsc = AddTimingNoise(spoofedTsc);
     }
 
     if (!cpuidJustExited) {

@@ -173,9 +173,14 @@ bool MsrHandler::HandleMsrRead(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t* val
     }
 
     // check tracked MSRs first
+    AcquireSRWLockShared(&m_trackedMsrsLock);
     auto it = m_trackedMsrs.find(msr);
-    if (it != m_trackedMsrs.end()) {
-        *value = it->second;
+    bool tracked = it != m_trackedMsrs.end();
+    uint64_t trackedValue = tracked ? it->second : 0;
+    ReleaseSRWLockShared(&m_trackedMsrsLock);
+
+    if (tracked) {
+        *value = trackedValue;
         if (m_captureLogger) {
             m_captureLogger->CaptureMsr("MSR_READ", 0, msr, *value);
         }
@@ -225,25 +230,25 @@ bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t val
 
         case MSR_IA32_STAR:
             m_star = value;
-            m_trackedMsrs[msr] = value;
+            { AcquireSRWLockExclusive(&m_trackedMsrsLock); m_trackedMsrs[msr] = value; ReleaseSRWLockExclusive(&m_trackedMsrsLock); }
             m_logger->Trace(LOG_WHP, "WRMSR STAR => 0x%llX", value);
             break;
 
         case MSR_IA32_LSTAR:
             m_lstar = value;
-            m_trackedMsrs[msr] = value;
+            { AcquireSRWLockExclusive(&m_trackedMsrsLock); m_trackedMsrs[msr] = value; ReleaseSRWLockExclusive(&m_trackedMsrsLock); }
             m_logger->Trace(LOG_WHP, "WRMSR LSTAR => 0x%llX", value);
             break;
 
         case MSR_IA32_CSTAR:
             m_cstar = value;
-            m_trackedMsrs[msr] = value;
+            { AcquireSRWLockExclusive(&m_trackedMsrsLock); m_trackedMsrs[msr] = value; ReleaseSRWLockExclusive(&m_trackedMsrsLock); }
             m_logger->Trace(LOG_WHP, "WRMSR CSTAR => 0x%llX", value);
             break;
 
         case MSR_IA32_SFMASK:
             m_sfMask = value;
-            m_trackedMsrs[msr] = value;
+            { AcquireSRWLockExclusive(&m_trackedMsrsLock); m_trackedMsrs[msr] = value; ReleaseSRWLockExclusive(&m_trackedMsrsLock); }
             m_logger->Trace(LOG_WHP, "WRMSR SFMASK => 0x%llX", value);
             break;
 
@@ -254,7 +259,7 @@ bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t val
         case MSR_IA32_GS_BASE:
         case MSR_IA32_KERNEL_GS_BASE:
         case MSR_IA32_DS_AREA:
-            m_trackedMsrs[msr] = value;
+            { AcquireSRWLockExclusive(&m_trackedMsrsLock); m_trackedMsrs[msr] = value; ReleaseSRWLockExclusive(&m_trackedMsrsLock); }
             m_logger->Trace(LOG_WHP, "WRMSR 0x%X => 0x%llX", msr, value);
             break;
 

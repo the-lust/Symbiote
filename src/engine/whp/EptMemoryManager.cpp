@@ -107,8 +107,14 @@ bool EptMemoryManager::MapOnDemand(uint64_t gpa, uint64_t size)
         uint64_t pageGpa = gpa + i * m_pageSize;
         if (IsMapped(pageGpa)) continue;
 
+        // NOTE: this used to pass pageGpa itself as MapSlot's hostVa ("original content to copy
+        // in"), which is a guest physical address, not a valid host pointer — MapSlot would then
+        // memcpy from that raw GPA integer reinterpreted as a pointer, an out-of-bounds/invalid
+        // read. There's no GPA->host-VA lookup available here (same gap as EptPageProtect::realVa)
+        // to supply real original content, so pass 0 and let the backing slot start zeroed
+        // instead of reading from an essentially-arbitrary address.
         uint32_t slot = AllocateSlot();
-        MapSlot(slot, pageGpa, pageGpa, m_pageSize);
+        MapSlot(slot, pageGpa, 0, m_pageSize);
 
         if (m_partition) {
             WHvMapGpaRange(m_partition->GetHandle(),
@@ -141,8 +147,9 @@ bool EptMemoryManager::HandlePageFault(uint64_t faultGpa, uint64_t& outGpa, void
         return true;
     }
 
+    // See MapOnDemand for why 0 (not faultGpa) is passed as hostVa here.
     uint32_t slot = AllocateSlot();
-    if (!MapSlot(slot, faultGpa, faultGpa, m_pageSize))
+    if (!MapSlot(slot, faultGpa, 0, m_pageSize))
         return false;
 
     if (m_partition) {

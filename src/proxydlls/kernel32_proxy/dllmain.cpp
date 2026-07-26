@@ -134,8 +134,13 @@ extern "C" BOOL WINAPI Proxy_GetVolumeInformationW(
             lpFileSystemNameBuffer, nFileSystemNameSize) : FALSE;
     }
 
-    // Only spoof for root drive paths (C:\, D:\, etc.)
-    if (lpRootPathName[0] >= L'A' && lpRootPathName[0] <= L'Z' && lpRootPathName[1] == L':' && lpRootPathName[2] == L'\\') {
+    // Only spoof for root drive paths (C:\, D:\, etc.) — only matching uppercase drive letters
+    // meant a caller passing e.g. L"c:\\" (equally valid input to the real API) fell through to
+    // the unspoofed real call, leaking the genuine volume serial purely based on the caller's
+    // casing convention while L"C:\\" was spoofed.
+    wchar_t driveLetter = lpRootPathName[0];
+    if (driveLetter >= L'a' && driveLetter <= L'z') driveLetter = (wchar_t)(driveLetter - L'a' + L'A');
+    if (driveLetter >= L'A' && driveLetter <= L'Z' && lpRootPathName[1] == L':' && lpRootPathName[2] == L'\\') {
         if (lpVolumeSerialNumber) *lpVolumeSerialNumber = 0x1A2B3C4D;
         if (lpMaximumComponentLength) *lpMaximumComponentLength = 255;
         if (lpFileSystemFlags) *lpFileSystemFlags = FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES |

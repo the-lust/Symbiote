@@ -101,11 +101,18 @@ bool VirtualDisk::Attach(uint32_t* outDiskNumber)
         return false;
     }
 
-    m_attached = true;
+    m_attached = true; // true regardless of what follows: AttachVirtualDisk above already
+                        // succeeded at the OS level, so this object genuinely is attached
+                        // even if we can't resolve outDiskNumber below.
 
     if (outDiskNumber) {
-        if (!SyncAttach()) return false;
-    *outDiskNumber = m_diskNumber;
+        if (!SyncAttach()) {
+            m_logger->Trace(LOG_WARNING,
+                "VirtualDisk: attached but SyncAttach failed to resolve the disk number — "
+                "the disk is still attached (call Detach() to undo), caller just won't get outDiskNumber");
+            return false;
+        }
+        *outDiskNumber = m_diskNumber;
     }
 
     m_logger->Trace(LOG_INFO, "VirtualDisk: attached as \\\\.\\PhysicalDrive%u", m_diskNumber);
@@ -143,8 +150,10 @@ bool VirtualDisk::MountVolume(wchar_t driveLetter, const wchar_t* mountPoint)
         return false;
     }
 
-        wchar_t volumePath[] = L"\\\\.\\PhysicalDrive0";
-        volumePath[17] = L'0' + (wchar_t)m_diskNumber;
+        // A fixed single-digit template (volumePath[17] = '0'+diskNumber) only produced a valid
+        // path for disk numbers 0-9; format properly so PhysicalDrive10+ works too.
+        wchar_t volumePath[32];
+        wsprintfW(volumePath, L"\\\\.\\PhysicalDrive%u", m_diskNumber);
 
     HANDLE hVol = CreateFileW(volumePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_EXISTING, 0, NULL);
@@ -182,8 +191,8 @@ bool VirtualDisk::UnmountVolume(wchar_t driveLetter)
 bool VirtualDisk::SyncAttach()
 {
     for (uint32_t i = 0; i < 32; i++) {
-        wchar_t path[] = L"\\\\.\\PhysicalDrive0";
-        path[17] = L'0' + (wchar_t)i;
+        wchar_t path[32];
+        wsprintfW(path, L"\\\\.\\PhysicalDrive%u", i);
 
         HANDLE h = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
             NULL, OPEN_EXISTING, 0, NULL);

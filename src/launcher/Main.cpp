@@ -171,6 +171,9 @@ int main(int, char**)
     if (!InjectDll(pi.hProcess, dllPath)) {
         LogMessage("Failed to inject engine DLL\n");
         TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
         return 1;
     }
     LogMessage("Engine DLL injected\n");
@@ -181,8 +184,21 @@ int main(int, char**)
     }
 
     LogMessage("Calling Engine_Init...\n");
-    bool initOk = CallRemoteFunction(pi.hProcess, dllPath, "Engine_Init");
+    DWORD initResult = 0;
+    bool initCallRan = CallRemoteFunctionWithResult(pi.hProcess, dllPath, "Engine_Init", &initResult);
+    bool initOk = initCallRan && initResult != 0;
     LogMessage(std::string("Engine_Init: ") + (initOk ? "OK" : "FAILED") + "\n");
+
+    if (!initOk) {
+        // Don't resume the target unmonitored — a failed engine init means no interception is active.
+        LogMessage("Engine_Init failed - terminating target instead of resuming unprotected\n");
+        MessageBoxW(NULL, L"Engine_Init failed - target will not be resumed.", L"Symbiote", MB_ICONERROR);
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return 1;
+    }
 
     if (initOk && sandboxMode) {
         LogMessage("Setting sandbox mode flag...\n");

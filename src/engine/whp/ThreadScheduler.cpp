@@ -35,7 +35,7 @@ ExitCoordinator::ExitCoordinator(Logger* logger)
     : m_logger(logger)
 {
     InitializeCriticalSection(&m_cs);
-    for (int i = 0; i < 4; i++) m_exitRequested[i] = false;
+    for (uint32_t i = 0; i < kMaxVcpu; i++) m_exitRequested[i] = false;
 }
 
 ExitCoordinator::~ExitCoordinator()
@@ -45,7 +45,7 @@ ExitCoordinator::~ExitCoordinator()
 
 bool ExitCoordinator::RequestExit(uint32_t vcpuIndex)
 {
-    if (vcpuIndex >= 4) return false;
+    if (vcpuIndex >= kMaxVcpu) return false;
     EnterCriticalSection(&m_cs);
     m_exitRequested[vcpuIndex] = true;
     LeaveCriticalSection(&m_cs);
@@ -54,7 +54,7 @@ bool ExitCoordinator::RequestExit(uint32_t vcpuIndex)
 
 bool ExitCoordinator::IsExitRequested(uint32_t vcpuIndex) const
 {
-    if (vcpuIndex >= 4) return false;
+    if (vcpuIndex >= kMaxVcpu) return false;
     EnterCriticalSection(&m_cs);
     bool result = m_exitRequested[vcpuIndex];
     LeaveCriticalSection(&m_cs);
@@ -63,7 +63,7 @@ bool ExitCoordinator::IsExitRequested(uint32_t vcpuIndex) const
 
 void ExitCoordinator::Reset(uint32_t vcpuIndex)
 {
-    if (vcpuIndex >= 4) return;
+    if (vcpuIndex >= kMaxVcpu) return;
     EnterCriticalSection(&m_cs);
     m_exitRequested[vcpuIndex] = false;
     LeaveCriticalSection(&m_cs);
@@ -115,9 +115,13 @@ bool ThreadScheduler::Stop()
         for (int i = 0; i < m_numVcpus; i++) {
             m_coordinator->RequestExit(i);
         }
-        // Cancel any running VCPU
-        for (int i = 0; i < m_numVcpus; i++) {
-            // VcpuManager handles its own cancellation
+        // Actually cancel each running VCPU (a prior version left this loop empty with a
+        // comment claiming VcpuManager handled it elsewhere — it didn't; nothing consulted
+        // m_coordinator, so Stop() previously couldn't actually stop a VCPU run loop).
+        if (m_vcpuMgr) {
+            for (int i = 0; i < m_numVcpus; i++) {
+                m_vcpuMgr->Stop((uint32_t)i);
+            }
         }
         WaitForSingleObject(m_schedulerThread, 3000);
         CloseHandle(m_schedulerThread);

@@ -141,8 +141,8 @@ std::vector<uint8_t> Snapshot::CreateInMemory(Partition* partition,
     std::vector<uint8_t> snapshot(totalSize, 0);
 
     SnapshotHeader* header = (SnapshotHeader*)snapshot.data();
-    memcpy(header->magic, "SYMBIOTE", 8);
-    header->magic[7] = '\0';
+    memcpy(header->magic, "SYMBIOTE", 8); // fills all 8 bytes — no room for/need of a NUL here,
+                                           // ValidateHeader compares the full 8-byte field
     header->version = kSnapshotVersion;
     header->numVcpus = numVcpus;
     header->numMemoryRegions = 0;
@@ -199,7 +199,17 @@ bool Snapshot::RestoreInMemory(const std::vector<uint8_t>& snapshotData,
         }
         if (offset + sizeof(uint32_t) <= snapshotData.size()) {
             uint32_t regCount = *(const uint32_t*)(snapshotData.data() + offset);
-            offset += sizeof(uint32_t) + regCount * sizeof(WHV_REGISTER_VALUE);
+            if (regCount > kNumSnapshotRegisters) {
+                m_logger->Trace(LOG_ERROR, "Snapshot: corrupt regCount %u (max %u), aborting restore",
+                    regCount, kNumSnapshotRegisters);
+                return false;
+            }
+            size_t advance = sizeof(uint32_t) + (size_t)regCount * sizeof(WHV_REGISTER_VALUE);
+            if (offset + advance > snapshotData.size()) {
+                m_logger->Trace(LOG_ERROR, "Snapshot: regCount %u runs past snapshot end, aborting restore", regCount);
+                return false;
+            }
+            offset += advance;
         }
     }
 
@@ -262,8 +272,8 @@ std::vector<uint8_t> Snapshot::Create(Partition* partition,
 
     // Fill header
     SnapshotHeader* header = (SnapshotHeader*)snapshot.data();
-    memcpy(header->magic, "SYMBIOTE", 8);
-    header->magic[7] = '\0';
+    memcpy(header->magic, "SYMBIOTE", 8); // fills all 8 bytes — no room for/need of a NUL here,
+                                           // ValidateHeader compares the full 8-byte field
     header->version = kSnapshotVersion;
     header->numVcpus = numVcpus;
     header->numMemoryRegions = (uint32_t)memoryRegions.size();
@@ -355,7 +365,17 @@ bool Snapshot::Restore(const std::vector<uint8_t>& snapshotData,
         // Skip VCPU register data regardless
         if (offset + sizeof(uint32_t) <= snapshotData.size()) {
             uint32_t regCount = *(const uint32_t*)(snapshotData.data() + offset);
-            offset += sizeof(uint32_t) + regCount * sizeof(WHV_REGISTER_VALUE);
+            if (regCount > kNumSnapshotRegisters) {
+                m_logger->Trace(LOG_ERROR, "Snapshot: corrupt regCount %u (max %u), aborting restore",
+                    regCount, kNumSnapshotRegisters);
+                return false;
+            }
+            size_t advance = sizeof(uint32_t) + (size_t)regCount * sizeof(WHV_REGISTER_VALUE);
+            if (offset + advance > snapshotData.size()) {
+                m_logger->Trace(LOG_ERROR, "Snapshot: regCount %u runs past snapshot end, aborting restore", regCount);
+                return false;
+            }
+            offset += advance;
         }
     }
 

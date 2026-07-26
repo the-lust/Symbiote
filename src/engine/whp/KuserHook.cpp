@@ -49,18 +49,23 @@ void KuserHook::CopyStaticSpoofs()
     *(uint16_t*)(kuser + 0x26A) = 0x0009; // SuiteMask high
     *(uint16_t*)(kuser + 0x26C) = 0x000A; // ProductType + flags
 
-    // ProcessorFeatures — match i9-10900K per-byte pattern (0x270-0x2C0)
+    // ProcessorFeatures — match i9-10900K per-byte pattern (0x270-0x2C0).
+    // A prior version wrote these 11 constants at offsets that overlapped each other by up to
+    // 7 bytes (0x272 then 0x273, 0x281 then 0x282 then 0x283, ...) — each write clobbered most
+    // of the write immediately before it, so the field ended up as a mix of leftover real bytes
+    // (from the memcpy above) and fragments of several different intended values instead of a
+    // coherent profile. Same 11 values, laid out at correct sequential non-overlapping offsets.
     *(uint64_t*)(kuser + 0x272) = 0x0001000100000000ULL;
-    *(uint64_t*)(kuser + 0x273) = 0x0101000100010000ULL;
-    *(uint64_t*)(kuser + 0x281) = 0x0100000100010101ULL;
-    *(uint64_t*)(kuser + 0x282) = 0x0101000000010001ULL;
-    *(uint64_t*)(kuser + 0x283) = 0x0101000100010000ULL;
-    *(uint32_t*)(kuser + 0x288) = 0x01000101;
-    *(uint32_t*)(kuser + 0x290) = 0x01000101;
-    *(uint64_t*)(kuser + 0x294) = 0x0101010101010001ULL;
-    *(uint64_t*)(kuser + 0x29C) = 0x0101010100010101ULL;
-    *(uint64_t*)(kuser + 0x2A4) = 0x0000010101000001ULL;
-    *(uint32_t*)(kuser + 0x2AC) = 0x00010101;
+    *(uint64_t*)(kuser + 0x27A) = 0x0101000100010000ULL;
+    *(uint64_t*)(kuser + 0x282) = 0x0100000100010101ULL;
+    *(uint64_t*)(kuser + 0x28A) = 0x0101000000010001ULL;
+    *(uint64_t*)(kuser + 0x292) = 0x0101000100010000ULL;
+    *(uint32_t*)(kuser + 0x29A) = 0x01000101;
+    *(uint32_t*)(kuser + 0x29E) = 0x01000101;
+    *(uint64_t*)(kuser + 0x2A2) = 0x0101010101010001ULL;
+    *(uint64_t*)(kuser + 0x2AA) = 0x0101010100010101ULL;
+    *(uint64_t*)(kuser + 0x2B2) = 0x0000010101000001ULL;
+    *(uint32_t*)(kuser + 0x2BA) = 0x00010101;
 
     // SuiteMask @ 0x2D0 is ULONG (4 bytes) — do not write uint64 here (overlaps 0x2D4)
     *(uint32_t*)(kuser + 0x2D0) = 0x00000110;

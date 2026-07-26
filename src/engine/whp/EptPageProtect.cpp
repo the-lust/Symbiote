@@ -22,10 +22,22 @@ bool EptPageProtect::Initialize()
 
 void EptPageProtect::Shutdown()
 {
+    // NOTE: realVa is never captured at HidePage() time (Partition has no GPA->host-VA
+    // reverse lookup today), so RestorePage() below always fails. Freeing shadowVa
+    // unconditionally in that case would leave the guest's EPT mapping pointing at freed
+    // host memory (use-after-free). Only free once the EPT mapping has actually been
+    // pointed elsewhere; otherwise leak the allocation rather than corrupt memory. A real
+    // fix needs Partition to expose the original host VA for a GPA so it can be restored.
     for (auto& page : m_protectedPages) {
         if (page.active && m_partition) {
-            RestorePage(page.gpa, page.size, page.realVa);
-            if (page.shadowVa) VirtualFree(page.shadowVa, 0, MEM_RELEASE);
+            bool restored = RestorePage(page.gpa, page.size, page.realVa);
+            if (restored && page.shadowVa) {
+                VirtualFree(page.shadowVa, 0, MEM_RELEASE);
+            } else if (!restored && page.shadowVa) {
+                m_logger->Trace(LOG_WARNING,
+                    "EptPageProtect: GPA=0x%llX has no captured realVa — leaking shadow page "
+                    "instead of freeing memory that may still be EPT-mapped", page.gpa);
+            }
         }
     }
     m_protectedPages.clear();
@@ -75,10 +87,17 @@ bool EptPageProtect::UnhidePage(uint64_t gpa)
     ProtectedPage& page = m_protectedPages[it->second];
     if (!page.active) return false;
 
+    // See Shutdown() for why shadowVa is only freed when RestorePage genuinely succeeded.
     bool result = RestorePage(page.gpa, page.size, page.realVa);
     if (page.shadowVa) {
-        VirtualFree(page.shadowVa, 0, MEM_RELEASE);
-        page.shadowVa = nullptr;
+        if (result) {
+            VirtualFree(page.shadowVa, 0, MEM_RELEASE);
+            page.shadowVa = nullptr;
+        } else {
+            m_logger->Trace(LOG_WARNING,
+                "EptPageProtect: UnhidePage GPA=0x%llX has no captured realVa — leaking shadow page "
+                "instead of freeing memory that may still be EPT-mapped", page.gpa);
+        }
     }
     page.active = false;
     m_gpaToProtect.erase(it);

@@ -269,6 +269,14 @@ extern "C" NTSTATUS NTAPI Proxy_NtQuerySystemInformation(
             }
             // Fall through to real NtQuerySystemInformation
         } else if (fti->Action == 1) {
+            // TableBuffer (real NT layout: UCHAR TableBuffer[1], a trailing region within Info
+            // itself) must actually fit inside the outer Length the caller claims Info is —
+            // TableBufferLength alone is caller-embedded and was never cross-checked against it,
+            // so a Length/TableBufferLength mismatch (stale reused buffer, caller bug) let
+            // GetSmbios/GetAcpi write past the real end of the Info allocation.
+            if (Length < offsetof(SYSTEM_FIRMWARE_TABLE_INFORMATION, TableBuffer) + fti->TableBufferLength) {
+                return STATUS_INFO_LENGTH_MISMATCH;
+            }
             uint32_t bufSize = fti->TableBufferLength;
             uint8_t* buffer = fti->TableBuffer;
             BOOL ok = FALSE;
@@ -406,6 +414,23 @@ struct TrackedKey {
 static TrackedKey s_trackedKeys[64];
 static int s_trackedCount = 0;
 static CRITICAL_SECTION s_trackedCs;
+// A prior version initialized s_trackedCs via `static bool init` checked/set with no locking
+// inside Proxy_NtOpenKey — two threads' first concurrent call could both InitializeCriticalSection
+// the same object (undefined behavior), and Proxy_NtQueryValueKey below unconditionally used
+// s_trackedCs with no guarantee NtOpenKey had ever run first (EnterCriticalSection on an
+// never-initialized CRITICAL_SECTION). NtOpenKey/NtQueryValueKey are among the most frequently
+// and concurrently called NT APIs in the system, making this a live, reachable race, not a
+// theoretical one. INIT_ONCE gives a real thread-safe one-time init both functions can rely on.
+static INIT_ONCE s_trackedCsInitOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK InitTrackedCsOnce(PINIT_ONCE, PVOID, PVOID*)
+{
+    InitializeCriticalSection(&s_trackedCs);
+    return TRUE;
+}
+static void EnsureTrackedCsInit()
+{
+    InitOnceExecuteOnce(&s_trackedCsInitOnce, InitTrackedCsOnce, nullptr, nullptr);
+}
 
 static int FindTrackedSlot(HANDLE h)
 {
@@ -417,11 +442,11 @@ static int FindTrackedSlot(HANDLE h)
 extern "C" NTSTATUS NTAPI Proxy_NtOpenKey(
     PHANDLE KeyHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes)
 {
+    EnsureTrackedCsInit();
     static decltype(&Proxy_NtOpenKey) realFunc = nullptr;
     static bool init = false;
     if (!init) {
         init = true;
-        InitializeCriticalSection(&s_trackedCs);
         HMODULE realNtdll = GetRealNtdll();
         if (realNtdll) realFunc = (decltype(&Proxy_NtOpenKey))GetProcAddress(realNtdll, "NtOpenKey");
     }
@@ -455,6 +480,7 @@ extern "C" NTSTATUS NTAPI Proxy_NtQueryValueKey(
     ULONG KeyValueInformationLength, PULONG ResultLength)
 {
     (void)KeyValueInformationClass;
+    EnsureTrackedCsInit();
     EnterCriticalSection(&s_trackedCs);
     int slot = FindTrackedSlot(KeyHandle);
     bool isCp = (slot >= 0 && s_trackedKeys[slot].isCentralProcessor);

@@ -304,11 +304,14 @@ bool MinimalKernel::HandleSyscall(uint64_t syscallNumber, uint64_t* args, uint64
             if (m_spoofFile && m_fileEmu) return m_fileEmu->HandleNtNotifyChangeDirectoryFile(args, result);
             return false;
 
+        // NtOpenKeyEx: RegistryEmu has no distinct handler for the Ex variant, so this
+        // intentionally shares HandleNtOpenKey — matching how SyscallDispatch::DispatchRawSyscall
+        // (src/engine/whp/SyscallDispatch.cpp) treats NtOpenKey/NtOpenKeyEx identically.
+        // If NtOpenKeyEx-specific args (e.g. the OpenOptions parameter) ever need distinct
+        // handling, this needs its own RegistryEmu::HandleNtOpenKeyEx.
         case 0x0031:
             if (m_spoofRegistry && m_registryEmu) return m_registryEmu->HandleNtOpenKey(args, result);
             return false;
-
-
 
         case 0x0035:
             if (m_sectionEmu) return m_sectionEmu->HandleNtOpenSection(args, result);

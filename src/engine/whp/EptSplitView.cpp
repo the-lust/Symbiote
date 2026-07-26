@@ -3,7 +3,10 @@
 #include <algorithm>
 
 EptSplitView::EptSplitView(Logger* logger, Partition* partition)
-    : m_logger(logger), m_partition(partition), m_initialized(false), m_currentGeneration(0)
+    // Start at 1, not 0: a VcpuViewState that has never been touched defaults
+    // lastViewGeneration to 0 too, so ApplyViewForVcpu's "already applied" check would
+    // otherwise treat the very first real call as a no-op and skip mapping anything.
+    : m_logger(logger), m_partition(partition), m_initialized(false), m_currentGeneration(1)
 {
 }
 
@@ -45,7 +48,7 @@ bool EptSplitView::RegisterHiddenRange(uint64_t gpa, uint64_t size, void* hidden
     page.cachedVisibleVa = visibleVa;
 
     m_pages.push_back(page);
-    m_gpaToPage[gpa] = &m_pages.back();
+    m_gpaToPage[gpa] = m_pages.size() - 1;
 
     m_logger->Trace(LOG_WHP, "SplitView registered: GPA=0x%llX size=%llu (%s) hidden=%p visible=%p",
         gpa, size,
@@ -195,7 +198,7 @@ bool EptSplitView::ReadHiddenMemory(uint64_t gpa, void* buffer, uint64_t size)
         return false;
     }
 
-    SplitViewPage* page = it->second;
+    SplitViewPage* page = &m_pages[it->second];
     if (!page->hiddenVa || !buffer) return false;
 
     uint64_t offset = gpa - page->gpa;
@@ -210,7 +213,7 @@ bool EptSplitView::WriteHiddenMemory(uint64_t gpa, const void* buffer, uint64_t 
     auto it = m_gpaToPage.find(gpa);
     if (it == m_gpaToPage.end()) return false;
 
-    SplitViewPage* page = it->second;
+    SplitViewPage* page = &m_pages[it->second];
     if (!page->hiddenVa || !buffer) return false;
 
     uint64_t offset = gpa - page->gpa;
@@ -229,8 +232,8 @@ bool EptSplitView::ProtectMemoryRange(uint64_t gpa, uint64_t size)
 
     void* hostVa = nullptr;
     auto it = m_gpaToPage.find(gpa);
-    if (it != m_gpaToPage.end() && it->second->visibleVa) {
-        hostVa = it->second->visibleVa;
+    if (it != m_gpaToPage.end() && m_pages[it->second].visibleVa) {
+        hostVa = m_pages[it->second].visibleVa;
     } else {
         // Find the host VA by reverse lookup from GPA
         // For non-tracked pages, we need to get the mapping from partition

@@ -45,7 +45,12 @@ extern "C" BOOL WINAPI proxy_CryptGetProvParam(HCRYPTPROV hProv, DWORD dwParam, 
     // PP_UNIQUE_CONTAINER (0x26): return a consistent spoofed container name
     if (dwParam == 0x26 && pbData && pdwDataLen) {
         static const wchar_t spoofedContainer[] = L"{00000000-0000-0000-0000-000000000000}";
-        DWORD needed = (DWORD)(wcslen(spoofedContainer) + 1);
+        // CryptGetProvParam's pdwDataLen is documented in BYTES, not characters — a prior
+        // version compared/reported a character count here, under-reporting the true byte
+        // length by 2x (compare the correctly-written equivalent in advapi32_proxy, which does
+        // multiply by sizeof(WCHAR)). A caller following the standard Win32 "probe size,
+        // allocate, fetch" idiom would allocate a buffer half the size actually needed.
+        DWORD needed = (DWORD)((wcslen(spoofedContainer) + 1) * sizeof(wchar_t));
         if (*pdwDataLen >= needed) {
             wcscpy_s((wchar_t*)pbData, *pdwDataLen / sizeof(wchar_t), spoofedContainer);
             *pdwDataLen = needed;

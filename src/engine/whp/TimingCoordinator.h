@@ -26,6 +26,13 @@ public:
     TimingCoordinator();
     ~TimingCoordinator();
 
+    // TimingCoordinator is a single global instance shared by CpuidHandler and RdtscHandler,
+    // both driven concurrently from every VCPU's own exit-handling thread. The fields below
+    // (and monotonicLastTsc) are read-modified-written by the Detect*/AddJitter methods with
+    // no synchronization in a prior version, which is a genuine data race, not just a
+    // theoretical one — guard them with this lock.
+    mutable SRWLOCK lock = SRWLOCK_INIT;
+
     // RDTSC→CPUID→RDTSC pattern detection
     uint64_t lastRdtscTime = 0;
     uint64_t lastCpuidTime = 0;
@@ -54,11 +61,14 @@ public:
 
     // Detect RDTSC before CPUID (pattern: RDTSC → CPUID)
     void DetectRdtscBeforeCpuid(uint64_t rdtscTime) {
+        AcquireSRWLockExclusive(&lock);
         lastRdtscTime = rdtscTime;
+        ReleaseSRWLockExclusive(&lock);
     }
 
     // Detect CPUID after RDTSC (pattern: RDTSC → CPUID → RDTSC)
     bool DetectCpuidAfterRdtsc(uint32_t leaf, uint64_t cpuidTime) {
+        AcquireSRWLockExclusive(&lock);
         bool pattern = false;
         if (lastRdtscTime != 0 && (cpuidTime - lastRdtscTime) < 10000) {
             rdtscCpuidRdtscCount++;
@@ -67,22 +77,26 @@ public:
         lastCpuidTime = cpuidTime;
         lastCpuidLeaf = leaf;
         lastRdtscTime = 0;
+        ReleaseSRWLockExclusive(&lock);
         return pattern;
     }
 
     // Detect RDTSC after CPUID (completing the RDTSC→CPUID→RDTSC pattern)
     bool DetectRdtscAfterCpuid(uint64_t rdtscTime) {
+        AcquireSRWLockExclusive(&lock);
         bool found = (lastCpuidTime != 0 && (rdtscTime - lastCpuidTime) < 10000);
         if (found) {
             rdtscCpuidRdtscCount++;
         }
         lastRdtscTime = rdtscTime;
         lastCpuidTime = 0;
+        ReleaseSRWLockExclusive(&lock);
         return found;
     }
 
     // Add jitter with realistic hardware profile
     uint64_t AddJitter(uint64_t tsc, uint64_t tscFrequency) {
+        AcquireSRWLockExclusive(&lock);
         uint64_t delayUs;
         switch (jitterStrategy) {
             case JITTER_CONSTANT:
@@ -121,6 +135,7 @@ public:
             result = monotonicLastTsc + 1;
         }
         monotonicLastTsc = result;
+        ReleaseSRWLockExclusive(&lock);
         return result;
     }
 

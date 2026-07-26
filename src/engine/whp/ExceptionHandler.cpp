@@ -1,8 +1,25 @@
 #include "ExceptionHandler.h"
+#include "../proxy/InstructionDecoder.h"
+#include <windows.h>
 
 ExceptionHandler::ExceptionHandler(Logger* logger)
     : m_logger(logger)
 {
+}
+
+// Best-effort real instruction length at a guest RIP (identity-mapped, so *rip is directly
+// host-readable the same way other modules in this codebase treat guest addresses — see
+// e.g. HwIdEmu/FileEmu). Falls back to 2 (the prior hardcoded assumption) if the read faults
+// or the decoder can't make sense of the bytes, rather than guessing a specific other length.
+static int SafeInstructionLength(uint64_t rip)
+{
+    __try {
+        int len = GetInstructionLength((const uint8_t*)(uintptr_t)rip);
+        if (len <= 0 || len > 15) return 2;
+        return len;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 2;
+    }
 }
 
 bool ExceptionHandler::HandleException(WHV_VP_EXIT_CONTEXT*, uint32_t exceptionCode,
@@ -23,17 +40,17 @@ bool ExceptionHandler::HandleException(WHV_VP_EXIT_CONTEXT*, uint32_t exceptionC
 bool ExceptionHandler::HandleGpFault(uint64_t**, uint64_t* rip)
 {
     if (!rip) return false;
-    m_logger->Trace(LOG_WHP, "VM #GP fault at RIP 0x%llX - skipping instruction", *rip);
-    // Skip the faulting instruction (assumed 2 bytes for common #GP triggers lol)
-    *rip += 2;
+    int len = SafeInstructionLength(*rip);
+    m_logger->Trace(LOG_WHP, "VM #GP fault at RIP 0x%llX - skipping %d-byte instruction", *rip, len);
+    *rip += len;
     return true;
 }
 
 bool ExceptionHandler::HandleUdFault(uint64_t**, uint64_t* rip)
 {
     if (!rip) return false;
-    m_logger->Trace(LOG_WHP, "VM #UD fault at RIP 0x%llX - skipping instruction", *rip);
-    // Skip the undefiend instruction (assumed 2 bytes)
-    *rip += 2;
+    int len = SafeInstructionLength(*rip);
+    m_logger->Trace(LOG_WHP, "VM #UD fault at RIP 0x%llX - skipping %d-byte instruction", *rip, len);
+    *rip += len;
     return true;
 }

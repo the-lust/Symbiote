@@ -28,8 +28,12 @@ HMODULE Fallthrough::GetRealDll(const char* dllName)
     wchar_t fullPath[MAX_PATH];
     swprintf_s(fullPath, L"%s\\%s", systemDir, wideName);
 
+    // The LoadLibraryA fallback used to be gated on `m_cacheCount < 16` — a leftover from a
+    // copy-pasted cache-insert guard that had nothing to do with whether the fallback should
+    // be attempted. Once the 16-slot cache filled (easy with 13+ proxied DLLs), resolution for
+    // any *new* DLL silently stopped trying the fallback at all instead of just not caching it.
     HMODULE hMod = LoadLibraryW(fullPath);
-    if (!hMod && m_cacheCount < 16) {
+    if (!hMod) {
         hMod = LoadLibraryA(dllName);
     }
 

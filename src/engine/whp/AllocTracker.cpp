@@ -147,13 +147,15 @@ void AllocTracker::OnAllocation(void* baseAddr, SIZE_T size, ULONG protect)
     uint64_t start = (uint64_t)baseAddr;
     uint64_t end = start + size;
 
-    // Collect pages to guard, then set guards outside CS to avoid re-entrancy
-    uint64_t guardPages[64];
-    int guardCount = 0;
+    // Collect pages to guard, then set guards outside CS to avoid re-entrancy.
+    // A prior version capped this at a fixed 64-entry array (256KB) and silently stopped
+    // tracking/guarding the rest of any larger allocation with no diagnostic. Use a vector so
+    // a single large allocation gets full coverage instead of a silently-truncated one.
+    std::vector<uint64_t> guardPages;
 
     EnterCriticalSection(&m_cs);
 
-    for (uint64_t page = start & ~0xFFFULL; page < end && guardCount < 64; page += 0x1000) {
+    for (uint64_t page = start & ~0xFFFULL; page < end; page += 0x1000) {
         bool found = false;
         for (auto& tp : m_trackedPages) {
             if (tp.baseAddr == page) { found = true; break; }
@@ -171,18 +173,18 @@ void AllocTracker::OnAllocation(void* baseAddr, SIZE_T size, ULONG protect)
         tp.allocAsRW = (protect == PAGE_READWRITE);
         tp.reencryptCycle = 0;
         m_trackedPages.push_back(tp);
-        guardPages[guardCount++] = page;
+        guardPages.push_back(page);
     }
 
     LeaveCriticalSection(&m_cs);
 
-    if (m_capLogger && guardCount > 0) {
+    if (m_capLogger && !guardPages.empty()) {
         m_capLogger->CaptureAlloc(0, baseAddr, size, protect);
     }
 
-    for (int i = 0; i < guardCount; i++) {
+    for (uint64_t page : guardPages) {
         DWORD oldProtect;
-        VirtualProtect((LPVOID)guardPages[i], 0x1000,
+        VirtualProtect((LPVOID)page, 0x1000,
             PAGE_EXECUTE_READWRITE | PAGE_GUARD, &oldProtect);
     }
 }
@@ -195,8 +197,7 @@ void AllocTracker::OnProtect(void* baseAddr, SIZE_T size, ULONG newProtect)
     uint64_t start = (uint64_t)baseAddr;
     uint64_t end = start + size;
 
-    uint64_t guardPages[64];
-    int guardCount = 0;
+    std::vector<uint64_t> guardPages;
 
     EnterCriticalSection(&m_cs);
 
@@ -231,7 +232,7 @@ void AllocTracker::OnProtect(void* baseAddr, SIZE_T size, ULONG newProtect)
             i++;
         }
 
-        if (!found && nowExecutable && guardCount < 64) {
+        if (!found && nowExecutable) {
             TrackedPage tp;
             tp.baseAddr = page;
             tp.pageEnd = page + 0x1000;
@@ -243,15 +244,15 @@ void AllocTracker::OnProtect(void* baseAddr, SIZE_T size, ULONG newProtect)
             tp.allocAsRW = false;
             tp.reencryptCycle = 0;
             m_trackedPages.push_back(tp);
-            guardPages[guardCount++] = page;
+            guardPages.push_back(page);
         }
     }
 
     LeaveCriticalSection(&m_cs);
 
-    for (int i = 0; i < guardCount; i++) {
+    for (uint64_t page : guardPages) {
         DWORD oldProtect;
-        VirtualProtect((LPVOID)guardPages[i], 0x1000,
+        VirtualProtect((LPVOID)page, 0x1000,
             PAGE_EXECUTE_READWRITE | PAGE_GUARD, &oldProtect);
     }
 }

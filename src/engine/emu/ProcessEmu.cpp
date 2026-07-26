@@ -212,7 +212,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
 
     switch (infoClass) {
         case SystemBasicInformation: {
-            if (infoLength < sizeof(SYSTEM_BASIC_INFORMATION)) {
+            if (!infoBuffer || infoLength < sizeof(SYSTEM_BASIC_INFORMATION)) {
                 *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 if (returnLengthPtr) *(uint32_t*)returnLengthPtr = sizeof(SYSTEM_BASIC_INFORMATION);
                 return true;
@@ -272,7 +272,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             }
 
             uint32_t totalSize = (uint32_t)buffer.size();
-            if (totalSize > infoLength) {
+            if (!infoBuffer || totalSize > infoLength) {
                 if (returnLengthPtr) *(uint32_t*)returnLengthPtr = totalSize;
                 *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
@@ -297,7 +297,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
         }
 
         case SystemKernelDebuggerInformation: {
-            if (infoLength < 2) {
+            if (!infoBuffer || infoLength < 2) {
                 *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
@@ -310,7 +310,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
         }
 
         case SystemCodeIntegrityInformation: {
-            if (infoLength < sizeof(SYSTEM_CODEINTEGRITY_INFORMATION)) {
+            if (!infoBuffer || infoLength < sizeof(SYSTEM_CODEINTEGRITY_INFORMATION)) {
                 *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
@@ -327,7 +327,7 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
             // Some implementations enumerate kernel modules to detect unsigned drivers
             // Return empty module list
             uint32_t neededSize = sizeof(uint32_t); // just entry count = 0
-            if (infoLength < neededSize) {
+            if (!infoBuffer || infoLength < neededSize) {
                 if (returnLengthPtr) *(uint32_t*)returnLengthPtr = neededSize;
                 *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
@@ -350,13 +350,12 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
                 ULONG FirmwareTableBufferLength;
             } SYSTEM_FIRMWARE_TABLE_INFORMATION, *PSYSTEM_FIRMWARE_TABLE_INFORMATION;
 
-            PSYSTEM_FIRMWARE_TABLE_INFORMATION fti = (PSYSTEM_FIRMWARE_TABLE_INFORMATION)(uintptr_t)infoBuffer;
-
-            if (infoLength < sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION)) {
+            if (!infoBuffer || infoLength < sizeof(SYSTEM_FIRMWARE_TABLE_INFORMATION)) {
                 *result = (uint64_t)STATUS_INFO_LENGTH_MISMATCH;
                 return true;
             }
 
+            PSYSTEM_FIRMWARE_TABLE_INFORMATION fti = (PSYSTEM_FIRMWARE_TABLE_INFORMATION)(uintptr_t)infoBuffer;
             uint32_t providerSig = fti->ProviderSignature;
             void* tableBuffer = fti->FirmwareTableBuffer;
             uint32_t tableBufLen = fti->FirmwareTableBufferLength;
@@ -424,15 +423,20 @@ bool ProcessEmu::HandleNtQuerySystemInformation(uint64_t* args, uint64_t* result
                     // Build new MADT with 20 processor entries
                     const int targetCount = 20;
                     uint8_t newTable[4096];
+                    uint8_t* const newTableEnd = newTable + sizeof(newTable);
                     memcpy(newTable, acpiData, 44);
                     uint8_t* wp = newTable + 44;
-                    for (int i = 0; i < targetCount; i++) {
+                    for (int i = 0; i < targetCount && wp + 8 <= newTableEnd; i++) {
                         wp[0] = 0; wp[1] = 8;
                         wp[2] = (uint8_t)i; wp[3] = (uint8_t)i;
                         *(uint32_t*)(wp + 4) = 1;
                         wp += 8;
                     }
                     for (int i = 0; i < savedCount; i++) {
+                        if (wp + saved[i].length > newTableEnd) {
+                            m_logger->Trace(LOG_WARNING, "ACPI MADT spoof: truncating saved entries, would overflow newTable");
+                            break;
+                        }
                         memcpy(wp, saved[i].data, saved[i].length);
                         wp += saved[i].length;
                     }

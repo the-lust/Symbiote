@@ -235,14 +235,28 @@ bool Partition::SetupMemory(uint64_t sizeMB)
         if (endGpa > maxRegionGpa) maxRegionGpa = endGpa;
     }
 
-    // Only pre-map up to our guest memory size
-    uint64_t guestSizeBytes = sizeMB << 20;
-    if (maxRegionGpa > guestSizeBytes) {
-        m_logger->Trace(LOG_WHP, "SetupMemory: trimming working set from %lluMB to guest size %lluMB",
-            maxRegionGpa >> 20, sizeMB);
+    // Only pre-map up to our guest memory size. A prior version logged "trimming" here but
+    // always passed the full, untrimmed kDefaultWorkingSet to SetupWorkingSet below regardless
+    // of sizeMB — actually build a trimmed copy instead.
+    WorkingSetRegion trimmed[5];
+    int trimmedCount = 0;
+    for (int i = 0; i < 5; i++) {
+        if (kDefaultWorkingSet[i].baseGpa >= sizeMB) continue; // region starts entirely past guest size
+        trimmed[trimmedCount] = kDefaultWorkingSet[i];
+        uint64_t regionEndMB = kDefaultWorkingSet[i].baseGpa + kDefaultWorkingSet[i].sizeMB;
+        if (regionEndMB > sizeMB) {
+            trimmed[trimmedCount].sizeMB = sizeMB - kDefaultWorkingSet[i].baseGpa; // clamp partial region
+        }
+        trimmedCount++;
     }
 
-    if (!SetupWorkingSet(kDefaultWorkingSet, 5)) {
+    uint64_t guestSizeBytes = sizeMB << 20;
+    if (maxRegionGpa > guestSizeBytes) {
+        m_logger->Trace(LOG_WHP, "SetupMemory: trimming working set from %lluMB to guest size %lluMB (%d of 5 regions kept)",
+            maxRegionGpa >> 20, sizeMB, trimmedCount);
+    }
+
+    if (!SetupWorkingSet(trimmed, trimmedCount)) {
         m_logger->Trace(LOG_WARNING, "SetupMemory: working set pre-map incomplete — runtime EPT violations may occur");
     }
 

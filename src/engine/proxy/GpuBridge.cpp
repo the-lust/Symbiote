@@ -38,12 +38,27 @@ bool GpuBridge::LoadGpuDll(int index)
     if (index < 0 || index >= m_gpuDllCount) return false;
     if (m_gpuDlls[index].handle) return true;
 
+    // A bare LoadLibraryA(name) uses the default search order (application directory first),
+    // which is exactly the scenario DXVK creates by dropping same-named DLLs (d3d11.dll, etc.)
+    // next to the target EXE — DxvkIntegration.cpp elsewhere in this codebase is explicitly
+    // built to detect that scenario, so GpuBridge silently loading DXVK's replacement instead
+    // of the genuine system DLL would defeat that. Load an explicit System32-qualified path
+    // the same way Fallthrough::GetRealDll does.
     char fullName[128];
     strcpy_s(fullName, m_gpuDlls[index].name);
 
-    m_gpuDlls[index].handle = LoadLibraryA(fullName);
+    char systemDir[MAX_PATH];
+    UINT dirLen = GetSystemDirectoryA(systemDir, sizeof(systemDir));
+    char qualifiedPath[MAX_PATH + 128];
+    if (dirLen > 0 && dirLen < sizeof(systemDir)) {
+        sprintf_s(qualifiedPath, "%s\\%s", systemDir, fullName);
+    } else {
+        strcpy_s(qualifiedPath, fullName); // fall back to default search order if this fails
+    }
+
+    m_gpuDlls[index].handle = LoadLibraryA(qualifiedPath);
     if (!m_gpuDlls[index].handle) {
-        m_logger->Trace(LOG_WARNING, "GpuBridge: failed to load %s", fullName);
+        m_logger->Trace(LOG_WARNING, "GpuBridge: failed to load %s", qualifiedPath);
         return false;
     }
 

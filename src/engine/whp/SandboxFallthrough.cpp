@@ -30,19 +30,23 @@ bool SandboxFallthrough::Initialize(const SandboxConfig& cfg)
 {
     m_cfg = cfg;
 
+    // A prior version only ever constructed+Initialize()'d these redirectors the first time
+    // (guarded by `if (!g_xxx)`), so a second Initialize() call with a different boxName updated
+    // m_cfg/GetConfig() but left the redirectors silently still pointed at the *first* call's
+    // box root. Re-Initialize() existing instances too so config changes actually take effect.
     if (m_cfg.enableFileRedirection) {
         if (!g_fileRedirection) {
             g_fileRedirection = new FileRedirection(m_logger);
-            g_fileRedirection->Initialize(m_cfg.boxName);
         }
+        g_fileRedirection->Initialize(m_cfg.boxName);
         m_logger->Trace(LOG_INFO, "SandboxFallthrough: file redirection enabled for '%ls'", m_cfg.boxName);
     }
 
     if (m_cfg.enableRegistryRedirection) {
         if (!g_registryRedirection) {
             g_registryRedirection = new RegistryRedirection(m_logger);
-            g_registryRedirection->Initialize(m_cfg.boxName);
         }
+        g_registryRedirection->Initialize(m_cfg.boxName);
         m_logger->Trace(LOG_INFO, "SandboxFallthrough: registry redirection enabled for '%ls'", m_cfg.boxName);
     }
 
@@ -55,7 +59,9 @@ bool SandboxFallthrough::Initialize(const SandboxConfig& cfg)
     }
 
     if (m_cfg.enableVirtualDisk && m_cfg.vhdxPath[0]) {
-        MountDisk();
+        if (!MountDisk()) {
+            m_logger->Trace(LOG_ERROR, "SandboxFallthrough: MountDisk failed for '%ls' — continuing without virtual disk", m_cfg.vhdxPath);
+        }
     }
 
     m_initialized = true;

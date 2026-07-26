@@ -175,38 +175,48 @@ void SystemSpoofer::ApplyPatches()
         }
 
         uint64_t regionEndAddr = (uint64_t)(uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        uint64_t regionBaseAddr = (uint64_t)(uintptr_t)mbi.BaseAddress;
 
-        if (mbi.State == MEM_COMMIT &&
+        bool patchable = (mbi.State == MEM_COMMIT &&
             (mbi.Protect & 0xF0) >= PAGE_EXECUTE_READ &&
             !(mbi.Protect & PAGE_GUARD) &&
             !(mbi.Protect & PAGE_NOCACHE) &&
-            mbi.Type != MEM_IMAGE) {
+            mbi.Type != MEM_IMAGE);
 
-            if (patchIdx < g_pending.size() &&
-                g_pending[patchIdx].addr < regionEndAddr &&
-                g_pending[patchIdx].addr >= (uint64_t)(uintptr_t)mbi.BaseAddress) {
+        if (patchable &&
+            patchIdx < g_pending.size() &&
+            g_pending[patchIdx].addr < regionEndAddr &&
+            g_pending[patchIdx].addr >= regionBaseAddr) {
 
-                DWORD oldProtect;
-                VirtualProtect(mbi.BaseAddress, mbi.RegionSize,
-                    PAGE_EXECUTE_READWRITE, &oldProtect);
+            DWORD oldProtect;
+            VirtualProtect(mbi.BaseAddress, mbi.RegionSize,
+                PAGE_EXECUTE_READWRITE, &oldProtect);
 
-                while (patchIdx < g_pending.size() &&
-                       g_pending[patchIdx].addr < regionEndAddr) {
-                    auto& pp = g_pending[patchIdx];
-                    *(uint8_t*)(uintptr_t)pp.addr = 0xCC;
-                    PatchEntry pe;
-                    pe.type = pp.type;
-                    pe.origByte = pp.origByte;
-                    pe.modrm = pp.modrm;
-                    pe.instrLen = pp.instrLen;
-                    g_patches[pp.addr] = pe;
-                    g_patchAddrs.push_back(pp.addr);
-                    patchIdx++;
-                }
-
-                VirtualProtect(mbi.BaseAddress, mbi.RegionSize, oldProtect, &oldProtect);
-                FlushInstructionCache(GetCurrentProcess(), mbi.BaseAddress, mbi.RegionSize);
+            while (patchIdx < g_pending.size() &&
+                   g_pending[patchIdx].addr < regionEndAddr) {
+                auto& pp = g_pending[patchIdx];
+                *(uint8_t*)(uintptr_t)pp.addr = 0xCC;
+                PatchEntry pe;
+                pe.type = pp.type;
+                pe.origByte = pp.origByte;
+                pe.modrm = pp.modrm;
+                pe.instrLen = pp.instrLen;
+                g_patches[pp.addr] = pe;
+                g_patchAddrs.push_back(pp.addr);
+                patchIdx++;
             }
+
+            VirtualProtect(mbi.BaseAddress, mbi.RegionSize, oldProtect, &oldProtect);
+            FlushInstructionCache(GetCurrentProcess(), mbi.BaseAddress, mbi.RegionSize);
+        }
+
+        // Discard (without patching) any pending entries that fall inside a region we're
+        // deliberately not patching (MEM_IMAGE, unprotected, etc.) — a prior version left
+        // patchIdx stuck pointing at these, which meant no later region's entries could ever
+        // match the "is patchIdx's addr in this region" check again, silently dropping the
+        // rest of the queue after the first skipped region.
+        while (patchIdx < g_pending.size() && g_pending[patchIdx].addr < regionEndAddr) {
+            patchIdx++;
         }
 
         addr = (uint8_t*)mbi.BaseAddress + mbi.RegionSize;
@@ -382,6 +392,16 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
     uint64_t rsp = ctx->Rsp;
     memcpy(savedStackBackup, (void*)rsp, sizeof(savedStackBackup));
 
+    // If a case below writes spoofed data to a stack-relative destination (e.g. a compiler-
+    // emitted `sgdt [rsp+8]`), that destination can fall inside [rsp, rsp+sizeof(savedStackBackup))
+    // — the same range the unconditional restore below overwrites. A prior version restored the
+    // stack backup *after* writing the spoofed value, silently clobbering it back to the
+    // pre-write bytes any time the destination happened to be stack-relative. Defer the restore
+    // until after we know whether that happened, and redo the spoofed write afterward if so.
+    uint64_t pendingWriteDest = 0;
+    uint8_t pendingWriteData[10] = {0};
+    size_t pendingWriteSize = 0;
+
     switch (pe.type) {
         case PatchType::SGDT:
         case PatchType::SIDT: {
@@ -394,6 +414,9 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
                 memcpy(data, &limit, 2);
                 memcpy(data + 2, &base, 8);
                 WriteMemory(dest, data, 10);
+                pendingWriteDest = dest;
+                memcpy(pendingWriteData, data, 10);
+                pendingWriteSize = 10;
             }
             break;
         }
@@ -407,6 +430,9 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
                 if (dest) {
                     uint16_t zero = 0;
                     WriteMemory(dest, &zero, 2);
+                    pendingWriteDest = dest;
+                    memcpy(pendingWriteData, &zero, 2);
+                    pendingWriteSize = 2;
                 }
             }
             break;
@@ -421,6 +447,9 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
                 if (dest) {
                     uint16_t trVal = 0x40;
                     WriteMemory(dest, &trVal, 2);
+                    pendingWriteDest = dest;
+                    memcpy(pendingWriteData, &trVal, 2);
+                    pendingWriteSize = 2;
                 }
             }
             break;
@@ -443,6 +472,13 @@ LONG CALLBACK SystemSpoofer::VectoredHandler(EXCEPTION_POINTERS* ep)
 
     // Restore stack top
     memcpy((void*)rsp, savedStackBackup, sizeof(savedStackBackup));
+
+    // Re-apply the spoofed write if it landed inside the region we just restored, so the
+    // restore can't silently undo it.
+    if (pendingWriteSize > 0 &&
+        pendingWriteDest >= rsp && pendingWriteDest + pendingWriteSize <= rsp + sizeof(savedStackBackup)) {
+        WriteMemory(pendingWriteDest, pendingWriteData, pendingWriteSize);
+    }
 
     ctx->Rip = newRip;
     return EXCEPTION_CONTINUE_EXECUTION;

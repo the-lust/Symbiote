@@ -35,10 +35,23 @@ VcpuManager::VcpuManager(Logger* logger, Partition* partition, ExitDispatcher* e
 
 VcpuManager::~VcpuManager()
 {
+    // Stop() only requests cancellation (WHvCancelRunVirtualProcessor) — it's asynchronous.
+    // A child VCPU's own thread (EnterVcpuFromBootstrap -> FreeVcpuIndex) frees allocatedStack
+    // and closes hostThread on its own unwind once it actually notices `running == false`.
+    // Freeing allocatedStack here without waiting for that thread to finish first raced with
+    // it (double VirtualFree / use of a freed stack). Wait for each thread to actually exit
+    // before touching its resources, and only free what FreeVcpuIndex hasn't already freed.
     for (uint32_t i = 0; i < m_vcpuCount; i++) {
         Stop(i);
+        if (m_vcpus[i].hostThread) {
+            WaitForSingleObject(m_vcpus[i].hostThread, INFINITE);
+            // FreeVcpuIndex (run by that thread as it unwinds) already closed the handle and
+            // nulled these fields; nothing left to do for this VCPU.
+            continue;
+        }
         if (m_vcpus[i].allocatedStack) {
             VirtualFree(m_vcpus[i].allocatedStack, 0, MEM_RELEASE);
+            m_vcpus[i].allocatedStack = nullptr;
         }
     }
     m_threadHandleToVcpu.clear();
@@ -314,6 +327,7 @@ void VcpuManager::FreeVcpuIndex(uint32_t index)
         m_vcpus[index].allocatedStack = nullptr;
     }
 
+    EnterCriticalSection(&m_vcpuAllocLock);
     for (auto it = m_threadHandleToVcpu.begin(); it != m_threadHandleToVcpu.end(); ) {
         if (it->second == index) {
             it = m_threadHandleToVcpu.erase(it);
@@ -321,6 +335,7 @@ void VcpuManager::FreeVcpuIndex(uint32_t index)
             ++it;
         }
     }
+    LeaveCriticalSection(&m_vcpuAllocLock);
 
     m_logger->Trace(LOG_WHP, "VCPU %u freed", index);
 }
@@ -499,8 +514,11 @@ bool VcpuManager::HandleCreateThreadSyscall(uint32_t vcpuIndex, uint32_t syscall
         *threadHandleOut = hThread;
     }
 
-    // Map handle to VCPU index
+    // Map handle to VCPU index. Guarded by the same lock FreeVcpuIndex uses to touch this
+    // map, since std::unordered_map isn't safe for concurrent mutation from multiple threads.
+    EnterCriticalSection(&m_vcpuAllocLock);
     m_threadHandleToVcpu[hThread] = childVcpuIndex;
+    LeaveCriticalSection(&m_vcpuAllocLock);
 
     m_logger->Trace(LOG_INFO, "CreateThread: VCPU %u created for thread RIP=0x%llX handle=0x%p%s",
         childVcpuIndex, startRip, hThread, createSuspended ? " (suspended)" : "");
@@ -701,11 +719,16 @@ bool VcpuManager::HandleSyscallExit(uint32_t vcpuIndex)
     uint64_t returnAddr = values[1].Reg64;
     uint64_t savedRfl = values[5].Reg64;
 
-    uint64_t args[4] = {
+    // args[4] (the 5th NT syscall argument, e.g. NtQueryInformationProcess's ReturnLength) is
+    // stack-based per the x64 NT syscall calling convention, not passed in a register. Callers
+    // such as HandleNtQueryInformationProcess read args[4], so the array must actually hold 5
+    // elements (a prior 4-element declaration here was an out-of-bounds stack read/write bug).
+    uint64_t args[5] = {
         0, // Will be filled from R10
         values[2].Reg64, // RDX → arg2
         values[3].Reg64, // R8  → arg3
-        values[4].Reg64  // R9  → arg4
+        values[4].Reg64, // R9  → arg4
+        0  // stack-based arg5, filled below once guestRsp is known
     };
 
     WHV_REGISTER_NAME r10Name = WHvX64RegisterR10;
@@ -721,6 +744,14 @@ bool VcpuManager::HandleSyscallExit(uint32_t vcpuIndex)
     uint64_t guestRsp = 0;
     if (ReadVcpuRegs(vcpuIndex, &rspName, &rspValue, 1)) {
         guestRsp = rspValue.Reg64;
+        // Standard x64 NT syscall stub layout: [rsp+0]=return addr, [rsp+8..0x27]=shadow space,
+        // 5th+ stack args start at [rsp+0x28]. guestRsp is guest-controlled and may be garbage
+        // (e.g. mid-bootstrap or a corrupted stack), so this read must not crash the host thread.
+        __try {
+            args[4] = *(volatile uint64_t*)(uintptr_t)(guestRsp + 0x28);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            args[4] = 0;
+        }
     }
 
     m_logger->Trace(LOG_WHP, "VCPU %u: SYSCALL 0x%X from return-addr 0x%llX (RSP=0x%llX)",
@@ -977,8 +1008,15 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
                     vcpuIndex, rip, cr2, (uint32_t)exc.ErrorCode);
                 // Try mapping the faulting page
                 if (m_partition->GetPageTable() && m_partition->GetPageTable()->MapDynamicPage(cr2, true)) {
-                    m_partition->FlushDeferredMaps();
-                    return true;
+                    if (!m_partition->FlushDeferredMaps()) {
+                        // Mapping never actually reached the guest — resuming here would just
+                        // re-fault on the same GPA forever. Fall through to the exception
+                        // handler fallback below instead of livelocking.
+                        m_logger->Trace(LOG_ERROR, "VCPU %u: FlushDeferredMaps failed after #PF map for VA 0x%llX",
+                            vcpuIndex, cr2);
+                    } else {
+                        return true;
+                    }
                 }
                 // Forward to exception handler as fallback
                 if (m_exceptionHandler && m_exceptionHandler->HandleException(nullptr, exc.ExceptionType, nullptr, &rip)) {
@@ -1250,8 +1288,14 @@ bool VcpuManager::HandleExit(uint32_t vcpuIndex)
             if (m_partition->GetPageTable()) {
                 bool isWrite = (mem.AccessInfo.AccessType == 1); // WHvMemoryAccessWrite = 1
                 if (m_partition->GetPageTable()->MapDynamicPage(faultGpa, isWrite)) {
-                    m_partition->FlushDeferredMaps();
-                    return true;
+                    if (!m_partition->FlushDeferredMaps()) {
+                        // As above: don't claim success (and re-fault forever) if the map
+                        // never actually reached the guest. Fall through to the dispatcher below.
+                        m_logger->Trace(LOG_ERROR, "VCPU %u: FlushDeferredMaps failed after EPT map for GPA 0x%llX",
+                            vcpuIndex, faultGpa);
+                    } else {
+                        return true;
+                    }
                 }
             }
 

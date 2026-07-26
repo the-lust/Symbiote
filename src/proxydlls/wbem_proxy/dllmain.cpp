@@ -365,14 +365,17 @@ public:
 
         // --- Win32_Processor ---
         if (wcscmp(wszName, L"Name") == 0 && m_classType == WMI_CLASS_PROCESSOR) pVal->bstrVal = SysAllocString(SpoofedProcessor::Name());
-        else if (wcscmp(wszName, L"Manufacturer") == 0) {
-            if (m_classType == WMI_CLASS_COMPUTER_SYSTEM)
-                pVal->bstrVal = SysAllocString(SpoofedComputerSystem::Manufacturer());
-            else if (m_classType == WMI_CLASS_BASEBOARD)
-                pVal->bstrVal = SysAllocString(SpoofedBaseBoard::Manufacturer());
-            else
-                pVal->bstrVal = SysAllocString(SpoofedProcessor::Manufacturer());
-        }
+        // NOTE: "Manufacturer" (and "SerialNumber" below) used to be handled here, generically,
+        // before the class-specific branches further down (Win32_PhysicalMemory,
+        // Win32_NetworkAdapter, Win32_USBController, CIM_Sensor, Win32_TemperatureProbe,
+        // Win32_VoltageProbe, Win32_Fan) got a chance to run — since this is an if/else-if
+        // chain and "Manufacturer" always matched here first (falling through to
+        // SpoofedProcessor::Manufacturer() for any class not explicitly listed), every one of
+        // those later class-specific "Manufacturer" branches was unreachable dead code. E.g.
+        // querying Win32_PhysicalMemory.Manufacturer returned "GenuineIntel" instead of the
+        // intended "Kingston" — worse than not spoofing at all, since a RAM stick "manufactured
+        // by GenuineIntel" is a more obvious tell than the real hardware would ever produce.
+        // Moved to the end of the chain (see below) so class-specific matches take priority.
         else if (wcscmp(wszName, L"ProcessorId") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::ProcessorId());
         else if (wcscmp(wszName, L"Caption") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::Caption());
         else if (wcscmp(wszName, L"Description") == 0) pVal->bstrVal = SysAllocString(SpoofedProcessor::Description());
@@ -396,16 +399,9 @@ public:
         // --- Win32_BaseBoard ---
         else if (wcscmp(wszName, L"Product") == 0 && m_classType == WMI_CLASS_BASEBOARD) pVal->bstrVal = SysAllocString(SpoofedBaseBoard::Product());
         else if (wcscmp(wszName, L"Version") == 0 && m_classType == WMI_CLASS_BASEBOARD) pVal->bstrVal = SysAllocString(SpoofedBaseBoard::Version());
-        else if (wcscmp(wszName, L"SerialNumber") == 0) {
-            if (m_classType == WMI_CLASS_BASEBOARD)
-                pVal->bstrVal = SysAllocString(SpoofedBaseBoard::SerialNumber());
-            else if (m_classType == WMI_CLASS_BIOS)
-                pVal->bstrVal = SysAllocString(SpoofedBIOS::SerialNumber());
-            else if (m_classType == WMI_CLASS_DISK_DRIVE)
-                pVal->bstrVal = SysAllocString(SpoofedDiskDrive::SerialNumber());
-            else
-                spoofed = false;
-        }
+        // "SerialNumber" moved to the end of the chain too — see the "Manufacturer" note above.
+        // Win32_PhysicalMemory has its own SerialNumber branch further down that this generic
+        // check used to shadow the same way it shadowed Manufacturer.
 
         // --- Win32_BIOS ---
         else if (wcscmp(wszName, L"SMBIOSBIOSVersion") == 0) pVal->bstrVal = SysAllocString(SpoofedBIOS::SMBIOSBIOSVersion());
@@ -481,6 +477,27 @@ public:
         else if (m_classType == WMI_CLASS_VOLTAGE_PROBE && wcscmp(wszName, L"Manufacturer") == 0) pVal->bstrVal = SysAllocString(SpoofedVoltageProbe::Manufacturer());
         else if (m_classType == WMI_CLASS_VOLTAGE_PROBE && wcscmp(wszName, L"CurrentReading") == 0) { pVal->vt = VT_I4; pVal->lVal = (LONG)SpoofedVoltageProbe::CurrentReading(); }
 
+        // Generic "Manufacturer"/"SerialNumber" fallback — only reached for classes with no
+        // more-specific branch above (see the notes near the top of this function).
+        else if (wcscmp(wszName, L"Manufacturer") == 0) {
+            if (m_classType == WMI_CLASS_COMPUTER_SYSTEM)
+                pVal->bstrVal = SysAllocString(SpoofedComputerSystem::Manufacturer());
+            else if (m_classType == WMI_CLASS_BASEBOARD)
+                pVal->bstrVal = SysAllocString(SpoofedBaseBoard::Manufacturer());
+            else
+                pVal->bstrVal = SysAllocString(SpoofedProcessor::Manufacturer());
+        }
+        else if (wcscmp(wszName, L"SerialNumber") == 0) {
+            if (m_classType == WMI_CLASS_BASEBOARD)
+                pVal->bstrVal = SysAllocString(SpoofedBaseBoard::SerialNumber());
+            else if (m_classType == WMI_CLASS_BIOS)
+                pVal->bstrVal = SysAllocString(SpoofedBIOS::SerialNumber());
+            else if (m_classType == WMI_CLASS_DISK_DRIVE)
+                pVal->bstrVal = SysAllocString(SpoofedDiskDrive::SerialNumber());
+            else
+                spoofed = false;
+        }
+
         else spoofed = false;
 
         if (pType) *pType = CIM_STRING;
@@ -508,7 +525,13 @@ public:
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->Clone(ppCopy);
         if (SUCCEEDED(hr) && ppCopy && *ppCopy) {
-            *ppCopy = new CSpoofWbemClassObject(*ppCopy, m_classType);
+            // Clone()'s [out] parameter is a freshly-owned reference per COM convention. The
+            // wrapper constructor below AddRef()s it again to hold its own independent reference
+            // — a prior version never released this original one afterward, permanently leaking
+            // one reference on the real object every time something wrapped a cloned object.
+            IWbemClassObject* orig = *ppCopy;
+            *ppCopy = new CSpoofWbemClassObject(orig, m_classType);
+            orig->Release();
         }
         return hr;
     }
@@ -591,7 +614,12 @@ public:
         if (SUCCEEDED(hr) && apObjects && puReturned && *puReturned > 0) {
             for (ULONG i = 0; i < *puReturned; i++) {
                 if (apObjects[i]) {
-                    apObjects[i] = new CSpoofWbemClassObject(apObjects[i], m_classType);
+                    // See CSpoofWbemClassObject::Clone above — apObjects[i] is an owned
+                    // reference from Next(); release it after wrapping, since the wrapper
+                    // holds its own independent one.
+                    IWbemClassObject* orig = apObjects[i];
+                    apObjects[i] = new CSpoofWbemClassObject(orig, m_classType);
+                    orig->Release();
                 }
             }
         }
@@ -605,7 +633,9 @@ public:
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->Clone(ppEnum);
         if (SUCCEEDED(hr) && ppEnum && *ppEnum) {
-            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum, m_classType);
+            IEnumWbemClassObject* orig = *ppEnum;
+            *ppEnum = new CSpoofEnumWbemClassObject(orig, m_classType);
+            orig->Release();
         }
         return hr;
     }
@@ -726,7 +756,9 @@ public:
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->CreateInstanceEnum(strClass, lFlags, pCtx, ppEnum);
         if (SUCCEEDED(hr) && ppEnum && *ppEnum && IsSpoofedWmiQuery(strClass)) {
-            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum, DetectClassType(strClass));
+            IEnumWbemClassObject* orig = *ppEnum;
+            *ppEnum = new CSpoofEnumWbemClassObject(orig, DetectClassType(strClass));
+            orig->Release();
         }
         return hr;
     }
@@ -739,7 +771,9 @@ public:
         if (!m_real) return E_FAIL;
         HRESULT hr = m_real->ExecQuery(strQueryLanguage, strQuery, lFlags, pCtx, ppEnum);
         if (SUCCEEDED(hr) && ppEnum && *ppEnum && IsSpoofedWmiQuery(strQuery)) {
-            *ppEnum = new CSpoofEnumWbemClassObject(*ppEnum, DetectClassType(strQuery));
+            IEnumWbemClassObject* orig = *ppEnum;
+            *ppEnum = new CSpoofEnumWbemClassObject(orig, DetectClassType(strQuery));
+            orig->Release();
         }
         return hr;
     }
@@ -797,7 +831,9 @@ public:
         HRESULT hr = m_real->ConnectServer(strNetworkResource, strUser, strPassword, strLocale, lSecurityFlags, strAuthority, pCtx, ppNamespace);
         g_logger.Trace(LOG_PROXY, "ConnectServer: hr=0x%08X", hr);
         if (SUCCEEDED(hr) && ppNamespace && *ppNamespace) {
-            *ppNamespace = new CSpoofWbemServices(*ppNamespace);
+            IWbemServices* orig = *ppNamespace;
+            *ppNamespace = new CSpoofWbemServices(orig);
+            orig->Release();
         }
         return hr;
     }
@@ -825,6 +861,7 @@ extern "C" HRESULT STDMETHODCALLTYPE Proxy_CoCreateInstance(REFCLSID rclsid, IUn
         if (IsEqualCLSID(rclsid, clsidWbemLocator)) {
             IWbemLocator* locator = (IWbemLocator*)*ppv;
             *ppv = new CSpoofWbemLocator(locator);
+            locator->Release();
         }
     }
     return hr;

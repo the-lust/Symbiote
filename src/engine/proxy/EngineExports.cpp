@@ -22,14 +22,18 @@ BOOL __stdcall HwIdEmu_GetDisk(uint32_t index, wchar_t* modelOut, uint32_t* mode
     const DiskSpoofInfo* disk = g_hwIdEmu->GetDisk(index);
     if (!disk) return FALSE;
 
-    if (modelOut && modelLen) {
+    // *modelLen/*serialLen are caller-supplied buffer capacities. If a caller passes 0, the
+    // prior `*modelLen - 1` on an unsigned uint32_t underflows to 0xFFFFFFFF, defeating the
+    // clamp and writing modelOut[copyLen] out of bounds. HwIdEmu_GetSystemInfo below already
+    // guards this correctly (`*bufferLen < 2`); this function was missing the equivalent check.
+    if (modelOut && modelLen && *modelLen >= 1) {
         uint32_t copyLen = (uint32_t)disk->model.length();
         if (copyLen > *modelLen - 1) copyLen = *modelLen - 1;
         wcsncpy_s(modelOut, *modelLen, disk->model.c_str(), copyLen);
         modelOut[copyLen] = L'\0';
         *modelLen = copyLen;
     }
-    if (serialOut && serialLen) {
+    if (serialOut && serialLen && *serialLen >= 1) {
         uint32_t copyLen = (uint32_t)disk->serial.length();
         if (copyLen > *serialLen - 1) copyLen = *serialLen - 1;
         wcsncpy_s(serialOut, *serialLen, disk->serial.c_str(), copyLen);

@@ -181,6 +181,17 @@ bool FileRedirection::IsPathUnderRule(const std::wstring& path, const PathRule& 
     size_t pos = path.find(rule.hostPrefix);
     if (pos != 0) return false;
 
+    // A bare string-prefix match with no boundary check means e.g. hostPrefix "\??\C:\Windows"
+    // also matches the unrelated sibling directory "\??\C:\Windows.old\..." (which Windows
+    // itself creates during upgrades). Require the prefix to either be the whole path or be
+    // immediately followed by a path separator.
+    if (path.length() > rule.hostPrefix.length()) {
+        wchar_t nextChar = path[rule.hostPrefix.length()];
+        if (nextChar != L'\\' && nextChar != L'/') return false;
+    }
+
+    // NOTE: relative intentionally keeps its leading separator (if any) — callers concatenate
+    // it directly onto boxPathPrefix, which itself has no trailing separator (see Initialize()).
     relative = path.substr(rule.hostPrefix.length());
 
     if (!rule.recursive) {

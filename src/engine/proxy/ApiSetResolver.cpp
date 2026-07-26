@@ -48,10 +48,12 @@ uintptr_t ApiSetResolver::FindApiSetMap()
     PPEB peb = (PPEB)__readgsqword(0x60);
     if (!peb) return 0;
 
-    // On Windows 10+, ApiSetMap is at peb->Reserved[0] offset
-    // This is peb+0x38 for x64, peb+0x1C for x86
+    // On Windows 10+ x64, PEB.ApiSetMap is at offset 0x68 (0x38 is actually PEB.FastPebLock,
+    // a CRITICAL_SECTION* — a prior version read that instead, so Initialize() could never
+    // succeed on a real system; this codebase's own ntdll_proxy/dllmain.cpp already reads
+    // NtGlobalFlag from peb+0xBC, which is only consistent with ApiSetMap being at 0x68).
     uintptr_t* rawPtr = (uintptr_t*)peb;
-    uintptr_t apiSetMap = rawPtr[7];  // offset 0x38 = index 7 in uintptr_t array
+    uintptr_t apiSetMap = rawPtr[13];  // offset 0x68 = index 13 in uintptr_t array
     if (!apiSetMap) return 0;
 
     // Validate by checking the version field

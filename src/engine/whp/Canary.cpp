@@ -45,6 +45,19 @@ bool Canary::Initialize()
         return false;
     }
 
+    // Actually arm the trap: without PAGE_GUARD, the page can never fault and OnException()
+    // is unreachable dead code (a prior version left this out entirely).
+    DWORD oldProtect;
+    if (!VirtualProtect(m_canaryPage, 0x1000, PAGE_READWRITE | PAGE_GUARD, &oldProtect)) {
+        m_logger->Trace(LOG_WARNING, "Canary: VirtualProtect(PAGE_GUARD) failed (%u)", GetLastError());
+        RemoveVectoredExceptionHandler(m_vehHandle);
+        m_vehHandle = nullptr;
+        VirtualFree(m_canaryPage, 0, MEM_RELEASE);
+        m_canaryPage = nullptr;
+        s_instance = nullptr;
+        return false;
+    }
+
     g_canary = this;
 
     m_initialized = true;

@@ -83,6 +83,29 @@ static int g_imm[256] = {
     0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
 };
 
+// Consumes ModRM (+ SIB + displacement, per standard x86 addressing rules) starting at pos.
+// Returns the position just past ModRM/SIB/disp (does not include any trailing immediate).
+static int ConsumeModRmSibDisp(const uint8_t* code, int pos)
+{
+    uint8_t modrm = code[pos];
+    uint8_t mod = (modrm >> 6) & 3;
+    uint8_t rm = modrm & 7;
+    pos++;
+
+    if (mod != 3 && rm == 4) {
+        uint8_t sib = code[pos++];
+        uint8_t base = sib & 7;
+        if (mod == 1) pos += 1;
+        else if (mod == 2) pos += 4;
+        else if (mod == 0 && base == 5) pos += 4;
+    } else {
+        if (mod == 1) pos += 1;
+        else if (mod == 2) pos += 4;
+        else if (mod == 0 && rm == 5) pos += 4;
+    }
+    return pos;
+}
+
 int GetInstructionLength(const uint8_t* code)
 {
     int pos = 0;
@@ -98,16 +121,22 @@ int GetInstructionLength(const uint8_t* code)
         pos++;
     }
 
+    // VEX/EVEX layout is [prefix byte(s)][opcode byte][ModRM]. A prior version advanced pos
+    // past only the prefix bytes and jumped straight to decodeModRM, reading the opcode byte
+    // itself as if it were ModRM — off by one real byte. Skip the opcode byte too.
     if (code[pos] == 0xC4) {
-        pos += 3;
+        pos += 3; // 0xC4 + 2 VEX bytes
+        pos += 1; // opcode byte
         goto decodeModRM;
     }
     if (code[pos] == 0xC5) {
-        pos += 2;
+        pos += 2; // 0xC5 + 1 VEX byte
+        pos += 1; // opcode byte
         goto decodeModRM;
     }
     if (code[pos] == 0x62) {
-        pos += 4;
+        pos += 4; // 0x62 + 3 EVEX bytes
+        pos += 1; // opcode byte
         goto decodeModRM;
     }
 
@@ -122,7 +151,11 @@ int GetInstructionLength(const uint8_t* code)
                 goto decodeModRM;
             }
             if (op2 == 0x3A) {
-                pos++;
+                // Every 0F 3A opcode (PALIGNR, ROUNDSS/SD, AESKEYGENASSIST, PCLMULQDQ, ...) has
+                // a mandatory ModRM byte before its imm8 — a prior version skipped straight to
+                // the immediate without ever consuming ModRM/SIB/disp at all.
+                pos++; // third opcode byte
+                pos = ConsumeModRmSibDisp(code, pos);
                 immSize = 1;
                 goto doneImm;
             }
@@ -167,6 +200,10 @@ int GetInstructionLength(const uint8_t* code)
                 immSize = 4;
             } else if (op == 0x83 || op == 0xC1) {
                 immSize = 1;
+            } else if (op == 0x69) {
+                immSize = 4; // IMUL r32, r/m32, imm32 — was falling into the `else immSize = 0` default
+            } else if (op == 0x6B) {
+                immSize = 1; // IMUL r32, r/m32, imm8 — same gap
             } else if (op == 0xF6) {
                 immSize = (reg == 0) ? 1 : 0;
             } else if (op == 0xF7) {

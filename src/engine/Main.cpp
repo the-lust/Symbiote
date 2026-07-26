@@ -1037,7 +1037,7 @@ ENGINE_DLL_EXPORT void Engine_SetDebug()
     g_logger.SetVerbose(true);
 }
 
-ENGINE_DLL_EXPORT void Engine_Init()
+ENGINE_DLL_EXPORT BOOL Engine_Init()
 {
     g_logger.Trace(LOG_INFO, "Engine_Init called");
 
@@ -1054,7 +1054,9 @@ ENGINE_DLL_EXPORT void Engine_Init()
     HANDLE hThread = CreateThread(NULL, 0, EngineThread, hModule, 0, NULL);
     if (hThread) {
         CloseHandle(hThread);
-    } else {
-        g_logger.Trace(LOG_ERROR, "Engine_Init: failed to spawn engine thread (%u)", GetLastError());
+        return TRUE;
     }
+
+    g_logger.Trace(LOG_ERROR, "Engine_Init: failed to spawn engine thread (%u)", GetLastError());
+    return FALSE;
 }

@@ -78,6 +78,13 @@ bool EptHook::MapOnViolation(EptEntry& entry, bool fallback)
         }
     }
 
+    if (!entry.mapped) {
+        // Resuming the guest here would just re-fault on the same GPA forever — report
+        // failure so the caller can fall back instead of livelocking.
+        m_logger->Trace(LOG_ERROR, "EPT violation: MapGpaRange failed for GPA=0x%llX", entry.gpa);
+        return false;
+    }
+
     if (entry.type == EPT_HOOK_KERNEL_PAGE || entry.type == EPT_HOOK_IDT ||
         entry.type == EPT_HOOK_GDT || entry.type == EPT_HOOK_CR3) {
         m_logger->Trace(LOG_EPT, "Kernel page EPT access at GPA=0x%llX type=%d", entry.gpa, (int)entry.type);

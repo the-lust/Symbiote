@@ -39,7 +39,12 @@ bool PeLoader::LoadImage(const std::wstring& path, uint8_t** outImage, size_t* o
         return false;
     }
 
-    size_t size = (size_t)file.tellg();
+    std::streamoff tellResult = file.tellg();
+    if (tellResult <= 0) {
+        m_logger->Trace(LOG_ERROR, "PeLoader: empty or unreadable file %ls", path.c_str());
+        return false;
+    }
+    size_t size = (size_t)tellResult;
     file.seekg(0, std::ios::beg);
 
     uint8_t* data = new uint8_t[size];
@@ -58,6 +63,15 @@ bool PeLoader::LoadImage(const std::wstring& path, uint8_t** outImage, size_t* o
     return true;
 }
 
+// Returns true if [offset, offset+len) lies entirely within [0, size).
+static bool RangeInBounds(uint64_t offset, uint64_t len, size_t size)
+{
+    if (offset >= size) return false;
+    uint64_t end = offset + len;
+    if (end < offset) return false; // overflow
+    return end <= size;
+}
+
 bool PeLoader::ResolveImports(uint8_t* image, size_t size)
 {
     PIMAGE_NT_HEADERS nt = GetNtHeaders(image, size);
@@ -65,11 +79,21 @@ bool PeLoader::ResolveImports(uint8_t* image, size_t size)
 
     IMAGE_DATA_DIRECTORY importDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (importDir.Size == 0) return true;
+    if (!RangeInBounds(importDir.VirtualAddress, importDir.Size, size)) {
+        m_logger->Trace(LOG_ERROR, "PeLoader: import directory out of bounds");
+        return false;
+    }
 
+    uint8_t* const imageEnd = image + size;
     PIMAGE_IMPORT_DESCRIPTOR importDesc = (PIMAGE_IMPORT_DESCRIPTOR)(image + importDir.VirtualAddress);
 
-    while (importDesc->Name) {
+    while ((uint8_t*)(importDesc + 1) <= imageEnd && importDesc->Name) {
+        if (!RangeInBounds(importDesc->Name, 1, size)) { importDesc++; continue; }
+
         const char* dllName = (const char*)(image + importDesc->Name);
+        // Bound the string scan to the remaining image so LoadLibraryA never reads past the buffer.
+        size_t maxLen = imageEnd - (uint8_t*)dllName;
+        if (strnlen(dllName, maxLen) >= maxLen) { importDesc++; continue; }
 
         // try to load the DLL
         HMODULE hDll = LoadLibraryA(dllName);
@@ -79,16 +103,22 @@ bool PeLoader::ResolveImports(uint8_t* image, size_t size)
             continue;
         }
 
+        if (!RangeInBounds(importDesc->FirstThunk, sizeof(IMAGE_THUNK_DATA), size) ||
+            !RangeInBounds(importDesc->OriginalFirstThunk, sizeof(IMAGE_THUNK_DATA), size)) {
+            importDesc++;
+            continue;
+        }
+
         PIMAGE_THUNK_DATA thunk = (PIMAGE_THUNK_DATA)(image + importDesc->FirstThunk);
         PIMAGE_THUNK_DATA origThunk = (PIMAGE_THUNK_DATA)(image + importDesc->OriginalFirstThunk);
 
-        while (thunk->u1.Function) {
+        while ((uint8_t*)(thunk + 1) <= imageEnd && (uint8_t*)(origThunk + 1) <= imageEnd && thunk->u1.Function) {
             uintptr_t funcAddr = 0;
 
             if (origThunk->u1.Ordinal & IMAGE_ORDINAL_FLAG) {
                 // ordinal import
                 funcAddr = (uintptr_t)GetProcAddress(hDll, (LPCSTR)(origThunk->u1.Ordinal & 0xFFFF));
-            } else {
+            } else if (RangeInBounds(origThunk->u1.AddressOfData, sizeof(IMAGE_IMPORT_BY_NAME), size)) {
                 PIMAGE_IMPORT_BY_NAME importByName = (PIMAGE_IMPORT_BY_NAME)(image + origThunk->u1.AddressOfData);
                 funcAddr = (uintptr_t)GetProcAddress(hDll, importByName->Name);
             }
@@ -118,13 +148,19 @@ bool PeLoader::ApplyRelocations(uint8_t* image, size_t size, uint64_t baseAddr)
 
     IMAGE_DATA_DIRECTORY relocDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
     if (relocDir.Size == 0) return true;
+    if (!RangeInBounds(relocDir.VirtualAddress, relocDir.Size, size)) {
+        m_logger->Trace(LOG_ERROR, "PeLoader: relocation directory out of bounds");
+        return false;
+    }
 
+    uint8_t* const imageEnd = image + size;
     uint8_t* relocData = image + relocDir.VirtualAddress;
-    uint8_t* relocEnd = relocData + relocDir.Size;
+    uint8_t* relocEnd = relocData + relocDir.Size; // already validated <= imageEnd above
 
-    while (relocData < relocEnd) {
+    while (relocData + sizeof(IMAGE_BASE_RELOCATION) <= relocEnd) {
         IMAGE_BASE_RELOCATION* reloc = (IMAGE_BASE_RELOCATION*)relocData;
-        if (reloc->SizeOfBlock == 0) break;
+        if (reloc->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION)) break;
+        if (relocData + reloc->SizeOfBlock > relocEnd) break; // block claims to run past the directory
 
         int count = (reloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
         WORD* entries = (WORD*)(relocData + sizeof(IMAGE_BASE_RELOCATION));
@@ -133,7 +169,12 @@ bool PeLoader::ApplyRelocations(uint8_t* image, size_t size, uint64_t baseAddr)
             WORD offset = entries[i] & 0xFFF;
             WORD type = (entries[i] >> 12) & 0xF;
 
-            uintptr_t* patchAddr = (uintptr_t*)(image + reloc->VirtualAddress + offset);
+            uint64_t patchOffset = (uint64_t)reloc->VirtualAddress + offset;
+            size_t patchSize = (type == IMAGE_REL_BASED_DIR64) ? sizeof(uint64_t) : sizeof(uint32_t);
+            if (!RangeInBounds(patchOffset, patchSize, size)) continue; // patch target outside the image, skip
+
+            uintptr_t* patchAddr = (uintptr_t*)(image + patchOffset);
+            (void)imageEnd;
 
             switch (type) {
                 case IMAGE_REL_BASED_DIR64:
@@ -171,22 +212,36 @@ std::vector<PeLoader::ImportedFunction> PeLoader::GetImports(uint8_t* image, siz
 
     IMAGE_DATA_DIRECTORY importDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (importDir.Size == 0) return imports;
+    if (!RangeInBounds(importDir.VirtualAddress, importDir.Size, size)) return imports;
 
+    uint8_t* const imageEnd = image + size;
     PIMAGE_IMPORT_DESCRIPTOR importDesc = (PIMAGE_IMPORT_DESCRIPTOR)(image + importDir.VirtualAddress);
 
-    while (importDesc->Name) {
+    while ((uint8_t*)(importDesc + 1) <= imageEnd && importDesc->Name) {
+        if (!RangeInBounds(importDesc->Name, 1, size) ||
+            !RangeInBounds(importDesc->OriginalFirstThunk, sizeof(IMAGE_THUNK_DATA), size)) {
+            importDesc++;
+            continue;
+        }
+
         const char* dllName = (const char*)(image + importDesc->Name);
+        size_t maxLen = imageEnd - (uint8_t*)dllName;
+        if (strnlen(dllName, maxLen) >= maxLen) { importDesc++; continue; }
+
         PIMAGE_THUNK_DATA origThunk = (PIMAGE_THUNK_DATA)(image + importDesc->OriginalFirstThunk);
 
-        while (origThunk->u1.Function) {
+        while ((uint8_t*)(origThunk + 1) <= imageEnd && origThunk->u1.Function) {
             ImportedFunction imp;
             imp.dllName = dllName;
 
             if (origThunk->u1.Ordinal & IMAGE_ORDINAL_FLAG) {
                 imp.funcName = "ordinal_" + std::to_string(origThunk->u1.Ordinal & 0xFFFF);
-            } else {
+            } else if (RangeInBounds(origThunk->u1.AddressOfData, sizeof(IMAGE_IMPORT_BY_NAME), size)) {
                 PIMAGE_IMPORT_BY_NAME importByName = (PIMAGE_IMPORT_BY_NAME)(image + origThunk->u1.AddressOfData);
                 imp.funcName = importByName->Name;
+            } else {
+                origThunk++;
+                continue;
             }
 
             imp.address = 0;

@@ -23,6 +23,10 @@ private:
 
 class ExitCoordinator {
 public:
+    // Must stay >= VcpuManager::MAX_VCPU (src/engine/whp/VcpuManager.h) — a prior mismatch
+    // (this was 4 while MAX_VCPU is 20) silently dropped exit requests for VCPU indices 4-19.
+    static constexpr uint32_t kMaxVcpu = 20;
+
     ExitCoordinator(Logger* logger);
     ~ExitCoordinator();
 
@@ -32,7 +36,7 @@ public:
 
 private:
     Logger* m_logger;
-    bool m_exitRequested[4];
+    bool m_exitRequested[kMaxVcpu];
     mutable CRITICAL_SECTION m_cs;
 };
 

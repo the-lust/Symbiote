@@ -41,6 +41,8 @@ public:
     ProcessEmu* GetProcessEmu() { return m_processEmu; }
     HwIdEmu* GetHwIdEmu() { return m_hwIdEmu; }
     MemoryGuardEmu* GetMemoryGuardEmu() { return m_memoryGuardEmu; }
+
+private:
     static MinimalKernel* s_instance;
 
     Logger* m_logger;

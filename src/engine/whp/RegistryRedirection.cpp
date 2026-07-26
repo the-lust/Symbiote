@@ -218,6 +218,16 @@ bool RegistryRedirection::IsKeyUnderRule(const std::wstring& key, const KeyRule&
 {
     if (key.find(rule.hostKeyPrefix) != 0) return false;
     relative = key.substr(rule.hostKeyPrefix.length());
+
+    // rule.recursive was previously stored but never consulted here (unlike the equivalent
+    // FileRedirection::IsPathUnderRule) — a rule added with recursive=false silently redirected
+    // the full subtree anyway. Match FileRedirection's semantics: non-recursive rules only
+    // cover direct children, not further nested subkeys.
+    if (!rule.recursive) {
+        if (relative.find(L'\\') != std::wstring::npos)
+            return false;
+    }
+
     return true;
 }
 
@@ -255,6 +265,14 @@ bool RegistryRedirection::CopyKeyToBox(const wchar_t* hostKey, const wchar_t* bo
 
         LONG ret = RegEnumValueW(hSrc, i, valueName, &valueNameLen,
             NULL, &type, data, &dataLen);
+        if (ret == ERROR_NO_MORE_ITEMS) break;
+        if (ret == ERROR_MORE_DATA) {
+            // This one value's data exceeds the 64KB stack buffer — a prior version treated
+            // any non-ERROR_SUCCESS return as "enumeration finished", which silently dropped
+            // this value AND every value after it. Skip just this one and keep enumerating.
+            m_logger->Trace(LOG_WARNING, "RegistryRedirection: CopyKeyToBox value #%u too large for buffer, skipping", i);
+            continue;
+        }
         if (ret != ERROR_SUCCESS) break;
 
         RegSetValueExW(hDst, valueName, 0, type, data, dataLen);

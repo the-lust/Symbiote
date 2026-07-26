@@ -41,27 +41,36 @@ bool CreateSuspendedProcess(const std::wstring& targetPath, const std::wstring& 
     return result != FALSE;
 }
 
-bool CallRemoteFunction(HANDLE hProcess, const std::wstring& dllPath, const char* funcName)
+// Finds funcName's address in dllPath as loaded in hProcess. Returns nullptr on any failure.
+static void* ResolveRemoteFunctionAddress(HANDLE hProcess, const std::wstring& dllPath, const char* funcName, std::wstring* outDllName = nullptr)
 {
     // Extract just the filename from the path for module lookup
     std::wstring dllName = dllPath;
     size_t pos = dllName.find_last_of(L"\\/");
     if (pos != std::wstring::npos) dllName = dllName.substr(pos + 1);
+    if (outDllName) *outDllName = dllName;
 
     HMODULE hLocal = GetModuleHandleW(dllName.c_str());
+    bool loadedLocally = false;
     if (!hLocal) {
         hLocal = LoadLibraryW(dllPath.c_str());
-        if (!hLocal) return false;
+        if (!hLocal) return nullptr;
+        loadedLocally = true;
     }
 
     void* localAddr = GetProcAddress(hLocal, funcName);
-    if (!localAddr) return false;
+    if (!localAddr) {
+        if (loadedLocally) FreeLibrary(hLocal);
+        return nullptr;
+    }
 
     uintptr_t localBase = (uintptr_t)hLocal;
     uintptr_t offset = (uintptr_t)localAddr - localBase;
 
+    if (loadedLocally) FreeLibrary(hLocal);
+
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetProcessId(hProcess));
-    if (hSnapshot == INVALID_HANDLE_VALUE) return false;
+    if (hSnapshot == INVALID_HANDLE_VALUE) return nullptr;
 
     uintptr_t targetBase = 0;
     MODULEENTRY32W me;
@@ -76,9 +85,14 @@ bool CallRemoteFunction(HANDLE hProcess, const std::wstring& dllPath, const char
     }
     CloseHandle(hSnapshot);
 
-    if (!targetBase) return false;
+    if (!targetBase) return nullptr;
+    return (void*)(targetBase + offset);
+}
 
-    void* targetAddr = (void*)(targetBase + offset);
+bool CallRemoteFunction(HANDLE hProcess, const std::wstring& dllPath, const char* funcName)
+{
+    void* targetAddr = ResolveRemoteFunctionAddress(hProcess, dllPath, funcName);
+    if (!targetAddr) return false;
 
     HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0,
         (LPTHREAD_START_ROUTINE)targetAddr, NULL, 0, NULL);
@@ -87,6 +101,23 @@ bool CallRemoteFunction(HANDLE hProcess, const std::wstring& dllPath, const char
     WaitForSingleObject(hThread, INFINITE);
     CloseHandle(hThread);
     return true;
+}
+
+bool CallRemoteFunctionWithResult(HANDLE hProcess, const std::wstring& dllPath, const char* funcName, DWORD* outResult)
+{
+    void* targetAddr = ResolveRemoteFunctionAddress(hProcess, dllPath, funcName);
+    if (!targetAddr) return false;
+
+    HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0,
+        (LPTHREAD_START_ROUTINE)targetAddr, NULL, 0, NULL);
+    if (!hThread) return false;
+
+    WaitForSingleObject(hThread, INFINITE);
+    DWORD code = 0;
+    bool gotCode = GetExitCodeThread(hThread, &code) != FALSE;
+    CloseHandle(hThread);
+    if (outResult) *outResult = gotCode ? code : 0;
+    return gotCode;
 }
 
 bool InjectDll(HANDLE hProcess, const std::wstring& dllPath)
@@ -114,22 +145,56 @@ bool InjectDll(HANDLE hProcess, const std::wstring& dllPath)
     }
 
     WaitForSingleObject(hThread, INFINITE);
+    DWORD loadedModule = 0;
+    bool gotExitCode = GetExitCodeThread(hThread, &loadedModule) != FALSE;
     CloseHandle(hThread);
     VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
 
-    return true;
+    // LoadLibraryW's HMODULE return is truncated to 32 bits by GetExitCodeThread, so a non-zero
+    // low DWORD is a good (not perfect) signal — cross-check against the target's real module list.
+    if (!gotExitCode || loadedModule == 0) return false;
+
+    std::wstring dllName = dllPath;
+    size_t namePos = dllName.find_last_of(L"\\/");
+    if (namePos != std::wstring::npos) dllName = dllName.substr(namePos + 1);
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetProcessId(hProcess));
+    if (hSnapshot == INVALID_HANDLE_VALUE) return false;
+
+    bool found = false;
+    MODULEENTRY32W me;
+    me.dwSize = sizeof(me);
+    if (Module32FirstW(hSnapshot, &me)) {
+        do {
+            if (_wcsicmp(me.szModule, dllName.c_str()) == 0) {
+                found = true;
+                break;
+            }
+        } while (Module32NextW(hSnapshot, &me));
+    }
+    CloseHandle(hSnapshot);
+
+    return found;
 }
 
 bool ResumeAndWait(HANDLE hProcess, HANDLE hThread, DWORD* exitCode)
 {
-    ResumeThread(hThread);
-    WaitForSingleObject(hProcess, INFINITE);
+    bool resumed = ResumeThread(hThread) != (DWORD)-1;
+    if (resumed) {
+        WaitForSingleObject(hProcess, INFINITE);
+    }
+    // If ResumeThread failed, the target's only thread never runs; don't block forever
+    // waiting for a process that will never exit on its own — terminate it instead.
+    if (!resumed) {
+        TerminateProcess(hProcess, 1);
+        WaitForSingleObject(hProcess, INFINITE);
+    }
 
     DWORD code = 0;
-    GetExitCodeProcess(hProcess, &code);
-    if (exitCode) *exitCode = code;
+    bool gotCode = GetExitCodeProcess(hProcess, &code) != FALSE;
+    if (exitCode) *exitCode = (gotCode && resumed) ? code : (DWORD)-1;
 
     CloseHandle(hThread);
     CloseHandle(hProcess);
-    return true;
+    return resumed && gotCode;
 }

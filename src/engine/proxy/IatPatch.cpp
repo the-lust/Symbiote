@@ -13,34 +13,6 @@ IatPatch::~IatPatch()
     RestoreAll();
 }
 
-static bool IsSystemModule(const char* dllName)
-{
-    static const char* kSystemDlls[] = {
-        "ntdll.dll", "kernel32.dll", "kernelbase.dll",
-        "advapi32.dll", "user32.dll", "gdi32.dll",
-        "ws2_32.dll", "winhttp.dll", "dnsapi.dll",
-        "iphlpapi.dll", "secur32.dll", "crypt32.dll",
-        "wtsapi32.dll", "wbem.dll", "ole32.dll",
-        "oleaut32.dll", "combase.dll", "rpcrt4.dll",
-        "shlwapi.dll", "shell32.dll", "bcrypt.dll",
-        "cfgmgr32.dll", "devobj.dll", "powrprof.dll",
-        "setupapi.dll", "mpr.dll", "imm32.dll",
-        "version.dll", "winmm.dll", "psapi.dll",
-        "dbghelp.dll", "imagehlp.dll", nullptr,
-    };
-    const char* lower = dllName;
-    char buf[64];
-    if (strlen(dllName) < sizeof(buf)) {
-        for (int i = 0; dllName[i]; i++) buf[i] = (char)tolower(dllName[i]);
-        buf[strlen(dllName)] = 0;
-        lower = buf;
-    }
-    for (int i = 0; kSystemDlls[i]; i++) {
-        if (strcmp(lower, kSystemDlls[i]) == 0) return true;
-    }
-    return false;
-}
-
 bool IatPatch::PatchIAT(const char* dllName, const char* funcName, void* newFunc)
 {
     HMODULE hMod = GetModuleHandleW(NULL);
@@ -57,25 +29,16 @@ bool IatPatch::PatchIAT(const char* dllName, const char* funcName, void* newFunc
     while (importDesc->Name) {
         const char* importedDll = (const char*)((uintptr_t)hMod + importDesc->Name);
         if (_stricmp(importedDll, dllName) != 0) {
-            // Check if the import is via ApiSet — compare normalized names
-            if (!IsSystemModule(dllName)) {
-                importDesc++;
-                continue;
-            }
-            // Handle ApiSet contract names — strip "api-" prefix and match suffix
-            if (strncmp(importedDll, "api-", 4) == 0 && strncmp(dllName, "api-", 4) == 0) {
-                if (_stricmp(importedDll, dllName) != 0) {
-                    importDesc++;
-                    continue;
-                }
-            } else if (strncmp(importedDll, "api-", 4) == 0) {
-                // Skip ApiSet contracts when matching against real DLL names
-                importDesc++;
-                continue;
-            } else {
-                importDesc++;
-                continue;
-            }
+            // A prior version had an "ApiSet contract name" branch here that looked like it
+            // resolved api-ms-win-*.dll import names against a target dllName via ApiSetResolver,
+            // but every path through it ended in `continue` (including the "both start with
+            // api-" case, which re-checked the same _stricmp already known to be nonzero) — it
+            // was dead code that never actually did ApiSet resolution, just an exact-name match
+            // dressed up to look smarter. ApiSetResolver (see ApiSetResolver.h) exists and could
+            // wire real resolution in here, but isn't hooked up — for now this is honestly just
+            // an exact (case-insensitive) name match.
+            importDesc++;
+            continue;
         }
 
         PIMAGE_THUNK_DATA thunk = (PIMAGE_THUNK_DATA)((uintptr_t)hMod + importDesc->FirstThunk);
@@ -191,6 +154,14 @@ bool IatPatch::PatchEAT(const char* dllName, const char* funcName, void* newFunc
         const char* name = (const char*)((uintptr_t)hMod + names[i]);
         if (strcmp(name, funcName) == 0) {
             WORD ordinal = ordinals[i];
+            // ordinal indexes into AddressOfFunctions (NumberOfFunctions entries) — a prior
+            // version never checked this against a malformed/unusual export table, which is an
+            // out-of-bounds read *and* (since the code below writes through funcAddr) write.
+            if (ordinal >= exports->NumberOfFunctions) {
+                m_logger->Trace(LOG_ERROR, "PatchEAT: ordinal %u out of range (max %u) for %s!%s",
+                    ordinal, exports->NumberOfFunctions, dllName, funcName);
+                return false;
+            }
             DWORD* funcAddr = &functions[ordinal];
 
             // Check if it's a forwarded export (points to another module)
@@ -225,10 +196,20 @@ bool IatPatch::PatchEAT(const char* dllName, const char* funcName, void* newFunc
 bool IatPatch::RestoreAll()
 {
     for (int i = 0; i < m_patchCount; i++) {
+        // EAT patches store a DWORD* into the tightly-packed 4-byte AddressOfFunctions RVA
+        // array (see PatchEAT), not a full pointer slot like IAT entries. A prior version
+        // always did an 8-byte pointer-sized write here regardless of isIAT, which for EAT
+        // entries correctly restored the patched export's low 4 bytes but zeroed the RVA of
+        // the *next* export in the table.
+        size_t writeSize = m_patches[i].isIAT ? sizeof(void*) : sizeof(DWORD);
         DWORD oldProtect;
-        VirtualProtect(m_patches[i].address, sizeof(void*), PAGE_READWRITE, &oldProtect);
-        *(void**)m_patches[i].address = m_patches[i].original;
-        VirtualProtect(m_patches[i].address, sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(m_patches[i].address, writeSize, PAGE_READWRITE, &oldProtect);
+        if (m_patches[i].isIAT) {
+            *(void**)m_patches[i].address = m_patches[i].original;
+        } else {
+            *(DWORD*)m_patches[i].address = (DWORD)(uintptr_t)m_patches[i].original;
+        }
+        VirtualProtect(m_patches[i].address, writeSize, oldProtect, &oldProtect);
     }
     m_patchCount = 0;
     return true;

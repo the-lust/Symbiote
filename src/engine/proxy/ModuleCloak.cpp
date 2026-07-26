@@ -43,8 +43,9 @@ bool ModuleCloak::CloakModule()
 
     bool pebHidden = HideFromPEB();
     bool ldrHidden = HideFromLdr();
+    bool loadOrderHidden = HideFromLoadOrderList();
 
-    m_cloaked = pebHidden || ldrHidden;
+    m_cloaked = pebHidden || ldrHidden || loadOrderHidden;
     return m_cloaked;
 }
 
@@ -115,6 +116,39 @@ bool ModuleCloak::HideFromLdr()
             entry->Flink->Blink = entry->Blink;
 
             m_logger->Trace(LOG_PROXY, "Module unlinked from InInitializationOrderModuleList");
+            return true;
+        }
+        entry = entry->Flink;
+    }
+
+    return false;
+}
+
+bool ModuleCloak::HideFromLoadOrderList()
+{
+    PPEB peb = (PPEB)__readgsqword(0x60);
+    if (!peb || !peb->Ldr) return false;
+
+    PMY_PEB_LDR_DATA ldr = (PMY_PEB_LDR_DATA)peb->Ldr;
+
+    HMODULE hMod;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        (LPCWSTR)_ReturnAddress(), &hMod)) {
+        return false;
+    }
+
+    LIST_ENTRY* head = &ldr->InLoadOrderModuleList;
+    LIST_ENTRY* entry = head->Flink;
+
+    while (entry != head) {
+        PMY_LDR_DATA_TABLE_ENTRY ldrEntry = (PMY_LDR_DATA_TABLE_ENTRY)
+            CONTAINING_RECORD(entry, MY_LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+
+        if (ldrEntry->DllBase == hMod) {
+            entry->Blink->Flink = entry->Flink;
+            entry->Flink->Blink = entry->Blink;
+
+            m_logger->Trace(LOG_PROXY, "Module unlinked from PEB InLoadOrderModuleList");
             return true;
         }
         entry = entry->Flink;

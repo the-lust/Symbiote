@@ -299,11 +299,13 @@ bool SyscallDispatch::BuildForwardTable()
         // Cross-check forward table entries against static data
         if (m_buildNum > 0) {
             if (!SyscallTables::CrossCheck(name, syscallNum, m_buildNum)) {
+                // CrossCheck already established real table data exists and disagrees with the
+                // runtime-detected value, so Lookup() here cannot be returning "not found" — apply
+                // it unconditionally. (A `!= 0` guard here would wrongly skip the correction for any
+                // syscall whose genuinely correct SSN happens to be 0, e.g. NtAccessCheck.)
                 uint32_t correctSsn = SyscallTables::Lookup(name, m_buildNum);
-                if (correctSsn != 0) {
-                    SYSLOG("forward table SSM mismatch for %s: runtime=0x%X, known=0x%X — corrected", name, syscallNum, correctSsn);
-                    syscallNum = correctSsn;
-                }
+                SYSLOG("forward table SSM mismatch for %s: runtime=0x%X, known=0x%X — corrected", name, syscallNum, correctSsn);
+                syscallNum = correctSsn;
             }
         }
 
@@ -514,8 +516,10 @@ bool SyscallDispatch::HandleNtQuerySystemInformation(uint64_t* args, uint64_t& r
 
 bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& result)
 {
-    uint32_t infoClass = (uint32_t)args[2];
-    uint64_t info = args[1];
+    // NtQueryInformationProcess(ProcessHandle, ProcessInformationClass, ProcessInformation,
+    //                            ProcessInformationLength, ReturnLength)
+    uint32_t infoClass = (uint32_t)args[1];
+    uint64_t info = args[2];
     uint32_t infoLen = (uint32_t)args[3];
 
     // ProcessDebugPort (0x07) — filter debugger info
@@ -561,29 +565,42 @@ bool SyscallDispatch::HandleNtQueryInformationProcess(uint64_t* args, uint64_t& 
 
 bool SyscallDispatch::HandleNtOpenKey(uint64_t* args, uint64_t& result)
 {
-    uint64_t objAttr = args[2];
-    if (!objAttr) return false;
+    // objAttr/objNamePtr/bufferPtr are guest-supplied pointers walked here without any
+    // validity guarantee (misaligned/bogus ObjectAttributes is plausible during bootstrap
+    // or with a corrupted guest). Wrap the whole chain in SEH so a bad pointer fails this
+    // one syscall instead of crashing the host thread.
+    bool blocked = false;
+    __try {
+        uint64_t objAttr = args[2];
+        if (!objAttr) return false;
 
-    uint64_t objNamePtr = *(uint64_t*)(uintptr_t)(objAttr + 8);
-    if (!objNamePtr) return false;
+        uint64_t objNamePtr = *(uint64_t*)(uintptr_t)(objAttr + 8);
+        if (!objNamePtr) return false;
 
-    uint64_t bufferPtr = *(uint64_t*)(uintptr_t)(objNamePtr + 4);
-    if (!bufferPtr) return false;
+        uint64_t bufferPtr = *(uint64_t*)(uintptr_t)(objNamePtr + 4);
+        if (!bufferPtr) return false;
 
-    uint16_t strLen = *(uint16_t*)(uintptr_t)objNamePtr;
+        uint16_t strLen = *(uint16_t*)(uintptr_t)objNamePtr;
 
-    if (strLen > 0) {
-        wchar_t keyName[256];
-        uint16_t readLen = (strLen < sizeof(keyName) - 2) ? strLen : (sizeof(keyName) - 2);
-        memcpy(keyName, (void*)(uintptr_t)bufferPtr, readLen);
-        keyName[readLen / 2] = 0;
+        if (strLen > 0) {
+            wchar_t keyName[256];
+            uint16_t readLen = (strLen < sizeof(keyName) - 2) ? strLen : (sizeof(keyName) - 2);
+            memcpy(keyName, (void*)(uintptr_t)bufferPtr, readLen);
+            keyName[readLen / 2] = 0;
 
-        if (wcsstr(keyName, L"hypervisor") || wcsstr(keyName, L"Hyper-V") ||
-            wcsstr(keyName, L"hvservice") || wcsstr(keyName, L"VMBus") ||
-            wcsstr(keyName, L"HypervisorPresent")) {
-            result = 0xC0000034;
-            return true;
+            if (wcsstr(keyName, L"hypervisor") || wcsstr(keyName, L"Hyper-V") ||
+                wcsstr(keyName, L"hvservice") || wcsstr(keyName, L"VMBus") ||
+                wcsstr(keyName, L"HypervisorPresent")) {
+                blocked = true;
+            }
         }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    if (blocked) {
+        result = 0xC0000034;
+        return true;
     }
     return false;
 }

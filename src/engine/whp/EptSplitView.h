@@ -57,8 +57,10 @@ private:
     std::vector<SplitViewPage> m_pages;
     std::unordered_map<uint32_t, VcpuViewState> m_vcpuViews;
 
-    // Cache for fast GPA lookup
-    std::unordered_map<uint64_t, SplitViewPage*> m_gpaToPage;
+    // Cache for fast GPA lookup — stores an index into m_pages, not a pointer, because
+    // std::vector::push_back can reallocate and invalidate any pointer taken into it
+    // (see EptHook.h's GpaIndex for the same pattern used correctly elsewhere in this codebase).
+    std::unordered_map<uint64_t, size_t> m_gpaToPage;
 
     bool MapView(uint64_t gpa, uint64_t size, void* va);
     bool UnmapView(uint64_t gpa, uint64_t size);

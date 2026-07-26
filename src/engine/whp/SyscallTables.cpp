@@ -2000,6 +2000,10 @@ static int CompareByName(const void* a, const void* b)
     return strcmp(name, entry->name);
 }
 
+// kSsnNotFound is a dedicated sentinel distinct from any real SSN — SSN 0 is a valid, real
+// syscall number for some entries (e.g. NtAccessCheck), so it cannot double as "not found".
+static constexpr uint32_t kSsnNotFound = UINT32_MAX;
+
 uint32_t SyscallTables::Lookup(const char* name, uint32_t buildNumber)
 {
     uint32_t closestBuild = GetClosestBuild(buildNumber);
@@ -2009,16 +2013,16 @@ uint32_t SyscallTables::Lookup(const char* name, uint32_t buildNumber)
                 bsearch(name, kBuildTables[i].entries, kBuildTables[i].count,
                     sizeof(SyscallTableEntry), CompareByName);
             if (found) return found->ssn;
-            return 0;
+            return kSsnNotFound;
         }
     }
-    return 0;
+    return kSsnNotFound;
 }
 
 bool SyscallTables::CrossCheck(const char* name, uint32_t detectedSsn, uint32_t buildNumber)
 {
     uint32_t knownSsn = Lookup(name, buildNumber);
-    if (knownSsn == 0) return true;  // no data for this syscall, skip
+    if (knownSsn == kSsnNotFound) return true;  // no data for this syscall, skip
     return detectedSsn == knownSsn;
 }
 
@@ -2039,12 +2043,18 @@ uint32_t SyscallTables::GetClosestBuild(uint32_t actualBuild)
         if (kBuildTables[i].buildNumber == actualBuild)
             return actualBuild;
     }
-    // Fallback: find closest by magnitude
+    // Fallback: find the table build with the smallest absolute distance to actualBuild,
+    // considering builds both below AND above it (a prior version only ever looked below,
+    // so a build numerically nearer a higher table than a lower one picked the wrong table).
     uint32_t bestBuild = 0;
+    uint64_t bestDistance = UINT64_MAX;
     for (size_t i = 0; i < kBuildTableCount; i++) {
-        if (kBuildTables[i].buildNumber < actualBuild) {
-            if (bestBuild == 0 || kBuildTables[i].buildNumber > bestBuild)
-                bestBuild = kBuildTables[i].buildNumber;
+        uint64_t distance = (kBuildTables[i].buildNumber > actualBuild)
+            ? (uint64_t)kBuildTables[i].buildNumber - actualBuild
+            : (uint64_t)actualBuild - kBuildTables[i].buildNumber;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestBuild = kBuildTables[i].buildNumber;
         }
     }
     if (bestBuild == 0 && kBuildTableCount > 0)

@@ -15,15 +15,27 @@ static const WCHAR* SPOOFED_BRAND = L"Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz"
 static const WCHAR TARGET_PATH[] = L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0";
 static const WCHAR TARGET_VALUE[] = L"ProcessorNameString";
 
-// Track opened key handles -> wheter they match the target path
-struct KeyEntry { bool matched; };
+// Track opened key handles -> whether they match the target path.
+// A prior version replaced *phkResult with a fabricated pointer into this array instead of
+// returning the real HKEY, which: (a) leaked the real handle forever (RegCloseKey forwarded
+// the fake pointer to the real RegCloseKey, which just failed on it), (b) broke every other
+// registry call on that "handle" since it was never valid to begin with — querying any value
+// other than the one intercepted one under the spoofed key forwarded to the real API with a
+// bogus pointer, guaranteed to fail, and (c) filled from every RegOpenKeyExW in the whole
+// process (not just the CPU key), silently exhausting the table and disabling the spoof.
+// Track by the *real* HKEY instead and always return it unmodified to the caller.
+struct KeyEntry { HKEY realHandle; bool matched; };
 static KeyEntry keyMap[64];
 static int keyCount = 0;
+static CRITICAL_SECTION s_keyMapCs;
+static INIT_ONCE s_keyMapCsInitOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK InitKeyMapCsOnce(PINIT_ONCE, PVOID, PVOID*) { InitializeCriticalSection(&s_keyMapCs); return TRUE; }
+static void EnsureKeyMapCsInit() { InitOnceExecuteOnce(&s_keyMapCsInitOnce, InitKeyMapCsOnce, nullptr, nullptr); }
 
 static int FindKeySlot(HKEY hKey)
 {
     for (int i = 0; i < keyCount; i++)
-        if (&keyMap[i] == (KeyEntry*)hKey) return i;
+        if (keyMap[i].realHandle == hKey) return i;
     return -1;
 }
 
@@ -33,12 +45,18 @@ extern "C" LSTATUS WINAPI Proxy_RegOpenKeyExW(
     typedef LSTATUS (WINAPI* Real_t)(HKEY, LPCWSTR, DWORD, REGSAM, PHKEY);
     static Real_t real = (Real_t)GetRealProc("RegOpenKeyExW");
     LSTATUS ret = real ? real(hKey, lpSubKey, ulOptions, samDesired, phkResult) : ERROR_FILE_NOT_FOUND;
-    if (ret == ERROR_SUCCESS && phkResult && lpSubKey && keyCount < 64) {
+    if (ret == ERROR_SUCCESS && phkResult && lpSubKey) {
+        EnsureKeyMapCsInit();
         bool matched = (CompareStringW(LOCALE_INVARIANT, NORM_IGNORECASE,
             lpSubKey, -1, TARGET_PATH, -1) == CSTR_EQUAL);
-        keyMap[keyCount].matched = matched;
-        *phkResult = (HKEY)&keyMap[keyCount];
-        keyCount++;
+        EnterCriticalSection(&s_keyMapCs);
+        if (keyCount < 64) {
+            keyMap[keyCount].realHandle = *phkResult;
+            keyMap[keyCount].matched = matched;
+            keyCount++;
+        }
+        LeaveCriticalSection(&s_keyMapCs);
+        // *phkResult is intentionally left untouched — it's the real handle from the real call.
     }
     return ret;
 }
@@ -48,8 +66,12 @@ extern "C" LSTATUS WINAPI Proxy_RegQueryValueExW(
     LPBYTE lpData, LPDWORD lpcbData)
 {
     // Check if this handle is one of our tracked keys
+    EnsureKeyMapCsInit();
+    EnterCriticalSection(&s_keyMapCs);
     int slot = FindKeySlot(hKey);
-    if (slot >= 0 && keyMap[slot].matched && lpValue &&
+    bool isMatchedSlot = (slot >= 0 && keyMap[slot].matched);
+    LeaveCriticalSection(&s_keyMapCs);
+    if (isMatchedSlot && lpValue &&
         CompareStringW(LOCALE_INVARIANT, NORM_IGNORECASE, lpValue, -1, TARGET_VALUE, -1) == CSTR_EQUAL) {
         DWORD needed = (DWORD)((wcslen(SPOOFED_BRAND) + 1) * sizeof(WCHAR));
         if (lpType) *lpType = REG_SZ;
@@ -70,6 +92,18 @@ extern "C" LSTATUS WINAPI Proxy_RegCloseKey(HKEY hKey)
 {
     typedef LSTATUS (WINAPI* Real_t)(HKEY);
     static Real_t real = (Real_t)GetRealProc("RegCloseKey");
+
+    // Free this handle's tracking slot (swap-with-last) so a long-running process's ordinary
+    // registry traffic doesn't permanently exhaust the 64-slot table.
+    EnsureKeyMapCsInit();
+    EnterCriticalSection(&s_keyMapCs);
+    int slot = FindKeySlot(hKey);
+    if (slot >= 0) {
+        keyMap[slot] = keyMap[keyCount - 1];
+        keyCount--;
+    }
+    LeaveCriticalSection(&s_keyMapCs);
+
     return real ? real(hKey) : ERROR_SUCCESS;
 }
 
