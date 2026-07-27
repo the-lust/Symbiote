@@ -6,7 +6,7 @@
 extern "C" {
     uint32_t __stdcall HwIdEmu_GetDiskCount();
     BOOL     __stdcall HwIdEmu_GetDisk(uint32_t index, wchar_t* modelOut, uint32_t* modelLen,
-                                       wchar_t* serialOut, uint32_t* serialLen, uint64_t* sizeBytes);
+                                        wchar_t* serialOut, uint32_t* serialLen, uint64_t* sizeBytes);
     BOOL     __stdcall HwIdEmu_GetSystemInfo(uint32_t infoType, wchar_t* buffer, uint32_t* bufferLen);
     BOOL     __stdcall HwIdEmu_GetVolumeSerial(uint32_t* serialNumber);
 }
@@ -17,8 +17,7 @@ extern "C" {
     BOOL __stdcall IpcFilter_ShouldBlockPipe(const wchar_t* pipeName);
 }
 
-// FirmwareTableSpoofer exports — SMBIOS/ACPI table sanitization for research consistency
-// Called by ntdll_proxy when NtQuerySystemInformation(SystemFirmwareTableInformation) is intercepted
+// FirmwareTableSpoofer exports — SMBIOS/ACPI table sanitization
 extern "C" {
     BOOL __stdcall FwTable_GetSmbios(uint32_t* bufferSize, uint8_t* buffer);
     BOOL __stdcall FwTable_GetAcpi(const char* tableSignature, uint32_t* bufferSize, uint8_t* buffer);
@@ -32,6 +31,21 @@ extern "C" {
     BOOL __stdcall RegRedir_ShouldRedirect(const wchar_t* keyPath);
     BOOL __stdcall RegRedir_GetRedirectedValue(const wchar_t* keyPath, const wchar_t* valueName,
                                                 uint8_t* data, uint32_t* dataSize, uint32_t* type);
+}
+
+// FileRedirection exports — called by ntdll_proxy for file COW
+extern "C" {
+    BOOL __stdcall FileRedir_ShouldRedirect(const wchar_t* path);
+    BOOL __stdcall FileRedir_GetRedirectedPath(const wchar_t* path, wchar_t* outPath, uint32_t* pathLen, BOOL isWrite);
+}
+
+// ByovdDriver exports — kernel memory R/W via vulnerable signed driver
+extern "C" {
+    BOOL __stdcall Byovd_IsAvailable();
+    BOOL __stdcall Byovd_ReadPhysicalMemory(uint64_t physicalAddr, uint8_t* buffer, uint32_t size);
+    BOOL __stdcall Byovd_WritePhysicalMemory(uint64_t physicalAddr, const uint8_t* buffer, uint32_t size);
+    BOOL __stdcall Byovd_ReadKernelMemory(uint64_t kernelAddr, uint8_t* buffer, uint32_t size);
+    BOOL __stdcall Byovd_WriteKernelMemory(uint64_t kernelAddr, const uint8_t* buffer, uint32_t size);
 }
 
 // System info types for HwIdEmu_GetSystemInfo

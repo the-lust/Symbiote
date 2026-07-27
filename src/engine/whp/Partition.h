@@ -58,6 +58,16 @@ public:
     bool IsOnDemandRegion(WHV_GUEST_PHYSICAL_ADDRESS guestPa) const;
     bool MapOnDemandNow(WHV_GUEST_PHYSICAL_ADDRESS guestPa);
 
+    // QEMU WHPX backend techniques — advanced WHP API wrappers
+    bool MapGpaRange2(void* hostVa, WHV_GUEST_PHYSICAL_ADDRESS guestPa,
+                      uint64_t sizeInBytes, WHV_MAP_GPA_RANGE_FLAGS flags,
+                      uint32_t numaNode = 0);
+    bool ReadGpaRange(WHV_GUEST_PHYSICAL_ADDRESS guestPa, void* buffer, uint32_t sizeInBytes);
+    bool TranslateGva(uint32_t vcpuIndex, WHV_GUEST_VIRTUAL_ADDRESS gva,
+                      WHV_TRANSLATE_GVA_FLAGS flags,
+                      WHV_GUEST_PHYSICAL_ADDRESS* gpa, uint32_t* gpaAccessFlags = nullptr);
+    HANDLE CreateNotificationPort(uint32_t vcpuIndex, WHV_NOTIFICATION_PORT_TYPE type);
+
     // Memory region tracking for snapshot/restore
     struct TrackedMemoryRegion {
         WHV_GUEST_PHYSICAL_ADDRESS gpa;

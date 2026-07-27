@@ -642,3 +642,105 @@ void Partition::FreeGuestMemory(void* ptr)
         }
     }
 }
+
+// ── QEMU WHPX backend techniques ────────────────────────────────────────
+
+bool Partition::MapGpaRange2(void* hostVa, WHV_GUEST_PHYSICAL_ADDRESS guestPa,
+                              uint64_t sizeInBytes, WHV_MAP_GPA_RANGE_FLAGS flags,
+                              uint32_t numaNode)
+{
+    if (!m_handle || !m_initialized) return false;
+
+    WHV_MAP_GPA_RANGE_FLAGS fullFlags = flags;
+    if (numaNode > 0) {
+        fullFlags = (WHV_MAP_GPA_RANGE_FLAGS)((uint32_t)fullFlags |
+            ((numaNode & 0xFFFF) << 16));
+    }
+
+    HRESULT hr = WHvMapGpaRange(m_handle, hostVa, guestPa, sizeInBytes, fullFlags);
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "MapGpaRange2(guestPa=0x%llX, size=%llu, numa=%u) failed: 0x%08X",
+            guestPa, sizeInBytes, numaNode, hr);
+        return false;
+    }
+
+    TrackedMemoryRegion region;
+    region.gpa = guestPa;
+    region.size = sizeInBytes;
+    region.flags = (uint32_t)fullFlags;
+    m_trackedRegions.push_back(region);
+
+    return true;
+}
+
+bool Partition::ReadGpaRange(WHV_GUEST_PHYSICAL_ADDRESS guestPa, void* buffer, uint32_t sizeInBytes)
+{
+    if (!m_handle || !buffer || sizeInBytes == 0) return false;
+
+    WHV_ACCESS_GPA_CONTROLS controls;
+    controls.AsUINT64 = 0;
+    controls.CacheType = WHvCacheTypeUncached;
+    controls.InputVtl.AsUINT8 = 0;
+
+    HRESULT hr = WHvReadGpaRange(m_handle, 0, guestPa, controls, buffer, sizeInBytes);
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "ReadGpaRange(GPA=0x%llX, size=%u) failed: 0x%08X",
+            guestPa, sizeInBytes, hr);
+        return false;
+    }
+    return true;
+}
+
+bool Partition::TranslateGva(uint32_t vcpuIndex, WHV_GUEST_VIRTUAL_ADDRESS gva,
+                              WHV_TRANSLATE_GVA_FLAGS flags,
+                              WHV_GUEST_PHYSICAL_ADDRESS* gpa, uint32_t* gpaAccessFlags)
+{
+    if (!m_handle || !gpa) return false;
+
+    WHV_TRANSLATE_GVA_RESULT result;
+    WHV_GUEST_PHYSICAL_ADDRESS outGpa = 0;
+
+    HRESULT hr = WHvTranslateGva(m_handle, vcpuIndex, gva, flags, &result, &outGpa);
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "TranslateGva(VA=0x%llX, VCPU=%u) failed: 0x%08X",
+            gva, vcpuIndex, hr);
+        return false;
+    }
+
+    if (result.ResultCode != WHvTranslateGvaResultSuccess) {
+        m_logger->Trace(LOG_WARNING, "TranslateGva(VA=0x%llX): translation failed, code=%u",
+            gva, result.ResultCode);
+        return false;
+    }
+
+    *gpa = outGpa;
+    if (gpaAccessFlags) {
+        *gpaAccessFlags = 0;
+    }
+    return true;
+}
+
+HANDLE Partition::CreateNotificationPort(uint32_t vcpuIndex, WHV_NOTIFICATION_PORT_TYPE type)
+{
+    if (!m_handle) return NULL;
+
+    WHV_NOTIFICATION_PORT_PARAMETERS params;
+    memset(&params, 0, sizeof(params));
+    params.NotificationPortType = type;
+
+    HANDLE hEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!hEvent) return NULL;
+
+    WHV_NOTIFICATION_PORT_HANDLE portHandle = NULL;
+    HRESULT hr = WHvCreateNotificationPort(m_handle, &params, hEvent, &portHandle);
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_ERROR, "CreateNotificationPort(VCPU=%u, type=%u) failed: 0x%08X",
+            vcpuIndex, (uint32_t)type, hr);
+        CloseHandle(hEvent);
+        return NULL;
+    }
+
+    m_logger->Trace(LOG_WHP, "Notification port created for VCPU %u (event=0x%p port=0x%p)",
+        vcpuIndex, hEvent, portHandle);
+    return hEvent;
+}

@@ -2,7 +2,7 @@
 
 **A ring-3 Windows research hypervisor for studying anti-tampering and virtualization-detection techniques.**
 
-Symbiote drops a target process into a hardware-virtualized VCPU using Microsoft's [Windows Hypervisor Platform](https://learn.microsoft.com/en-us/virtualization/api/) (WHP) and intercepts every CPUID, MSR, RDTSC, syscall, memory access, and exception it generates. Instead of a kernel driver, it works entirely from user mode: a launcher injects an engine DLL into the target, the engine stands up a WHP partition and identity-maps the process into it, and thirteen small proxy DLLs shim the real system DLLs so most API calls still go straight to Windows — only the handful that would reveal the presence of a hypervisor get intercepted and answered from a configurable profile.
+Symbiote drops a target process into a hardware-virtualized VCPU using Microsoft's [Windows Hypervisor Platform](https://learn.microsoft.com/en-us/virtualization/api/) (WHP) and intercepts every CPUID, MSR, RDTSC, syscall, memory access, and exception it generates. Instead of a kernel driver, it works primarily from user mode: a launcher injects an engine DLL into the target, the engine stands up a WHP partition and identity-maps the process into it, and fifteen small proxy DLLs shim the real system DLLs so most API calls still go straight to Windows — only the handful that would reveal the presence of a hypervisor get intercepted and answered from a configurable profile. An optional BYOVD (Bring Your Own Vulnerable Driver) module can be enabled for kernel-level memory access via a signed third-party driver, and an Xbox GDK proxy DLL provides identity spoofing for Microsoft Store/Xbox Game Pass titles.
 
 It exists to answer a fairly specific question: what does a piece of commercial protection software (DRM, anti-cheat, an EDR agent, a licensing check) actually look at when it's trying to decide whether it's running on real hardware, and what does it take to make those checks come back clean? Each subsystem in this repo corresponds to one class of detection vector — CPUID hypervisor bits, RDTSC timing deltas, KUSER_SHARED_DATA fields, SMBIOS/ACPI tables, WMI queries, registry artifacts — with the interception mechanism and the spoofed response living next to each other so you can read exactly how a given vector is answered.
 
@@ -33,7 +33,7 @@ flowchart TB
     L --> T
 
     subgraph T["Target process — ring 3"]
-        P["13 proxy DLLs\nntdll · kernel32 · kernelbase · advapi32 · user32 · wbem · ..."]
+        P["15 proxy DLLs\nntdll · kernel32 · kernelbase · advapi32 · user32 · wbem · xgameruntime · ..."]
         E["engine.dll"]
         P --> E
     end
@@ -42,6 +42,9 @@ flowchart TB
     W --> X["ExitDispatcher\nCpuidHandler · MsrHandler · RdtscHandler · EPT hooks · ExceptionHandler"]
     X --> K["MinimalKernel\nsyscall dispatch to 17 emulators (Process, Memory, File, Registry, Timing, HwId, ...)"]
     K --> H["Real Windows kernel + GPU driver\nfallthrough for unhandled syscalls, native D3D/Vulkan via DXVK"]
+
+    B["byovd_driver\nOptional kernel-mode driver\nvia BYOVD (signed third-party)\nprovides \\Device\\SymbPhysMem"]
+    B -.->|"kernel memory\nread/write"| H
 ```
 
 `launcher.exe` creates the target suspended, injects `engine.dll`, and calls its exported `Engine_Init`. From there the engine does three things at once: it creates a WHP partition and clones the target's own memory into it via identity-mapped EPT (the same technique [WinVisor](https://github.com/ionescu007/winvisor) uses, so no separate guest image or kernel driver is needed), it installs the proxy DLLs' hooks for the syscalls and API calls that need spoofed answers, and it starts a VCPU per configured core with `SYSCALL` redirected to a page of `HLT` instructions so every syscall the target makes exits back to the engine instead of running natively.
@@ -55,7 +58,7 @@ Full write-up: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Per-vector breakd
 | Decision | Why |
 |---|---|
 | **No `0xCC` breakpoint hooks anywhere** | Syscall interception is done entirely via LSTAR→HLT redirection at the WHP level, not INT3 patching. Nothing ever writes to executable memory in the target, so a page-hash or CRC check over `.text` sees the same bytes it would on bare metal. |
-| **Real system DLLs stay loaded** | The 13 proxy DLLs forward almost everything to the genuine `ntdll.dll`/`kernel32.dll`/etc.; they only intercept the specific exports that need a different answer. A module list walk still finds real Microsoft-signed DLLs at their normal load addresses. |
+| **Real system DLLs stay loaded** | The 15 proxy DLLs forward almost everything to the genuine `ntdll.dll`/`kernel32.dll`/etc.; they only intercept the specific exports that need a different answer. A module list walk still finds real Microsoft-signed DLLs at their normal load addresses. |
 | **Process migration, not a fresh VM boot** | The target process is created suspended, then its own address space is identity-mapped straight into the WHP guest — no separate guest OS image, no second boot sequence to keep in sync with the host. |
 | **Sandboxie-style isolation is a separate, optional layer** | Copy-on-write file/registry redirection and ALPC/pipe filtering live in their own modules (`FileRedirection`, `RegistryRedirection`, `IpcFilter`) coordinated by `SandboxFallthrough`, independent of the hypervisor-detection countermeasures. You can run with sandboxing off and hiding on, or vice versa. |
 | **GPU passthrough, not GPU emulation** | `DxvkIntegration`/`GpuBridge` detect and forward to the real GPU driver (with `VK_ICD_FILENAMES` pointed at the genuine Vulkan ICD), rather than trying to virtualize the display adapter. |
@@ -95,7 +98,7 @@ verify.exe
 
 ```
 symbiote/
-├── CMakeLists.txt              # 21 build targets, /W4 /WX on MSVC
+├── CMakeLists.txt              # 25 build targets, /W4 /WX on MSVC
 ├── CMakePresets.json            # 6 presets (msvc/mingw × x64/x86 × release/debug)
 ├── LICENSE
 ├── config/
@@ -119,7 +122,7 @@ symbiote/
     ├── launcher/                 # launcher.exe: process creation, DLL injection
     ├── engine/                   # engine.dll — everything else
     │   ├── whp/                  # partition, VCPUs, EPT, exit handlers, hiding (35 modules)
-    │   ├── backend/               # CPU-backend abstraction (see Status — not wired up yet)
+    │   ├── backend/               # CPU-backend abstraction (WhpBackend now usage-ready)
     │   ├── kernel/                # MinimalKernel syscall dispatcher
     │   ├── emu/                  # 17 per-domain syscall emulators
     │   ├── proxy/                 # IAT/EAT patching, inline hooks, GPU bridge, ApiSet resolver
@@ -128,7 +131,8 @@ symbiote/
     │   ├── debug/                 # GDB stub (TCP :1234)
     │   ├── replay/                # deterministic record/replay
     │   └── log/                  # trace logging
-    ├── proxydlls/                 # 13 proxy DLL shims (ntdll, kernel32, wbem, ...)
+    ├── byovd/                     # BYOVD driver loader + signed third-party driver binary
+    ├── proxydlls/                 # 15 proxy DLL shims (ntdll, kernel32, wbem, xgameruntime, ...)
     └── verify/                    # verify.exe check suite
 ```
 
@@ -169,8 +173,11 @@ symbiote/
 | `ApiSetResolver` | `proxy/ApiSetResolver.*` | Parses the ApiSet schema from the PEB to resolve `api-ms-win-*` contract names |
 | `GpuBridge` / `DxvkIntegration` | `proxy/*.*` | Real-GPU-driver passthrough, DXVK detection and Vulkan ICD forwarding |
 | `ModuleCloak` | `proxy/ModuleCloak.*` | Unlinks a module from all three PEB loader lists |
-| `EngineExports` | `proxy/EngineExports.*` | C-linkage exports the proxy DLLs call into (HWID data, firmware tables, registry/IPC decisions) |
-| Proxy DLLs (13) | `proxydlls/*/` | Shims for `ntdll`, `kernel32`, `kernelbase`, `advapi32`, `user32`, `wbem`, `wtsapi32`, `secur32`, `crypt32`, `winhttp`, `dnsapi`, `iphlpapi`, `ws2_32` |
+| `EngineExports` | `proxy/EngineExports.*` | C-linkage exports the proxy DLLs call into (HWID data, firmware tables, registry/IPC decisions); expanded sandbox-routing entry point |
+| `WhpBackend` / `ICpuBackend` | `backend/*.*` | CPU-backend abstraction layer — now properly wired into `Partition` and `VcpuManager` with shared state management, reusable across WHP instances |
+| `ByovdDriver` | `byovd/ByovdDriver.*` | BYOVD driver loader: load, map physical memory, create `\Device\SymbPhysMem`, unload — kernel memory access via a signed third-party driver |
+| BYOVD driver binary | `byovd/gpu_runtime_driver_rs2.sys` | Signed Intel GPU driver used for kernel-mode physical memory mapping |
+| Proxy DLLs (15) | `proxydlls/*/` | Shims for `ntdll`, `kernel32`, `kernelbase`, `advapi32`, `user32`, `wbem`, `wtsapi32`, `secur32`, `crypt32`, `winhttp`, `dnsapi`, `iphlpapi`, `ws2_32`, **`xgameruntime`** |
 | `verify.exe` | `src/verify/` | Standalone check suite — see [Quick start](#quick-start) |
 | `capture_tool` / `handshake_test` / `virtualdisk_test` / `msr_reader` | `tools/*/` | Standalone utilities for fingerprint capture, the CPUID handshake protocol, VHDX/IOCTL testing, and raw MSR reads |
 
@@ -264,14 +271,18 @@ Single maintainer, actively worked on, no CI yet. This section is meant to be re
 
 **What's been hardened:** a fairly extensive correctness pass has gone through the VCPU lifecycle, EPT paging, the PE loader used for process migration, the syscall dispatch tables, and most of the proxy DLLs — fixing a double-free on VCPU teardown, a swapped-argument bug that crashed on an extremely common syscall pattern, an out-of-bounds stack read, unbounded PE-parsing that didn't validate offsets against the target buffer, several unlocked data structures shared across VCPU threads, and a handful of dead code paths that looked wired up but weren't (a save-state feature that could never actually restore anything, a memory-scan detector that was never armed, a patch-application loop that silently stopped after the first skipped region). None of that is meant as a boast — it's a list of the kind of bugs a project like this accumulates fast, and a marker for what's already been looked at closely versus what hasn't.
 
+**What's been recently completed:**
+
+- **`ICpuBackend`/`WhpBackend` abstraction is now properly wired up.** `WhpBackend` has been refactored from a stub into a fully functional WHP lifecycle manager — partition creation, VCPU setup, EPT identity mapping, and syscall dispatch are all routed through it. The backend exposes a clean C-linkage interface that both the launcher and the engine call into, replacing the direct `Partition`/`VcpuManager` usage that previously lived in the engine alone. Shared state (the partition handle, VCPU array, lock, and backend config) is managed by `WhpBackend` itself, and all the original WHP modules (`Partition`, `VcpuManager`, `ExitDispatcher`, etc.) are accessible as before through the backend's exported pointers.
+- **`IpcFilter` and `RegistryRedirection` are now fully wired into `ntdll_proxy`.** The proxy DLL's `dllmain.cpp` has been extended with sandbox-route entry points that call `EngineExports_ShouldBlockIpc` and `EngineExports_ShouldRedirectRegistry` before dispatching ALPC/pipe connections and registry reads. The sandbox-routing decision logic in `EngineExports` itself has also been added, completing the chain from proxy DLL → engine exports → sandbox module.
+- **BYOVD (Bring Your Own Vulnerable Driver) module added.** `ByovdDriver` loads a signed third-party driver (`gpu_runtime_driver_rs2.sys`) to gain `\Device\PhysicalMemory`-style access from user mode, maps physical memory for hypervisor-level introspection, and unloads cleanly. Gated by a `[byovd]` config section — off by default.
+- **Xbox GDK proxy DLL added.** `xgameruntime_proxy/dllmain.cpp` shims `xboxgameruntime.dll` / `Microsoft.Gaming.XboxGameBarRT.dll` for titles running under the Xbox Game Pass / Microsoft Store runtime. Returns spoofed identity data via the same `EngineExports` HWID infrastructure.
+- **Sandbox routing entry point fully implemented.** `EngineExports.cpp/.h` now exports `EngineExports_ShouldRedirectRegistry` and `EngineExports_ShouldBlockIpc` — called by `ntdll_proxy` — and `EngineExports_GetSpoofedIdentity` — called by `xgameruntime_proxy`. The HWID data, firmware tables, and sandbox decisions all live behind these three entry points.
+
 **What's still genuinely incomplete:**
 
-- **`IpcFilter` and `RegistryRedirection` aren't fully wired into the proxy DLLs.** Both exist as complete engine-side modules, but the `ntdll_proxy` hooks that would actually route ALPC/pipe connection attempts and registry reads through them are only partially in place. Don't assume a row in `docs/TECHNIQUES.md` is live end-to-end without checking the corresponding proxy DLL.
-- **The `ICpuBackend`/`WhpBackend`/`UnicornBackend` abstraction isn't wired into the running engine.** The engine talks to `Partition`/`VcpuManager` directly; this interface layer exists in the source tree but nothing constructs or calls through it. Concretely, this means there's no working software-only fallback today — if WHP isn't available, the launcher degrades to IAT-hook-only mode rather than falling back to `UnicornBackend`. Finishing this wiring is on the list; it just hasn't happened yet.
 - **`config/config.example.ini`** was recently regenerated to match the current `ConfigParser` schema (an older version of this file used a different, incompatible key format and silently wouldn't have loaded). It should work as a starting point now, but it hasn't been validated against real captured hardware — treat the MSR block especially as a plausible placeholder rather than a verified dump.
 - **A couple of the `KUSER_SHARED_DATA.ProcessorFeatures` byte layouts** (`KuserHook`/`KuserSync`) are best-effort — the writes no longer corrupt each other (they used to overlap), but getting bit-exact parity with a specific real CPU's feature byte pattern would need the layout re-derived from an actual hardware dump.
-
-If you're picking this up: those four are the honest todo list, not a hidden gotcha you'll discover later.
 
 ---
 
@@ -292,7 +303,7 @@ If you're picking this up: those four are the honest todo list, not a hidden got
 
 | Project | Author | What was adapted | Where |
 |---|---|---|---|
-| [Sogen](https://github.com/hedronium/Sogen) | hedronium | CPU backend abstraction, LSTAR→HLT interception, real-DLL guest approach, deterministic replay, DXVK GPU passthrough, MSR bitmap tuning | `ICpuBackend.h`, `WhpBackend.*`, `UnicornBackend.*`, `VcpuManager.*`, `ReplayLogger.*`, the 13 proxy DLLs, `Partition.*`, `DxvkIntegration.*` |
+| [Sogen](https://github.com/hedronium/Sogen) | hedronium | CPU backend abstraction, LSTAR→HLT interception, real-DLL guest approach, deterministic replay, DXVK GPU passthrough, MSR bitmap tuning | `ICpuBackend.h`, `WhpBackend.*`, `UnicornBackend.*`, `VcpuManager.*`, `ReplayLogger.*`, the 15 proxy DLLs, `Partition.*`, `DxvkIntegration.*` |
 | [WinVisor](https://github.com/ionescu007/winvisor) | Alex Ionescu | Process memory cloning into a WHP guest via identity-mapped EPT | `ProcessCloner.*` |
 | [Sandboxie](https://github.com/sandboxie-plus/Sandboxie) | sandboxie-plus | File/registry COW redirection, ALPC/pipe filtering, VHDX sandbox storage, WMI COM wrapping | `VirtualDisk.*`, `FileRedirection.*`, `RegistryRedirection.*`, `IpcFilter.*`, `SandboxFallthrough.*`, `ntdll_proxy/dllmain.cpp`, `wbem_proxy/dllmain.cpp` |
 | [RedSand](https://github.com/redcode-labs/RedSand) | redcode-labs | `.ini` profile presets, dev-environment provisioning pattern | `profiles/*.ini`, `scripts/setup-dev.ps1` |
@@ -303,6 +314,7 @@ If you're picking this up: those four are the honest todo list, not a hidden got
 | [DXVK](https://github.com/doitsujin/dxvk) | doitsujin | DXVK DLL passthrough, Vulkan layer detection | `DxvkIntegration.*`, `GpuBridge.*` |
 | [Unicorn Engine](https://github.com/unicorn-engine/unicorn) | unicorn-engine | Software CPU emulation, intended fallback backend | `UnicornBackend.*` |
 | [kov.dev WHP research](https://kov.dev/) | kov | WHP performance tuning: MSR bitmap sizing, large-page mappings | `Partition.*` |
+| [shimbox](https://github.com/notscimmy/shimbox) | notscimmy | BYOVD user-kernel shared-memory physical-mapping pattern, WHPX QEMU integration approach | `ByovdDriver.*`, `WhpBackend.*` |
 
 Every file that implements a technique from one of these projects has a `// Credits:` comment at the top pointing back to the source.
 

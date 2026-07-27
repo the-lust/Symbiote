@@ -1,4 +1,6 @@
 #pragma once
+#include <windows.h>
+#include <WinHvPlatform.h>
 #include "ICpuBackend.h"
 #include "Logger.h"
 
@@ -47,7 +49,14 @@ public:
                       MagicCpuid* magic, ExceptionHandler* exc, EptExecHook* eptExec,
                       EptSplitView* eptSplit, KernelLock* kernelLock);
 
+    void SetPartition(Partition* p) { m_partition = p; }
+    void SetVcpuManager(VcpuManager* vm) { m_vcpuManager = vm; }
+    void SetVcpuIndex(uint32_t idx) { m_vcpuIndex = idx; }
+
 private:
+    bool ReadVcpuRegsInternal(WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count);
+    bool WriteVcpuRegsInternal(WHV_REGISTER_NAME* names, WHV_REGISTER_VALUE* values, uint32_t count);
+
     Logger* m_logger;
     Partition* m_partition;
     VcpuManager* m_vcpuManager;
@@ -56,4 +65,8 @@ private:
     uint64_t m_exitCount;
     uint64_t m_syscallCount;
     bool m_running;
+
+    static const uint32_t MAX_BREAKPOINTS = 8;
+    BreakpointInfo m_breakpoints[MAX_BREAKPOINTS];
+    uint32_t m_breakpointCount;
 };

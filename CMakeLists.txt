@@ -151,6 +151,8 @@ if(NOT SYMBIOTE_NO_WHP)
         src/engine/whp/ConsistencyVerifier.cpp
         src/engine/whp/IndirectSyscall.cpp
         src/engine/whp/SyscallTables.cpp
+        # BYOVD driver for kernel memory access
+        src/engine/whp/ByovdDriver.cpp
     )
 endif()
 add_library(engine SHARED ${ENGINE_SOURCES})
@@ -191,6 +193,7 @@ add_proxy_dll(winhttp_proxy    src/proxydlls/winhttp_proxy/dllmain.cpp)
 add_proxy_dll(dnsapi_proxy     src/proxydlls/dnsapi_proxy/dllmain.cpp)
 add_proxy_dll(iphlpapi_proxy   src/proxydlls/iphlpapi_proxy/dllmain.cpp)
 add_proxy_dll(ws2_32_proxy     src/proxydlls/ws2_32_proxy/dllmain.cpp)
+add_proxy_dll(xgameruntime_proxy src/proxydlls/xgameruntime_proxy/dllmain.cpp)
 
 # ─── Verify Tool ──────────────────────────────────────────────────────
 add_executable(verify src/verify/Main.cpp)

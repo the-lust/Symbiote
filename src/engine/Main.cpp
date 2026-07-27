@@ -38,6 +38,7 @@
 #include "whp/ConsistencyVerifier.h"
 #include "whp/WhpHiding.h"
 #include "whp/SandboxFallthrough.h"
+#include "whp/ByovdDriver.h"
 #include "emu/ThreadHider.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
@@ -160,6 +161,7 @@ static void CleanupAll()
     delete g_indirectSyscall; g_indirectSyscall = nullptr;
     delete g_whpHiding; g_whpHiding = nullptr;
     delete g_sandboxFallthrough; g_sandboxFallthrough = nullptr;
+    delete g_byovdDriver; g_byovdDriver = nullptr;
     delete g_snapshot; g_snapshot = nullptr;
 }
 
@@ -205,6 +207,7 @@ static void SetupIatHooks(bool enableEat = false)
         { L"dnsapi.dll",       {{"dnsapi.dll", "DnsQuery_W"}, {"dnsapi.dll", "DnsRecordListFree"}}, 2 },
         { L"iphlpapi.dll",     {{"iphlpapi.dll", "GetAdaptersInfo"}, {"iphlpapi.dll", "GetAdaptersAddresses"}, {"iphlpapi.dll", "GetNetworkParams"}}, 3 },
         { L"ws2_32.dll",       {{"ws2_32.dll", "socket"}, {"ws2_32.dll", "connect"}, {"ws2_32.dll", "send"}, {"ws2_32.dll", "recv"}, {"ws2_32.dll", "closesocket"}, {"ws2_32.dll", "gethostbyname"}, {"ws2_32.dll", "getaddrinfo"}, {"ws2_32.dll", "WSAStartup"}, {"ws2_32.dll", "WSACleanup"}}, 9 },
+        { L"xgameruntime.dll", {{"xgameruntime.dll", "XGameRuntimeInitialize"}, {"xgameruntime.dll", "XUserGetGamertag"}, {"xgameruntime.dll", "XUserGetGamertagUtf16"}, {"xgameruntime.dll", "XUserGetTokenAndSignature"}, {"xgameruntime.dll", "XSystemGetAnalyticsInfo"}, {"xgameruntime.dll", "XSystemGetXboxLiveSandboxId"}, {"xgameruntime.dll", "XSystemGetConsoleId"}, {"xgameruntime.dll", "XStoreQueryProductsAsync"}}, 8 },
     };
 
     HMODULE hNtdllProxy = NULL, hKernel32Proxy = NULL;
@@ -587,6 +590,24 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
             g_logger.Trace(LOG_WARNING, "WhpHiding initialization incomplete — some features may be inactive");
         }
         g_whpHiding->VerifyHiding();
+    }
+
+    // BYOVD: kernel memory access via vulnerable signed driver
+    {
+        bool byovdEnabled = configParser.GetBool("byovd", "enabled", false);
+        if (byovdEnabled) {
+            g_byovdDriver = new ByovdDriver(&g_logger);
+            if (g_byovdDriver->FindDriver()) {
+                g_logger.Trace(LOG_INFO, "BYOVD: driver found and opened (type=%d)",
+                    (int)g_byovdDriver->GetActiveType());
+            } else {
+                g_logger.Trace(LOG_WARNING, "BYOVD: no compatible driver found");
+                delete g_byovdDriver;
+                g_byovdDriver = nullptr;
+            }
+        } else {
+            g_logger.Trace(LOG_INFO, "BYOVD disabled by config");
+        }
     }
 
     // SandboxFallthrough: Sandboxie-style isolation (file/registry/IPC redirection + VHDX)

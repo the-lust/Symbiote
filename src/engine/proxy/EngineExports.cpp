@@ -2,6 +2,8 @@
 #include "emu/HwIdEmu.h"
 #include "whp/IpcFilter.h"
 #include "whp/RegistryRedirection.h"
+#include "whp/FileRedirection.h"
+#include "whp/ByovdDriver.h"
 #include <cstring>
 #include <string>
 
@@ -22,10 +24,6 @@ BOOL __stdcall HwIdEmu_GetDisk(uint32_t index, wchar_t* modelOut, uint32_t* mode
     const DiskSpoofInfo* disk = g_hwIdEmu->GetDisk(index);
     if (!disk) return FALSE;
 
-    // *modelLen/*serialLen are caller-supplied buffer capacities. If a caller passes 0, the
-    // prior `*modelLen - 1` on an unsigned uint32_t underflows to 0xFFFFFFFF, defeating the
-    // clamp and writing modelOut[copyLen] out of bounds. HwIdEmu_GetSystemInfo below already
-    // guards this correctly (`*bufferLen < 2`); this function was missing the equivalent check.
     if (modelOut && modelLen && *modelLen >= 1) {
         uint32_t copyLen = (uint32_t)disk->model.length();
         if (copyLen > *modelLen - 1) copyLen = *modelLen - 1;
@@ -74,22 +72,16 @@ BOOL __stdcall HwIdEmu_GetSystemInfo(uint32_t infoType, wchar_t* buffer, uint32_
 BOOL __stdcall HwIdEmu_GetVolumeSerial(uint32_t* serialNumber)
 {
     (void)serialNumber;
-    // Volume serial is handled inline in FileEmu; this is a placeholder for WMI
     return FALSE;
 }
 
 // ── FirmwareTableSpoofer exports ─────────────────────────────────────────
-//
-// These exports allow proxy DLLs (ntdll_proxy, wbem_proxy) to sanitize
-// SMBIOS/ACPI firmware tables when NtQuerySystemInformation is called
-// with SystemFirmwareTableInformation.
 
 #pragma comment(linker, "/EXPORT:FwTable_GetSmbios=FwTable_GetSmbios")
 BOOL __stdcall FwTable_GetSmbios(uint32_t* bufferSize, uint8_t* buffer)
 {
     if (!bufferSize) return FALSE;
 
-    // Read real SMBIOS data from the system
     DWORD realSize = GetSystemFirmwareTable('RSMB', 0, NULL, 0);
     if (realSize == 0) {
         *bufferSize = 0;
@@ -98,22 +90,15 @@ BOOL __stdcall FwTable_GetSmbios(uint32_t* bufferSize, uint8_t* buffer)
 
     if (!buffer) {
         *bufferSize = realSize;
-        return TRUE; // Query size only
+        return TRUE;
     }
 
-    if (*bufferSize < realSize) {
-        return FALSE; // Buffer too small
-    }
+    if (*bufferSize < realSize) return FALSE;
 
     DWORD readSize = GetSystemFirmwareTable('RSMB', 0, buffer, *bufferSize);
     if (readSize == 0) return FALSE;
 
     *bufferSize = readSize;
-
-    // Sanitize the SMBIOS table — remove VM vendor strings
-    // This is done inline; a full SMBIOS parser would be more thorough
-    // but the critical strings to strip are:
-    //   "VMware", "VirtualBox", "VBOX", "QEMU", "Bochs", "Oracle", "Innotek"
     return TRUE;
 }
 
@@ -122,7 +107,6 @@ BOOL __stdcall FwTable_GetAcpi(const char* tableSignature, uint32_t* bufferSize,
 {
     if (!tableSignature || !bufferSize) return FALSE;
 
-    // Convert 4-char signature to DWORD
     DWORD sig = 0;
     memcpy(&sig, tableSignature, 4);
 
@@ -176,14 +160,10 @@ BOOL __stdcall FwTable_SanitizeSmbios(uint8_t* smbiosData, uint32_t dataSize)
 {
     if (!smbiosData || dataSize < 32) return FALSE;
 
-    // SMBIOS entry point structure starts with "_SM_" signature
     if (memcmp(smbiosData, "_SM_", 4) != 0 && memcmp(smbiosData, "_SM3_", 5) != 0) {
         return FALSE;
     }
 
-    // Scan the entire SMBIOS data for VM vendor strings and replace with zeros
-    // This is a simple string-level sanitization — a proper implementation
-    // would parse SMBIOS structures and replace individual fields.
     static const char* kVmStrings[] = {
         "VMware", "VMWARE", "VirtualBox", "VBOX", "vbox",
         "QEMU", "Bochs", "bochs", "Oracle", "Innotek",
@@ -214,9 +194,6 @@ BOOL __stdcall FwTable_SanitizeAcpi(uint8_t* acpiData, uint32_t dataSize)
 {
     if (!acpiData || dataSize < sizeof(uint64_t)) return FALSE;
 
-    // ACPI tables have a header with OEM ID and OEM Table ID fields.
-    // Sanitize common VM identifiers in OEM ID (6 bytes at offset 10)
-    // and OEM Table ID (8 bytes at offset 16).
     static const char* kVmOemIds[] = {
         "VBOX__", "VMW__", "BXPC", "BOCHS", "QEMU",
         nullptr
@@ -240,9 +217,6 @@ BOOL __stdcall FwTable_SanitizeAcpi(uint8_t* acpiData, uint32_t dataSize)
 }
 
 // ── RegistryRedirection exports ───────────────────────────────────────────
-//
-// These exports allow ntdll_proxy to query the registry COW layer for
-// spoofed values that ensure consistent system information under virtualization.
 
 #pragma comment(linker, "/EXPORT:RegRedir_ShouldRedirect=RegRedir_ShouldRedirect")
 BOOL __stdcall RegRedir_ShouldRedirect(const wchar_t* keyPath)
@@ -288,4 +262,71 @@ BOOL __stdcall IpcFilter_ShouldBlockPipe(const wchar_t* pipeName)
 {
     if (!g_ipcFilter || !g_ipcFilter->IsInitialized()) return FALSE;
     return g_ipcFilter->ShouldBlockPipe(pipeName) ? TRUE : FALSE;
+}
+
+// ── FileRedirection exports ───────────────────────────────────────────────
+
+#pragma comment(linker, "/EXPORT:FileRedir_ShouldRedirect=FileRedir_ShouldRedirect")
+BOOL __stdcall FileRedir_ShouldRedirect(const wchar_t* path)
+{
+    if (!g_fileRedirection || !g_fileRedirection->IsInitialized()) return FALSE;
+    FileRedirection::FileInfo info;
+    if (g_fileRedirection->Resolve(path, false, info)) {
+        return info.isRedirected ? TRUE : FALSE;
+    }
+    return FALSE;
+}
+
+#pragma comment(linker, "/EXPORT:FileRedir_GetRedirectedPath=FileRedir_GetRedirectedPath")
+BOOL __stdcall FileRedir_GetRedirectedPath(const wchar_t* path, wchar_t* outPath, uint32_t* pathLen, BOOL isWrite)
+{
+    if (!g_fileRedirection || !g_fileRedirection->IsInitialized()) return FALSE;
+    if (!path || !outPath || !pathLen || *pathLen < 1) return FALSE;
+
+    std::wstring boxPath;
+    if (g_fileRedirection->GetRedirectedPath(path, boxPath, isWrite != FALSE)) {
+        uint32_t copyLen = (uint32_t)boxPath.length();
+        if (copyLen > *pathLen - 1) copyLen = *pathLen - 1;
+        wcsncpy_s(outPath, *pathLen, boxPath.c_str(), copyLen);
+        outPath[copyLen] = L'\0';
+        *pathLen = copyLen;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+// ── ByovdDriver exports ───────────────────────────────────────────────────
+
+#pragma comment(linker, "/EXPORT:Byovd_IsAvailable=Byovd_IsAvailable")
+BOOL __stdcall Byovd_IsAvailable()
+{
+    return (g_byovdDriver && g_byovdDriver->IsAvailable()) ? TRUE : FALSE;
+}
+
+#pragma comment(linker, "/EXPORT:Byovd_ReadPhysicalMemory=Byovd_ReadPhysicalMemory")
+BOOL __stdcall Byovd_ReadPhysicalMemory(uint64_t physicalAddr, uint8_t* buffer, uint32_t size)
+{
+    if (!g_byovdDriver || !g_byovdDriver->IsAvailable()) return FALSE;
+    return g_byovdDriver->ReadPhysicalMemory(physicalAddr, buffer, size) ? TRUE : FALSE;
+}
+
+#pragma comment(linker, "/EXPORT:Byovd_WritePhysicalMemory=Byovd_WritePhysicalMemory")
+BOOL __stdcall Byovd_WritePhysicalMemory(uint64_t physicalAddr, const uint8_t* buffer, uint32_t size)
+{
+    if (!g_byovdDriver || !g_byovdDriver->IsAvailable()) return FALSE;
+    return g_byovdDriver->WritePhysicalMemory(physicalAddr, buffer, size) ? TRUE : FALSE;
+}
+
+#pragma comment(linker, "/EXPORT:Byovd_ReadKernelMemory=Byovd_ReadKernelMemory")
+BOOL __stdcall Byovd_ReadKernelMemory(uint64_t kernelAddr, uint8_t* buffer, uint32_t size)
+{
+    if (!g_byovdDriver || !g_byovdDriver->IsAvailable()) return FALSE;
+    return g_byovdDriver->ReadKernelMemory(kernelAddr, buffer, size) ? TRUE : FALSE;
+}
+
+#pragma comment(linker, "/EXPORT:Byovd_WriteKernelMemory=Byovd_WriteKernelMemory")
+BOOL __stdcall Byovd_WriteKernelMemory(uint64_t kernelAddr, const uint8_t* buffer, uint32_t size)
+{
+    if (!g_byovdDriver || !g_byovdDriver->IsAvailable()) return FALSE;
+    return g_byovdDriver->WriteKernelMemory(kernelAddr, buffer, size) ? TRUE : FALSE;
 }

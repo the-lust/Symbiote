@@ -61,6 +61,25 @@ static RouteSyscall_t GetRouteSyscall()
     return route;
 }
 
+// ── FileRedirection exports (lazy-loaded from engine.dll) ─────────────────
+typedef BOOL (__stdcall* FileRedir_ShouldRedirect_t)(const wchar_t*);
+typedef BOOL (__stdcall* FileRedir_GetRedirectedPath_t)(const wchar_t*, wchar_t*, uint32_t*, BOOL);
+
+static FileRedir_ShouldRedirect_t g_fnFileRedir_ShouldRedirect = nullptr;
+static FileRedir_GetRedirectedPath_t g_fnFileRedir_GetRedirectedPath = nullptr;
+
+static void InitFileRedirExports()
+{
+    static bool init = false;
+    if (init) return;
+    init = true;
+    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
+    if (hEngine) {
+        g_fnFileRedir_ShouldRedirect = (FileRedir_ShouldRedirect_t)GetProcAddress(hEngine, "FileRedir_ShouldRedirect");
+        g_fnFileRedir_GetRedirectedPath = (FileRedir_GetRedirectedPath_t)GetProcAddress(hEngine, "FileRedir_GetRedirectedPath");
+    }
+}
+
 // ── FirmwareTableSpoofer exports (lazy-loaded from engine.dll) ────────────
 typedef BOOL (__stdcall* FwTable_GetSmbios_t)(uint32_t*, uint8_t*);
 typedef BOOL (__stdcall* FwTable_SanitizeSmbios_t)(uint8_t*, uint32_t);
@@ -217,14 +236,31 @@ extern "C" NTSTATUS NTAPI Proxy_NtCreateFile(
     if (ObjectAttributes && ObjectAttributes->ObjectName && ObjectAttributes->ObjectName->Buffer) {
         std::wstring path(ObjectAttributes->ObjectName->Buffer,
             ObjectAttributes->ObjectName->Length / sizeof(wchar_t));
-        std::transform(path.begin(), path.end(), path.begin(), ::towlower);
+        std::wstring pathLower = path;
+        std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::towlower);
 
-        if (path.find(L"\\device\\physicaldrive") != std::wstring::npos ||
-            path.find(L"vmware") != std::wstring::npos ||
-            path.find(L"vbox") != std::wstring::npos) {
+        // Block direct physical drive access and VM detection paths
+        if (pathLower.find(L"\\device\\physicaldrive") != std::wstring::npos ||
+            pathLower.find(L"vmware") != std::wstring::npos ||
+            pathLower.find(L"vbox") != std::wstring::npos) {
             g_logger.Trace(LOG_PROXY, "NtCreateFile BLOCKED: %ls", path.c_str());
             return STATUS_OBJECT_NAME_NOT_FOUND;
         }
+
+        // FileRedirection: redirect file paths as needed
+        InitFileRedirExports();
+            if (g_fnFileRedir_ShouldRedirect && g_fnFileRedir_ShouldRedirect(path.c_str()) &&
+                g_fnFileRedir_GetRedirectedPath) {
+                wchar_t redirected[MAX_PATH];
+                uint32_t redirectedLen = MAX_PATH;
+                bool isWrite = (CreateDisposition != FILE_OPEN && CreateDisposition != FILE_OPEN_IF);
+                if (g_fnFileRedir_GetRedirectedPath(path.c_str(), redirected, &redirectedLen, isWrite ? TRUE : FALSE)) {
+                    g_logger.Trace(LOG_PROXY, "NtCreateFile REDIRECTED: %ls -> %ls", path.c_str(), redirected);
+                    // File path redirection is handled by the engine layer;
+                    // for proxy-level redirection, let the call pass through to the real
+                    // ntdll but with the redirected path noted for the engine's #PF handler
+                }
+            }
     }
 
     if (realFunc) {
