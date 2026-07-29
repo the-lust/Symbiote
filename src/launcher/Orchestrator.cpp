@@ -122,8 +122,14 @@ PhaseResult Orchestrator::Phase1_ByovdDetect() {
         return r;
     }
 
-    // Allocate on heap (lifetime: whole run)
+    // Set drivers directory relative to launcher
+    wchar_t launcherDir[MAX_PATH];
+    GetModuleFileNameW(nullptr, launcherDir, MAX_PATH);
+    wchar_t* lastSlash = wcsrchr(launcherDir, L'\\');
+    if (lastSlash) *lastSlash = L'\0';
+
     ByovdDetect* det = new ByovdDetect();
+    det->SetDriversDir((std::wstring(launcherDir) + L"\\drivers").c_str());
     DetectedDriver dr = det->DetectAndOpen();
 
     if (dr.deviceHandle && dr.deviceHandle != INVALID_HANDLE_VALUE) {
@@ -134,7 +140,7 @@ PhaseResult Orchestrator::Phase1_ByovdDetect() {
         wcscpy_s(r.errorMsg, L"BYOVD driver opened");
     } else {
         r.success = false;
-        wcscpy_s(r.errorMsg, L"No BYOVD driver found");
+        wcscpy_s(r.errorMsg, L"No BYOVD driver found or installed");
         delete det;
     }
     return r;

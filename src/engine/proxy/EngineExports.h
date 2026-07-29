@@ -56,3 +56,11 @@ extern "C" {
 #define HWID_BIOS_VERSION         5
 #define HWID_BASEBOARD_SERIAL     6
 #define HWID_CHASSIS_SERIAL       7
+
+// Function address table API (replaces named exports)
+extern "C" {
+    // Build the export table at the given shared memory address (called at engine init)
+    void Engine_BuildExportTable(void* sharedMemAddr);
+    // Look up a function by its ID (used by proxy DLLs)
+    void* Engine_GetExport(uint32_t funcId);
+}
