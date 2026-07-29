@@ -72,6 +72,11 @@ public:
     void SetSystemSpoofer(SystemSpoofer* spoofer) { m_systemSpoofer = spoofer; }
     SystemSpoofer* GetSystemSpoofer() const { return m_systemSpoofer; }
 
+    // Snapshot checkpoint save/restore — grabs KernelLock, snapshots all VCPUs
+    std::vector<uint8_t> SaveCheckpoint();
+    bool RestoreCheckpoint(const std::vector<uint8_t>& data);
+    uint32_t GetActiveVcpuCount() const { return m_vcpuCount; }
+
     // Singleton access for ThreadBootstrapEntry (static thread proc)
     static VcpuManager* GetInstance() { return s_instance; }
 

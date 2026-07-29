@@ -337,3 +337,59 @@ bool MsrHandler::HandleMsrWrite(WHV_VP_EXIT_CONTEXT*, uint32_t msr, uint64_t val
 
     return true;
 }
+
+bool MsrHandler::Serialize(std::vector<uint8_t>& buffer) const
+{
+    auto put64 = [&](uint64_t v) {
+        buffer.insert(buffer.end(), (uint8_t*)&v, (uint8_t*)&v + 8);
+    };
+    auto put32 = [&](uint32_t v) {
+        buffer.insert(buffer.end(), (uint8_t*)&v, (uint8_t*)&v + 4);
+    };
+    put64(m_efer);
+    put64(m_star);
+    put64(m_lstar);
+    put64(m_cstar);
+    put64(m_sfMask);
+    put32(m_sceAlwaysTrue ? 1u : 0);
+    // Save tracked MSR count and entries
+    AcquireSRWLockShared(&m_trackedMsrsLock);
+    put32((uint32_t)m_trackedMsrs.size());
+    for (auto& kv : m_trackedMsrs) {
+        put32(kv.first);
+        put64(kv.second);
+    }
+    ReleaseSRWLockShared(&m_trackedMsrsLock);
+    return true;
+}
+
+bool MsrHandler::Deserialize(const uint8_t* data, size_t size)
+{
+    size_t offset = 0;
+    auto read64 = [&]() -> uint64_t {
+        if (offset + 8 > size) return 0;
+        uint64_t v; memcpy(&v, data + offset, 8); offset += 8; return v;
+    };
+    auto read32 = [&]() -> uint32_t {
+        if (offset + 4 > size) return 0;
+        uint32_t v; memcpy(&v, data + offset, 4); offset += 4; return v;
+    };
+    if (size < 8*5 + 4) return false;
+    m_efer = read64();
+    m_star = read64();
+    m_lstar = read64();
+    m_cstar = read64();
+    m_sfMask = read64();
+    m_sceAlwaysTrue = read32() != 0;
+    uint32_t count = read32();
+    AcquireSRWLockExclusive(&m_trackedMsrsLock);
+    m_trackedMsrs.clear();
+    for (uint32_t i = 0; i < count; i++) {
+        if (offset + 4 + 8 > size) break;
+        uint32_t msr = read32();
+        uint64_t val = read64();
+        m_trackedMsrs[msr] = val;
+    }
+    ReleaseSRWLockExclusive(&m_trackedMsrsLock);
+    return true;
+}

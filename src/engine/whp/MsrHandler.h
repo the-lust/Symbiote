@@ -127,4 +127,9 @@ private:
     bool IsValidMsr(uint32_t msr);
     uint64_t GetSpoofedMsr(uint32_t msr);
     uint64_t ComputeAperfDelta() const;
+
+public:
+    // Serialization for snapshot/restore
+    bool Serialize(std::vector<uint8_t>& buffer) const;
+    bool Deserialize(const uint8_t* data, size_t size);
 };

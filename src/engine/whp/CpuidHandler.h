@@ -51,4 +51,9 @@ private:
     bool m_hasBrandString;
     bool m_hasEnhancedBrand;
     char m_cpuVendor[16];
+
+public:
+    // Serialization for snapshot/restore
+    bool Serialize(std::vector<uint8_t>& buffer) const;
+    bool Deserialize(const uint8_t* data, size_t size);
 };

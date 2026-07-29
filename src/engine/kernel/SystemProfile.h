@@ -51,8 +51,23 @@ public:
     const char* GetGpuName() const { return m_gpuName.c_str(); }
     void SetGpu(uint32_t vendor, const char* name) { m_gpuVendor = vendor; m_gpuName = name ? name : ""; }
 
+    // Hybrid topology: CPUID leaf 0x1A
+    struct HybridTopology {
+        uint32_t nativeModelId = 0;  // EAX: native model ID + core type
+        uint32_t coreType = 0;       // ECX subleaf 0: 0=Intel Atom, 1=Intel Core
+        uint32_t subleaf1Eax = 0;    // subleaf 1: native model info
+        uint32_t subleaf1Ebx = 0;
+        uint32_t subleaf1Ecx = 0;
+        uint32_t subleaf1Edx = 0;
+        bool isHybrid = false;
+    };
+    HybridTopology GetHybridTopology() const { return m_hybridTopology; }
+    void SetHybridTopology(const HybridTopology& ht) { m_hybridTopology = ht; }
+    void LoadHybridFromConfig(ConfigParser* config);
+
     // Load predefined profiles
     void LoadIntelI9_10900K();
+    void LoadIntelI9_13900K();
     void LoadAmdRyzen9_5950X();
 
 private:
@@ -69,4 +84,5 @@ private:
 
     uint32_t m_gpuVendor = 0x1002; // AMD
     std::string m_gpuName;
+    HybridTopology m_hybridTopology;
 };

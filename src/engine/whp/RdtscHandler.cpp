@@ -272,3 +272,42 @@ bool RdtscHandler::HandleRdtscp(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* r
         realTsc, spoofedTsc, m_vpIndex, (int)m_counterRunning.load());
     return true;
 }
+
+bool RdtscHandler::Serialize(std::vector<uint8_t>& buffer) const
+{
+    // Save TSC offset, frequency, noise config, and last pre-exit TSC
+    auto put64 = [&](uint64_t v) {
+        buffer.insert(buffer.end(), (uint8_t*)&v, (uint8_t*)&v + 8);
+    };
+    auto put32 = [&](uint32_t v) {
+        buffer.insert(buffer.end(), (uint8_t*)&v, (uint8_t*)&v + 4);
+    };
+    put64(m_tscOffset);
+    put64(m_tscFrequency);
+    put64(m_lastPreExitTsc);
+    put32(m_noiseEnabled ? 1u : 0);
+    put32(m_noiseAmplitude);
+    put32(m_vpIndex);
+    return true;
+}
+
+bool RdtscHandler::Deserialize(const uint8_t* data, size_t size)
+{
+    size_t offset = 0;
+    auto read64 = [&]() -> uint64_t {
+        if (offset + 8 > size) return 0;
+        uint64_t v; memcpy(&v, data + offset, 8); offset += 8; return v;
+    };
+    auto read32 = [&]() -> uint32_t {
+        if (offset + 4 > size) return 0;
+        uint32_t v; memcpy(&v, data + offset, 4); offset += 4; return v;
+    };
+    if (size < 8 + 8 + 8 + 4 + 4 + 4) return false;
+    m_tscOffset = read64();
+    m_tscFrequency = read64();
+    m_lastPreExitTsc = read64();
+    m_noiseEnabled = read32() != 0;
+    m_noiseAmplitude = read32();
+    m_vpIndex = read32();
+    return true;
+}

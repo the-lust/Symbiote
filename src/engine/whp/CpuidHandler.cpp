@@ -246,6 +246,19 @@ void CpuidHandler::GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count,
     // Leaf 0xA: PMU — zeroed
     add(0xA, 0, 0, 0, 0, 0);
 
+    // Leaf 0x1A: Hybrid topology — from backend or zero (non-hybrid CPU)
+    CpuidResult cr1a;
+    if (m_backend && m_backend->HandleCpuid(0x1A, 0, cr1a)) {
+        add(0x1A, 0, cr1a.eax, cr1a.ebx, cr1a.ecx, cr1a.edx);
+    } else {
+        add(0x1A, 0, 0, 0, 0, 0);
+    }
+    if (m_backend && m_backend->HandleCpuid(0x1A, 1, cr1a)) {
+        add(0x1A, 1, cr1a.eax, cr1a.ebx, cr1a.ecx, cr1a.edx);
+    } else {
+        add(0x1A, 1, 0, 0, 0, 0);
+    }
+
     // Leaves 0x80000000-0x80000008 (extended): from backend or generic
     if (m_backend && m_backend->HandleCpuid(0x80000000, 0, cr)) {
         add(0x80000000, 0, cr.eax, cr.ebx, cr.ecx, cr.edx);
@@ -358,6 +371,15 @@ void CpuidHandler::GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results
                     (uint32_t)cpuInfo[2], (uint32_t)cpuInfo[3]);
             }
         }
+        if (leaf == 0x1A) {
+            __cpuidex(cpuInfo, leaf, 1);
+            uint32_t seax = (uint32_t)cpuInfo[0];
+            uint32_t sebx = (uint32_t)cpuInfo[1];
+            uint32_t secx = (uint32_t)cpuInfo[2];
+            uint32_t sedx = (uint32_t)cpuInfo[3];
+            ApplyFeatureMask(leaf, 1, m_cpuVendor, &seax, &sebx, &secx, &sedx);
+            add(leaf, 1, seax, sebx, secx, sedx);
+        }
     }
 
     // Extended leaves 0x80000000-0x800000FF
@@ -390,4 +412,49 @@ void CpuidHandler::GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results
 
     *count = idx;
     m_logger->Trace(LOG_WHP, "Comprehensive CpuidResultList populated: %d leaves (all leaves pre-cached, no VM-exits)", idx);
+}
+
+bool CpuidHandler::Serialize(std::vector<uint8_t>& buffer) const
+{
+    uint32_t brandLen = (uint32_t)strnlen_s(m_brandString, sizeof(m_brandString));
+    uint32_t enhBrandLen = (uint32_t)strnlen_s(m_enhancedBrand, sizeof(m_enhancedBrand));
+    auto put32 = [&](uint32_t v) {
+        buffer.insert(buffer.end(), (uint8_t*)&v, (uint8_t*)&v + 4);
+    };
+    put32(brandLen);
+    buffer.insert(buffer.end(), (uint8_t*)m_brandString, (uint8_t*)m_brandString + brandLen);
+    put32(enhBrandLen);
+    buffer.insert(buffer.end(), (uint8_t*)m_enhancedBrand, (uint8_t*)m_enhancedBrand + enhBrandLen);
+    uint32_t flags = (m_hasBrandString ? 1u : 0) | (m_hasEnhancedBrand ? 2u : 0);
+    put32(flags);
+    return true;
+}
+
+bool CpuidHandler::Deserialize(const uint8_t* data, size_t size)
+{
+    size_t offset = 0;
+    auto read32 = [&]() -> uint32_t {
+        if (offset + 4 > size) return 0;
+        uint32_t v;
+        memcpy(&v, data + offset, 4);
+        offset += 4;
+        return v;
+    };
+    if (size < 4) return false;
+    uint32_t brandLen = read32();
+    if (brandLen >= sizeof(m_brandString)) return false;
+    if (offset + brandLen > size) return false;
+    memcpy(m_brandString, data + offset, brandLen);
+    m_brandString[brandLen] = 0;
+    offset += brandLen;
+    uint32_t enhBrandLen = read32();
+    if (enhBrandLen >= sizeof(m_enhancedBrand)) return false;
+    if (offset + enhBrandLen > size) return false;
+    memcpy(m_enhancedBrand, data + offset, enhBrandLen);
+    m_enhancedBrand[enhBrandLen] = 0;
+    offset += enhBrandLen;
+    uint32_t flags = read32();
+    m_hasBrandString = (flags & 1) != 0;
+    m_hasEnhancedBrand = (flags & 2) != 0;
+    return true;
 }

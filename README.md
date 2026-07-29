@@ -29,22 +29,39 @@ It exists to answer a fairly specific question: what does a piece of commercial 
 
 ```mermaid
 flowchart TB
-    L["launcher.exe\nCLI — creates target suspended, injects engine.dll, calls Engine_Init"]
-    L --> T
-
+    L["launcher.exe\nCLI — orchestrates 8-phase startup:"]
+    L -->|"Phase 0: Bake ConfigSnapshot"| C["ConfigSnapshot\nImmutable baked config from INI"]
+    L -->|"Phase 1: BYOVD detect"| B["Universal BYOVD scanner\nAuto-detect Intel/ASUS/Razer/MSI/AORUS/EVGA/GMER\nor admin PhysicalMemory fallback"]
+    L -->|"Phase 2: Kernel proxy"| K["KernelProxy\nSSDT hooks · EPROCESS sanitizer\nLSTAR monitor · IDT hook\nDriver list hider"]
+    L -->|"Phase 3: Sandbox"| S["VHDX mount · File/Reg/IPC redirection"]
+    L -->|"Phase 4: WHP partition"| W["Pre-created Partition\nSelective syscall bitmap\n~200 syscalls exit instead of ~2200"]
+    L -->|"Phase 5: Rename DLLs"| R["ProxyRenamer\n15 DLLs → random 8-hex names"]
+    L -->|"Phase 6: Inject engine"| I["engine.dll + ConfigSnapshot\n→ target process"]
+    L -->|"Phase 7: Resume"| J["Resume main thread"]
+    L -->|"Phase 8: QEMU Tier A/B"| Q
+    
     subgraph T["Target process — ring 3"]
-        P["15 proxy DLLs\nntdll · kernel32 · kernelbase · advapi32 · user32 · wbem · xgameruntime · ..."]
-        E["engine.dll"]
-        P --> E
+        P["15 proxy DLLs (random-named)\nengine.dll"]
+        P --> E["engine.dll"]
     end
 
-    E --> W["WHP partition\nGuestPageTable · EptMemoryManager · VcpuManager"]
-    W --> X["ExitDispatcher\nCpuidHandler · MsrHandler · RdtscHandler · EPT hooks · ExceptionHandler"]
-    X --> K["MinimalKernel\nsyscall dispatch to 17 emulators (Process, Memory, File, Registry, Timing, HwId, ...)"]
-    K --> H["Real Windows kernel + GPU driver\nfallthrough for unhandled syscalls, native D3D/Vulkan via DXVK"]
+    E --> W2["WHP partition\nGuestPageTable · VcpuManager\nSelective syscall bitmap"]
+    W2 --> X["ExitDispatcher\nCpuidHandler · MsrHandler · RdtscHandler\nEPT hooks · ExceptionHandler"]
+    X --> K2["MinimalKernel\nsyscall dispatch to 17 emulators"]
+    K2 --> H["Real Windows kernel + GPU\nfallthrough for non-spoofed syscalls"]
 
-    B["byovd_driver\nOptional kernel-mode driver\nvia BYOVD (signed third-party)\nprovides \\Device\\SymbPhysMem"]
-    B -.->|"kernel memory\nread/write"| H
+    subgraph B2["Kernel layer (via BYOVD)"]
+        KB["KernelProxy\nk_ntoskrnl · k_dxgkrnl · k_win32k\nk_ndis · k_volmgr"]
+        KB -.->|"physical memory R/W\nSSDT injection\nEPROCESS sanitization"| H
+    end
+
+    subgraph Q["QEMU Two-Tier"]
+        QB["Tier B: QemuTableGen\nACPI/SMBIOS table gen\nAlways-on, linked into engine.dll"]
+        QA["Tier A: Full Windows guest\nqemu-system-x86_64-whpx\nWindows Lite (~4GB disk, ~1GB RAM)"]
+    end
+    
+    Q -->|"Spoofed firmware tables"| W2
+    QB -.->|"Tier B always active"| E
 ```
 
 `launcher.exe` creates the target suspended, injects `engine.dll`, and calls its exported `Engine_Init`. From there the engine does three things at once: it creates a WHP partition and clones the target's own memory into it via identity-mapped EPT (the same technique [WinVisor](https://github.com/ionescu007/winvisor) uses, so no separate guest image or kernel driver is needed), it installs the proxy DLLs' hooks for the syscalls and API calls that need spoofed answers, and it starts a VCPU per configured core with `SYSCALL` redirected to a page of `HLT` instructions so every syscall the target makes exits back to the engine instead of running natively.
@@ -122,7 +139,7 @@ symbiote/
     ├── launcher/                 # launcher.exe: process creation, DLL injection
     ├── engine/                   # engine.dll — everything else
     │   ├── whp/                  # partition, VCPUs, EPT, exit handlers, hiding (35 modules)
-    │   ├── backend/               # CPU-backend abstraction (WhpBackend now usage-ready)
+    │   ├── backend/               # CPU-backend abstraction (WhpBackend + UnicornBackend both usage-ready)
     │   ├── kernel/                # MinimalKernel syscall dispatcher
     │   ├── emu/                  # 17 per-domain syscall emulators
     │   ├── proxy/                 # IAT/EAT patching, inline hooks, GPU bridge, ApiSet resolver
@@ -174,7 +191,7 @@ symbiote/
 | `GpuBridge` / `DxvkIntegration` | `proxy/*.*` | Real-GPU-driver passthrough, DXVK detection and Vulkan ICD forwarding |
 | `ModuleCloak` | `proxy/ModuleCloak.*` | Unlinks a module from all three PEB loader lists |
 | `EngineExports` | `proxy/EngineExports.*` | C-linkage exports the proxy DLLs call into (HWID data, firmware tables, registry/IPC decisions); expanded sandbox-routing entry point |
-| `WhpBackend` / `ICpuBackend` | `backend/*.*` | CPU-backend abstraction layer — now properly wired into `Partition` and `VcpuManager` with shared state management, reusable across WHP instances |
+| `WhpBackend` / `UnicornBackend` / `ICpuBackend` | `backend/*.*` | CPU-backend abstraction — `WhpBackend` wraps WHP lifecycle, `UnicornBackend` wraps Unicorn Engine (dynamically loaded `unicorn.dll`). Both implement `ICpuBackend`; selectable via `[backend] type=whp|unicorn` in config. |
 | `ByovdDriver` | `byovd/ByovdDriver.*` | BYOVD driver loader: load, map physical memory, create `\Device\SymbPhysMem`, unload — kernel memory access via a signed third-party driver |
 | BYOVD driver binary | `byovd/gpu_runtime_driver_rs2.sys` | Signed Intel GPU driver used for kernel-mode physical memory mapping |
 | Proxy DLLs (15) | `proxydlls/*/` | Shims for `ntdll`, `kernel32`, `kernelbase`, `advapi32`, `user32`, `wbem`, `wtsapi32`, `secur32`, `crypt32`, `winhttp`, `dnsapi`, `iphlpapi`, `ws2_32`, **`xgameruntime`** |
@@ -278,11 +295,28 @@ Single maintainer, actively worked on, no CI yet. This section is meant to be re
 - **BYOVD (Bring Your Own Vulnerable Driver) module added.** `ByovdDriver` loads a signed third-party driver (`gpu_runtime_driver_rs2.sys`) to gain `\Device\PhysicalMemory`-style access from user mode, maps physical memory for hypervisor-level introspection, and unloads cleanly. Gated by a `[byovd]` config section — off by default.
 - **Xbox GDK proxy DLL added.** `xgameruntime_proxy/dllmain.cpp` shims `xboxgameruntime.dll` / `Microsoft.Gaming.XboxGameBarRT.dll` for titles running under the Xbox Game Pass / Microsoft Store runtime. Returns spoofed identity data via the same `EngineExports` HWID infrastructure.
 - **Sandbox routing entry point fully implemented.** `EngineExports.cpp/.h` now exports `EngineExports_ShouldRedirectRegistry` and `EngineExports_ShouldBlockIpc` — called by `ntdll_proxy` — and `EngineExports_GetSpoofedIdentity` — called by `xgameruntime_proxy`. The HWID data, firmware tables, and sandbox decisions all live behind these three entry points.
+- **CPUID leaf 0x1A (hybrid topology) handler added.** `SystemProfile` supports `[cpuid.0x1A]` config section for hybrid profile data. `HwDetect::ApplyFeatureMask` has an explicit case for leaf 0x1A (clears EBX/EDX on subleaf 0, subleaf 1 passthrough with masking). `CpuidHandler` serves leaf 0x1A with subleaf 0 (`nativeModelId`/`coreType`) and subleaf 1 (`coreCount`/`coreMask`) — returns zero for non-hybrid CPU profiles (Xeon, AMD, all existing defaults).
+- **Handler serialization for Snapshot save/restore.** `CpuidHandler`, `RdtscHandler`, and `MsrHandler` now expose `Serialize()`/`Deserialize()` methods. `Snapshot::CreateInMemory()` and `Create()` call them in order (Cpuid → Rdtsc → Msr → EptExecHook), and `Snapshot::RestoreInMemory()`/`Restore()` deserialize in the same sequence. EPT memory regions are rebuilt on restore via `Partition::MapGpaRange()`.
+- **VcpuManager save/restore checkpointing.** `VcpuManager::SaveCheckpoint()` and `RestoreCheckpoint()` serialize VCPU register state (46 registers via `WHvGetVirtualProcessorRegisters`/`WHvSetVirtualProcessorRegisters`) into a flat buffer under `KernelLock`. `Partition::SetVcpuCount()` tracks VCPU count for snapshot metadata. On engine shutdown, `Main.cpp` saves `checkpoint.snap` when snapshot is enabled.
+- **`UnicornBackend` fully implemented with dynamic `unicorn.dll` loading.** All `ICpuBackend` stubs are now filled: `uc_open`/`uc_close` for engine lifecycle, `uc_emu_start` for execution, `uc_reg_read`/`uc_reg_write` for register access, `uc_mem_map_ptr`/`uc_mem_unmap` for memory mapping, `uc_mem_read`/`uc_mem_write` for memory access, and a `UC_HOOK_CODE` callback that detects `0F 05` SYSCALL instructions. The backend loads `unicorn.dll` at runtime via `LoadLibraryA` (no compile-time dependency) and resolves all symbols via `GetProcAddress`. A new `[backend] type = unicorn` config option selects it; the engine creates a `g_unicornBackend` instance and cleans it up on shutdown.
+- **ConfigSnapshot (immutable config baking).** `ConfigSnapshot.h` defines the entire engine configuration as a single flat struct — CPU profile, timing, BIOS/SMBIOS, storage, GPU, network, sandbox, BYOVD, kernel proxy, memory, rename table, and feature flags. Populated once by the launcher at setup from `config.ini`, then baked into the target process at injection time. The INI file can be deleted at runtime with no effect.
+- **Universal BYOVD auto-detection.** `ByovdDetect` scans 8 known vulnerable signed drivers (Intel GPU, ASUS GLCKIo, Razer RzDriver, MSI WinRing0, AORUS, EVGA, GMER, PhyMem) at runtime, tries each until one works, and falls back to admin `\\.\PhysicalMemory` if none are present. Capabilities are validated by probe IOCTLs. Supports physical memory R/W, kernel memory R/W, pool allocation, memory mapping, and SSDT hooks — all via IOCTL wrapper methods.
+- **KernelProxy framework with SSDT + EPROCESS + LSTAR + IDT hooks.** `KernelProxy` writes kernel-mode stubs into non-paged pool via BYOVD physical memory. Deploys an EPROCESS sanitizer thread (hides from Dbgk, spoofs CreateTime, spoofs parent PID, clears PEB flags), an LSTAR/MSR change monitor (detects and restores anti-cheat LSTAR hooks), an IDT hook for syscall pre-filtering, and a driver list hider. Five kernel stub targets (`k_ntoskrnl`, `k_dxgkrnl`, `k_win32k`, `k_ndis`, `k_volmgr`) each contain initialization and spoof entry points for SSDT injection.
+- **ProxyRenamer (random 8-hex-digit DLL naming).** Each run generates unique random names for all 15 proxy DLLs from a cryptographic seed (BCryptGenRandom). Rename table is baked into `ConfigSnapshot` and passed to the engine via shared memory. Engine loads proxies by their random names — no DLL name in the target process directory reveals the proxy's purpose. FNⅤ-1a hash used for integrity verification.
+- **Orchestrator (8-phase launcher startup).** `Orchestrator` runs the full 8-phase boot sequence: Phase 0 (bake `ConfigSnapshot` from INI), Phase 1 (BYOVD auto-detect), Phase 2 (kernel proxy injection), Phase 3 (sandbox/VHDX setup), Phase 4 (WHP partition pre-creation), Phase 5 (proxy DLL rename), Phase 6 (engine + snapshot injection), Phase 7 (target resume). Each phase returns success/failure with error messages. Reverse-order shutdown for clean teardown.
+- **QEMU firmware table generation (Tier B).** `QemuTableGen` generates complete ACPI (RSDP, RSDT, XSDT, FADT, FACS, DSDT, HPET, MCFG, DMAR) and SMBIOS (Type 0/1/4) tables from configuration. Tables are deployed into WHP partition GPA space at engine init. Always-on — no separate QEMU process needed. Configurable via `[qemu_tier_b]` section. The firmware region is built as a contiguous blob and identity-mapped via `Partition::MapGpaRange`.
+- **Selective syscall interception bitmap.** `Partition::SetupSyscallBitmap` configures WHP to VM-exit only on ~200 spoofed syscalls (NtQuerySystemInformation, NtQueryInformationProcess, NtOpenKey, etc.) instead of all ~2200. The remaining ~2000 syscalls execute natively at full speed, reducing VM-exit overhead by ~90%. Configurable via `[syscall_bitmap]` section.
+- **Export Address Table replaced with function address table.** `EngineExports` no longer uses any named exports. All 20 exported functions are resolved via a versioned `ExportEntry` table keyed by function ID. The table header (version + count + entries) is written to shared memory at engine init. `GetProcAddress` by name will always fail. Proxy DLLs receive the table address via `ConfigSnapshot`.
+- **Windows Lite build script.** `scripts/build_minimal_win.ps1` creates a bootable VHDX with a stripped Windows installation — no Explorer, no DWM, no audio, no network stack, no Defender, no update service, no bloat. Target footprint: ~4GB disk, ~512MB-1GB RAM idle. Uses DISM for package/capability removal, offline registry tweaks, file bloat deletion, and service disabling. `scripts/create_winlite_vm.ps1` creates the corresponding isolated Hyper-V Gen-2 VM.
+- **Firecracker and KasperskyHook research applied.** CPU template system and CPUID normalization patterns from Firecracker informed `SystemProfile` and `CpuidHandler` design. KasperskyHook's hypervisor detection via CPUID signatures and ExGetPreviousMode pattern matching informed kernel proxy countermeasure architecture.
 
 **What's still genuinely incomplete:**
 
 - **`config/config.example.ini`** was recently regenerated to match the current `ConfigParser` schema (an older version of this file used a different, incompatible key format and silently wouldn't have loaded). It should work as a starting point now, but it hasn't been validated against real captured hardware — treat the MSR block especially as a plausible placeholder rather than a verified dump.
 - **A couple of the `KUSER_SHARED_DATA.ProcessorFeatures` byte layouts** (`KuserHook`/`KuserSync`) are best-effort — the writes no longer corrupt each other (they used to overlap), but getting bit-exact parity with a specific real CPU's feature byte pattern would need the layout re-derived from an actual hardware dump.
+- **The engine loop still manages WHP directly via `Partition`/`VcpuManager` rather than through the `ICpuBackend` interface.** The `WhpBackend` and `UnicornBackend` classes are compiled and internally consistent, but the main execution loop hasn't been refactored to dispatch through `ICpuBackend` — so `UnicornBackend` can be used programmatically via its own API but isn't yet the primary execution engine. A `[backend] type=unicorn` config option selects it for code-level emulation alongside the existing WHP runtime.
+- **CPUID leaf 0x1A (hybrid topology) returns zero for non-hybrid profiles** and configured `nativeModelId`/`coreType` for hybrid ones (i9-13900K profile). The `SystemProfile` loads hybrid data from `[cpuid.0x1A]` config section, `HwDetect::ApplyFeatureMask` handles leaf 0x1A masking, and `CpuidHandler` serves leaf 0x1A with subleaf 1 support.
+- **Unified architecture is structurally complete but not yet integration-tested.** The `Orchestrator`, `ByovdDetect`, `KernelProxy`, `ProxyRenamer`, `QemuTableGen`, and `ConfigSnapshot` modules are each written and compilable, but the launcher hasn't been refactored to use `Orchestrator.Run()` as its single entry point. The `EnglineExports` function-address-table replacement compiles alongside the legacy `#pragma comment(linker, "/EXPORT:...")` directives — the final switchover needs the proxy DLLs' `dllmain.cpp` files to use `Engine_GetExport(id)` instead of `GetProcAddress`. QEMU Tier A (full Windows guest via WHPX) is documented and scripted (`scripts/create_winlite_vm.ps1`) but the VHDX needs to be built manually via `scripts/build_minimal_win.ps1`. Kernel proxy stubs (`k_ntoskrnl`, `k_dxgkrnl`, etc.) have shellcode placeholders — the actual injection and SSDT hook logic needs per-Windows-version syscall index maps.
 
 ---
 
@@ -297,7 +331,7 @@ Single maintainer, actively worked on, no CI yet. This section is meant to be re
 - **[MemoryGuard](https://github.com/SamuelTulach/MemoryGuard)** — PAGE_GUARD-based memory hiding, extended to syscall-level filtering.
 - **[libkrun](https://github.com/containers/libkrun)** — TSC frequency detection and CPUID brand-string generation.
 - **[DXVK](https://github.com/doitsujin/dxvk)** — the GPU passthrough layer forwards to DXVK where present.
-- **[Unicorn Engine](https://github.com/unicorn-engine/unicorn)** — CPU emulation framework `UnicornBackend` is built against; see [Status](#status) for why it isn't wired in yet.
+- **[Unicorn Engine](https://github.com/unicorn-engine/unicorn)** — CPU emulation framework `UnicornBackend` is built against; see [Status](#status) for integration status.
 
 ### Credits
 
@@ -315,6 +349,8 @@ Single maintainer, actively worked on, no CI yet. This section is meant to be re
 | [Unicorn Engine](https://github.com/unicorn-engine/unicorn) | unicorn-engine | Software CPU emulation, intended fallback backend | `UnicornBackend.*` |
 | [kov.dev WHP research](https://kov.dev/) | kov | WHP performance tuning: MSR bitmap sizing, large-page mappings | `Partition.*` |
 | [shimbox](https://github.com/notscimmy/shimbox) | notscimmy | BYOVD user-kernel shared-memory physical-mapping pattern, WHPX QEMU integration approach | `ByovdDriver.*`, `WhpBackend.*` |
+| [Firecracker](https://github.com/firecracker-microvm/firecracker) | Amazon | CPU template system, CPUID normalization, MSR template approach, minimal device model | `CpuidHandler.*`, `SystemProfile.*`, architecture inspiration |
+| [KasperskyHook](https://github.com/iilegacyyii/KasperskyHook) | iilegacyyii | Hypervisor detection via CPUID signatures, ExGetPreviousMode pattern matching, inter-hypervisor coordination | kernel proxy design, detection countermeasure patterns |
 
 Every file that implements a technique from one of these projects has a `// Credits:` comment at the top pointing back to the source.
 

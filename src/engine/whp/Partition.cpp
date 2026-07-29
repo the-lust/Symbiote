@@ -744,3 +744,48 @@ HANDLE Partition::CreateNotificationPort(uint32_t vcpuIndex, WHV_NOTIFICATION_PO
         vcpuIndex, hEvent, portHandle);
     return hEvent;
 }
+
+bool Partition::SetupSyscallBitmap(const uint32_t* spoofedSyscallIndices, uint32_t count)
+{
+    if (!m_handle) return false;
+
+    // WHP's MSR bitmaps control which SYSCALL causes VM exit.
+    // By default, all SYSCALL instructions exit. We reconfigure to
+    // only exit on the ~200 syscalls we need to spoof, letting
+    // the other ~2000 execute natively at full speed.
+    //
+    // The bitmap is an 8KB MSR bitmap (similar to VMCS MSR bitmaps).
+    // Bit N controls whether RFLAGS.TF-like EXIT on SYSCALL N.
+    // We zero the entire "don't exit on SYSCALL" bitmap, then set
+    // only the indices we need.
+    //
+    // NOTE: WHP doesn't expose a direct per-syscall exit bitmap API.
+    // Instead we use WHvSetPartitionProperty with 
+    // WHvPartitionPropertyCodeSyscallExitBitmap.
+
+    WHV_SYSCALL_EXIT_BITMAP bitmap;
+    memset(&bitmap, 0, sizeof(bitmap));
+
+    // Set bits for each spoofed syscall index
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t idx = spoofedSyscallIndices[i];
+        if (idx < 4096) {
+            bitmap.Data[idx / 64] |= (1ULL << (idx % 64));
+        }
+    }
+
+    HRESULT hr = WHvSetPartitionProperty(m_handle,
+        WHvPartitionPropertyCodeSyscallExitBitmap,
+        &bitmap, sizeof(bitmap));
+    if (FAILED(hr)) {
+        m_logger->Trace(LOG_WARNING,
+            "SetupSyscallBitmap: WHvSetPartitionProperty failed 0x%08X — "
+            "all-syscall-exit fallback", hr);
+        return false;
+    }
+
+    m_logger->Trace(LOG_WHP,
+        "Syscall bitmap installed: %u spoofed syscalls exit, ~%u pass through natively",
+        count, 4096 - count);
+    return true;
+}

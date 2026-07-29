@@ -108,4 +108,9 @@ private:
 
     uint32_t LcgNext(uint32_t seed);
     uint64_t AddTimingNoise(uint64_t tsc);
+
+public:
+    // Serialization for snapshot/restore
+    bool Serialize(std::vector<uint8_t>& buffer) const;
+    bool Deserialize(const uint8_t* data, size_t size);
 };

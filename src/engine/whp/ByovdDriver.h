@@ -74,6 +74,12 @@ private:
 
     uint64_t m_kernelBase = 0;
     uint64_t FindKernelBase();
+
+    // Kernel proxy IOCTL wrappers (for pool alloc, virt mapping, SSDT)
+    bool AllocateKernelPool(uint64_t size, uint64_t* outPhysAddr);
+    bool FreeKernelPool(uint64_t physAddr);
+    bool MapKernelMemory(uint64_t physAddr, uint64_t size, void** outVa);
+    bool UnmapKernelMemory(void* va);
 };
 
 extern ByovdDriver* g_byovdDriver;

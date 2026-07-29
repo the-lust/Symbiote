@@ -121,10 +121,6 @@ std::vector<uint8_t> Snapshot::CreateInMemory(Partition* partition,
                                                MsrHandler* msrHandler,
                                                EptExecHook* eptExecHook)
 {
-    (void)cpuidHandler;
-    (void)rdtscHandler;
-    (void)msrHandler;
-
     if (!partition) return {};
 
     HANDLE hPartition = partition->GetHandle();
@@ -141,8 +137,7 @@ std::vector<uint8_t> Snapshot::CreateInMemory(Partition* partition,
     std::vector<uint8_t> snapshot(totalSize, 0);
 
     SnapshotHeader* header = (SnapshotHeader*)snapshot.data();
-    memcpy(header->magic, "SYMBIOTE", 8); // fills all 8 bytes — no room for/need of a NUL here,
-                                           // ValidateHeader compares the full 8-byte field
+    memcpy(header->magic, "SYMBIOTE", 8);
     header->version = kSnapshotVersion;
     header->numVcpus = numVcpus;
     header->numMemoryRegions = 0;
@@ -158,8 +153,12 @@ std::vector<uint8_t> Snapshot::CreateInMemory(Partition* partition,
         offset += written;
     }
 
+    // Serialize handler state — CpuidHandler, RdtscHandler, MsrHandler, then EptExecHook
     size_t handlerOffset = offset;
     offset += sizeof(uint32_t);
+    if (cpuidHandler) cpuidHandler->Serialize(snapshot);
+    if (rdtscHandler) rdtscHandler->Serialize(snapshot);
+    if (msrHandler) msrHandler->Serialize(snapshot);
     if (eptExecHook) {
         eptExecHook->Serialize(snapshot);
     }
@@ -182,9 +181,6 @@ bool Snapshot::RestoreInMemory(const std::vector<uint8_t>& snapshotData,
                                 MsrHandler* msrHandler,
                                 EptExecHook* eptExecHook)
 {
-    (void)cpuidHandler;
-    (void)rdtscHandler;
-    (void)msrHandler;
     if (!ValidateHeader(snapshotData.data(), snapshotData.size())) return false;
     if (!partition) return false;
 
@@ -213,11 +209,26 @@ bool Snapshot::RestoreInMemory(const std::vector<uint8_t>& snapshotData,
         }
     }
 
+    // Deserialize handler state — same order as serialization
     if (offset + sizeof(uint32_t) <= snapshotData.size()) {
         uint32_t handlerSize = *(const uint32_t*)(snapshotData.data() + offset);
         offset += sizeof(uint32_t);
-        if (handlerSize > 0 && eptExecHook && offset + handlerSize <= snapshotData.size()) {
-            eptExecHook->Deserialize(snapshotData.data() + offset, handlerSize);
+        if (handlerSize > 0) {
+            const uint8_t* hData = snapshotData.data() + offset;
+            size_t hRemain = (offset + handlerSize <= snapshotData.size()) ? handlerSize : (snapshotData.size() - offset);
+            size_t hOffset = 0;
+            if (hRemain > 0 && cpuidHandler) {
+                hOffset += cpuidHandler->Deserialize(hData + hOffset, hRemain - hOffset);
+            }
+            if (hRemain > hOffset && rdtscHandler) {
+                hOffset += rdtscHandler->Deserialize(hData + hOffset, hRemain - hOffset);
+            }
+            if (hRemain > hOffset && msrHandler) {
+                hOffset += msrHandler->Deserialize(hData + hOffset, hRemain - hOffset);
+            }
+            if (hRemain > hOffset && eptExecHook) {
+                eptExecHook->Deserialize(hData + hOffset, hRemain - hOffset);
+            }
         }
     }
 
@@ -306,9 +317,12 @@ std::vector<uint8_t> Snapshot::Create(Partition* partition,
         offset += sizeof(uint64_t) * 2; // gpa + size
     }
 
-    // Handler data: serialize EptExecHook state
+    // Handler data: serialize CpuidHandler, RdtscHandler, MsrHandler, then EptExecHook
     size_t handlerOffset = offset;
     offset += sizeof(uint32_t); // placeholder for size
+    if (cpuidHandler) cpuidHandler->Serialize(snapshot);
+    if (rdtscHandler) rdtscHandler->Serialize(snapshot);
+    if (msrHandler) msrHandler->Serialize(snapshot);
     if (eptExecHook) {
         eptExecHook->Serialize(snapshot);
     }
@@ -336,9 +350,6 @@ bool Snapshot::Restore(const std::vector<uint8_t>& snapshotData,
                        MsrHandler* msrHandler,
                        EptExecHook* eptExecHook)
 {
-    (void)cpuidHandler;
-    (void)rdtscHandler;
-    (void)msrHandler;
     if (!ValidateHeader(snapshotData.data(), snapshotData.size())) {
         m_logger->Trace(LOG_ERROR, "Snapshot: restore failed — invalid header");
         return false;
@@ -379,21 +390,48 @@ bool Snapshot::Restore(const std::vector<uint8_t>& snapshotData,
         }
     }
 
-    // Memory regions — skip (EPT state is rebuilt on demand by MapDynamicPage)
-    // In a full implementation, we would re-map all regions here.
-    offset += header->numMemoryRegions * (sizeof(MemoryRegionBlock) - 1 + sizeof(uint64_t) * 2);
+    // Memory regions — rebuild EPT mappings from saved metadata
+    for (uint32_t i = 0; i < header->numMemoryRegions; i++) {
+        if (offset + sizeof(uint64_t) * 2 + sizeof(uint32_t) > snapshotData.size()) break;
+        const MemoryRegionBlock* block = (const MemoryRegionBlock*)(snapshotData.data() + offset);
+        uint64_t gpa = block->gpa;
+        uint64_t size = block->size;
+        uint32_t flags = block->flags;
+        // Re-map: allocate host VA, copy saved content, map into guest
+        void* hostVa = VirtualAlloc(NULL, (SIZE_T)size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (hostVa) {
+            // Content follows the fixed header
+            const uint8_t* content = snapshotData.data() + offset + sizeof(MemoryRegionBlock) - 1;
+            memcpy(hostVa, content, (size_t)size);
+            partition->MapGpaRange(hostVa, gpa, size, (WHV_MAP_GPA_RANGE_FLAGS)(uint32_t)flags);
+        }
+        offset += sizeof(MemoryRegionBlock) - 1 + (size_t)size;
+    }
 
-    // Handler data — deserialize EptExecHook state
+    // Handler data — deserialize all handler state
     if (offset + sizeof(uint32_t) <= snapshotData.size()) {
         uint32_t handlerSize = *(const uint32_t*)(snapshotData.data() + offset);
         offset += sizeof(uint32_t);
-        if (handlerSize > 0 && eptExecHook && offset + handlerSize <= snapshotData.size()) {
-            eptExecHook->Deserialize(snapshotData.data() + offset, handlerSize);
+        if (handlerSize > 0) {
+            const uint8_t* hData = snapshotData.data() + offset;
+            size_t hRemain = (offset + handlerSize <= snapshotData.size()) ? handlerSize : (snapshotData.size() - offset);
+            size_t hOffset = 0;
+            if (hRemain > 0 && cpuidHandler) {
+                hOffset += cpuidHandler->Deserialize(hData + hOffset, hRemain - hOffset);
+            }
+            if (hRemain > hOffset && rdtscHandler) {
+                hOffset += rdtscHandler->Deserialize(hData + hOffset, hRemain - hOffset);
+            }
+            if (hRemain > hOffset && msrHandler) {
+                hOffset += msrHandler->Deserialize(hData + hOffset, hRemain - hOffset);
+            }
+            if (hRemain > hOffset && eptExecHook) {
+                eptExecHook->Deserialize(hData + hOffset, hRemain - hOffset);
+            }
         }
-        offset += handlerSize;
     }
 
-    m_logger->Trace(LOG_INFO, "Snapshot: restored state from %zu-byte snapshot", snapshotData.size());
+    m_logger->Trace(LOG_INFO, "Snapshot: restored state from %zu-byte snapshot (EPT regions rebuilt)", snapshotData.size());
     return true;
 }
 

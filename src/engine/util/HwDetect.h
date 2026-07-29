@@ -172,6 +172,19 @@ inline void ApplyFeatureMask(uint32_t leaf, uint32_t subleaf, const char* vendor
         return;
     }
 
+    // Leaf 0x1A: Hybrid topology — pass through native model ID, mask unsupported hybrids
+    if (leaf == 0x1A) {
+        // EAX bits 0-23: native model ID, bits 24-31: reserved
+        // ECX: core type (0 = Intel Atom, 1 = Intel Core)
+        if (subleaf == 0) {
+            *ebx = 0; *edx = 0;
+        }
+        if (subleaf == 1) {
+            // Streamlined processor list — only valid entries survive
+        }
+        return;
+    }
+
     // Leaf 0x80000001: Extended feature bits
     if (leaf == 0x80000001) {
         // ECX: clear SVM (AMD) or VMX (Intel) as appropriate

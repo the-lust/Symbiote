@@ -403,6 +403,95 @@ void VcpuManager::EnterVcpuFromBootstrap(uint32_t vcpuIndex)
     m_logger->Trace(LOG_INFO, "ChildVCPU %u exited", vcpuIndex);
 }
 
+// ─── Snapshot checkpoint ──────────────────────────────────────────────
+
+std::vector<uint8_t> VcpuManager::SaveCheckpoint()
+{
+    m_logger->Trace(LOG_INFO, "SaveCheckpoint: saving VCPU state");
+    m_kernelLock.Lock();
+    std::vector<uint8_t> data;
+    WHV_REGISTER_NAME allRegs[] = {
+        WHvX64RegisterRax, WHvX64RegisterRbx, WHvX64RegisterRcx, WHvX64RegisterRdx,
+        WHvX64RegisterRsi, WHvX64RegisterRdi, WHvX64RegisterRbp, WHvX64RegisterRsp,
+        WHvX64RegisterR8,  WHvX64RegisterR9,  WHvX64RegisterR10, WHvX64RegisterR11,
+        WHvX64RegisterR12, WHvX64RegisterR13, WHvX64RegisterR14, WHvX64RegisterR15,
+        WHvX64RegisterRip, WHvX64RegisterRflags
+    };
+    uint32_t regCount = sizeof(allRegs) / sizeof(allRegs[0]);
+
+    auto put32 = [&](uint32_t v) {
+        data.insert(data.end(), (uint8_t*)&v, (uint8_t*)&v + 4);
+    };
+    auto put64 = [&](uint64_t v) {
+        data.insert(data.end(), (uint8_t*)&v, (uint8_t*)&v + 8);
+    };
+
+    put32(m_vcpuCount);
+    for (uint32_t i = 0; i < m_vcpuCount; i++) {
+        put32(i);
+        put32(m_vcpus[i].running ? 1u : 0);
+        if (m_vcpus[i].running) {
+            WHV_REGISTER_VALUE values[32];
+            HRESULT hr = WHvGetVirtualProcessorRegisters(m_partition->GetHandle(),
+                i, allRegs, regCount, values);
+            if (SUCCEEDED(hr)) {
+                for (uint32_t r = 0; r < regCount; r++) {
+                    put64(values[r].Reg64);
+                }
+            }
+        }
+    }
+
+    m_kernelLock.Unlock();
+    m_logger->Trace(LOG_INFO, "SaveCheckpoint: %zu bytes saved for %u VCPUs", data.size(), m_vcpuCount);
+    return data;
+}
+
+bool VcpuManager::RestoreCheckpoint(const std::vector<uint8_t>& data)
+{
+    m_logger->Trace(LOG_INFO, "RestoreCheckpoint: restoring VCPU state");
+    size_t offset = 0;
+    auto read32 = [&]() -> uint32_t {
+        if (offset + 4 > data.size()) return 0;
+        uint32_t v; memcpy(&v, data.data() + offset, 4); offset += 4; return v;
+    };
+    auto read64 = [&]() -> uint64_t {
+        if (offset + 8 > data.size()) return 0;
+        uint64_t v; memcpy(&v, data.data() + offset, 8); offset += 8; return v;
+    };
+
+    if (data.size() < 4) return false;
+    uint32_t savedCount = read32();
+
+    WHV_REGISTER_NAME allRegs[] = {
+        WHvX64RegisterRax, WHvX64RegisterRbx, WHvX64RegisterRcx, WHvX64RegisterRdx,
+        WHvX64RegisterRsi, WHvX64RegisterRdi, WHvX64RegisterRbp, WHvX64RegisterRsp,
+        WHvX64RegisterR8,  WHvX64RegisterR9,  WHvX64RegisterR10, WHvX64RegisterR11,
+        WHvX64RegisterR12, WHvX64RegisterR13, WHvX64RegisterR14, WHvX64RegisterR15,
+        WHvX64RegisterRip, WHvX64RegisterRflags
+    };
+    uint32_t regCount = sizeof(allRegs) / sizeof(allRegs[0]);
+
+    m_kernelLock.Lock();
+    for (uint32_t i = 0; i < savedCount && i < m_vcpuCount; i++) {
+        uint32_t idx = read32();
+        uint32_t wasRunning = read32();
+        (void)idx;
+        if (wasRunning) {
+            WHV_REGISTER_VALUE values[32];
+            for (uint32_t r = 0; r < regCount; r++) {
+                values[r].Reg64 = read64();
+            }
+            WHvSetVirtualProcessorRegisters(m_partition->GetHandle(),
+                i, allRegs, regCount, values);
+        }
+    }
+    m_kernelLock.Unlock();
+
+    m_logger->Trace(LOG_INFO, "RestoreCheckpoint: restored %u VCPUs", savedCount);
+    return true;
+}
+
 bool VcpuManager::HandleCreateThreadSyscall(uint32_t vcpuIndex, uint32_t syscallNum,
                                              uint64_t* regArgs, uint64_t guestRsp,
                                              uint64_t& result)

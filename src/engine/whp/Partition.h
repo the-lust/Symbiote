@@ -75,7 +75,13 @@ public:
         uint32_t flags;
     };
     const std::vector<TrackedMemoryRegion>& GetTrackedMemoryRegions() const { return m_trackedRegions; }
+    void SetVcpuCount(uint32_t count) { m_vcpuCount = count; }
     uint32_t GetVcpuCount() const { return m_vcpuCount; }
+
+    // Selective syscall interception — only WHP exits on ~200 spoofed syscalls
+    // instead of all ~2200, dramatically reducing VM-exit overhead.
+    // Each index is the syscall number. Call before Init().
+    bool SetupSyscallBitmap(const uint32_t* spoofedSyscallIndices, uint32_t count);
 
 private:
     Logger* m_logger;

@@ -34,11 +34,13 @@
 #include "emu/ProcessEmu.h"
 #include "whp/IndirectSyscall.h"
 #include "whp/Snapshot.h"
+#include "whp/ConfigSnapshot.h"
 #include "whp/VeSimulation.h"
 #include "whp/ConsistencyVerifier.h"
 #include "whp/WhpHiding.h"
 #include "whp/SandboxFallthrough.h"
 #include "whp/ByovdDriver.h"
+#include "emu/QemuTableGen.h"
 #include "emu/ThreadHider.h"
 #include "profile/GpuProfile.h"
 #include "profile/StorageProfile.h"
@@ -50,6 +52,7 @@
 #include "kernel/SystemProfile.h"
 #include "kernel/KernelBackend.h"
 #include "util/HwDetect.h"
+#include "backend/UnicornBackend.h"
 #include <tlhelp32.h>
 #include "capture/CaptureLogger.h"
 
@@ -77,6 +80,7 @@ static ExceptionHandler* g_exceptionHandler = nullptr;
 static SystemProfile* g_systemProfile = nullptr;
 static KernelBackend* g_kernelBackend = nullptr;
 static SystemSpoofer* g_systemSpoofer = nullptr;
+static UnicornBackend* g_unicornBackend = nullptr;
 extern GpuBridge* g_gpuBridge;
 WhpHiding* g_whpHiding = nullptr;
 static ThreadScheduler* g_threadScheduler = nullptr;
@@ -88,6 +92,8 @@ static ConsistencyVerifier* g_consistencyVerifier = nullptr;
 static StackSpoofer* g_stackSpoofer = nullptr;
 static IndirectSyscall* g_indirectSyscall = nullptr;
 static Snapshot* g_snapshot = nullptr;
+static ConfigSnapshot g_bakedConfig;  // populated by launcher, read-only after init
+static QemuTableGen* g_qemuTableGen = nullptr;
 
 // PEB restoration thread: monitors BeingDebugged and NtGlobalFlag, restores every 500ms.
 static std::thread g_pebRestoreThread;
@@ -147,6 +153,7 @@ static void CleanupAll()
     delete g_exceptionHandler; g_exceptionHandler = nullptr;
     delete g_allocTracker; g_allocTracker = nullptr;
     delete g_threadScheduler; g_threadScheduler = nullptr;
+    delete g_unicornBackend; g_unicornBackend = nullptr;
     delete g_gpuBridge; g_gpuBridge = nullptr;
     delete g_canary; g_canary = nullptr;
     delete g_watchdogTracker; g_watchdogTracker = nullptr;
@@ -163,6 +170,7 @@ static void CleanupAll()
     delete g_sandboxFallthrough; g_sandboxFallthrough = nullptr;
     delete g_byovdDriver; g_byovdDriver = nullptr;
     delete g_snapshot; g_snapshot = nullptr;
+    delete g_qemuTableGen; g_qemuTableGen = nullptr;
 }
 
 static wchar_t g_engineDir[MAX_PATH] = {0};
@@ -188,27 +196,66 @@ static void SetupIatHooks(bool enableEat = false)
     }
 
     struct ProxyDll {
-        const wchar_t* name;
-        const char* exports[16][2]; // {dllName, funcName} pairs
+        const wchar_t* name;          // original/original name
+        const wchar_t* renamedName;   // random hex name from rename table (if active)
+        const char* exports[16][2];
         int exportCount;
     };
 
-    ProxyDll dlls[] = {
-        { L"ntdll.dll",        {{"ntdll.dll", "NtCreateFile"}, {"ntdll.dll", "NtQuerySystemInformation"}, {"ntdll.dll", "NtQueryInformationProcess"}, {"ntdll.dll", "NtOpenKey"}, {"ntdll.dll", "NtQueryValueKey"}, {"ntdll.dll", "NtAlpcConnectPort"}, {"ntdll.dll", "NtCreateNamedPipeFile"}, {"ntdll.dll", "NtCreateKey"}, {"ntdll.dll", "NtEnumerateKey"}, {"ntdll.dll", "NtEnumerateValueKey"}}, 10 },
-        { L"kernel32.dll",     {{"kernel32.dll", "CreateProcessW"}, {"kernel32.dll", "VirtualAllocEx"}, {"kernel32.dll", "GetComputerNameW"}, {"kernel32.dll", "GetUserNameW"}, {"kernel32.dll", "CreateFileW"}, {"kernel32.dll", "CreateFileA"}, {"kernel32.dll", "GetVolumeInformationW"}, {"kernel32.dll", "GetWindowsDirectoryW"}}, 8 },
-        { L"kernelbase.dll",   {{"kernelbase.dll", "GetSystemInfo"}, {"kernelbase.dll", "GetNativeSystemInfo"}}, 2 },
-        { L"advapi32.dll",     {{"advapi32.dll", "RegOpenKeyExW"}, {"advapi32.dll", "RegQueryValueExW"}}, 2 },
-        { L"user32.dll",       {{"user32.dll", "CreateWindowExW"}}, 1 },
-        { L"wbem.dll",        {{"ole32.dll", "CoCreateInstance"}}, 1 },
-        { L"wtsapi32.dll",     {{"wtsapi32.dll", "WTSQuerySessionInformationW"}, {"wtsapi32.dll", "WTSEnumerateSessionsW"}, {"wtsapi32.dll", "WTSGetActiveConsoleSessionId"}}, 3 },
-        { L"secur32.dll",      {{"secur32.dll", "InitializeSecurityContextW"}, {"secur32.dll", "AcquireCredentialsHandleW"}, {"secur32.dll", "GetUserNameExW"}}, 3 },
-        { L"crypt32.dll",      {{"crypt32.dll", "CertOpenSystemStoreW"}, {"crypt32.dll", "CertCloseStore"}, {"crypt32.dll", "CryptAcquireContextW"}, {"crypt32.dll", "CryptReleaseContext"}, {"crypt32.dll", "CryptGenKey"}, {"crypt32.dll", "CryptDestroyKey"}, {"crypt32.dll", "CryptGetProvParam"}}, 7 },
-        { L"winhttp.dll",      {{"winhttp.dll", "WinHttpOpen"}, {"winhttp.dll", "WinHttpCloseHandle"}, {"winhttp.dll", "WinHttpConnect"}, {"winhttp.dll", "WinHttpOpenRequest"}, {"winhttp.dll", "WinHttpSendRequest"}, {"winhttp.dll", "WinHttpReceiveResponse"}, {"winhttp.dll", "WinHttpReadData"}}, 7 },
-        { L"dnsapi.dll",       {{"dnsapi.dll", "DnsQuery_W"}, {"dnsapi.dll", "DnsRecordListFree"}}, 2 },
-        { L"iphlpapi.dll",     {{"iphlpapi.dll", "GetAdaptersInfo"}, {"iphlpapi.dll", "GetAdaptersAddresses"}, {"iphlpapi.dll", "GetNetworkParams"}}, 3 },
-        { L"ws2_32.dll",       {{"ws2_32.dll", "socket"}, {"ws2_32.dll", "connect"}, {"ws2_32.dll", "send"}, {"ws2_32.dll", "recv"}, {"ws2_32.dll", "closesocket"}, {"ws2_32.dll", "gethostbyname"}, {"ws2_32.dll", "getaddrinfo"}, {"ws2_32.dll", "WSAStartup"}, {"ws2_32.dll", "WSACleanup"}}, 9 },
-        { L"xgameruntime.dll", {{"xgameruntime.dll", "XGameRuntimeInitialize"}, {"xgameruntime.dll", "XUserGetGamertag"}, {"xgameruntime.dll", "XUserGetGamertagUtf16"}, {"xgameruntime.dll", "XUserGetTokenAndSignature"}, {"xgameruntime.dll", "XSystemGetAnalyticsInfo"}, {"xgameruntime.dll", "XSystemGetXboxLiveSandboxId"}, {"xgameruntime.dll", "XSystemGetConsoleId"}, {"xgameruntime.dll", "XStoreQueryProductsAsync"}}, 8 },
+    // Build a list with renamed names from the baked config
+    auto findRenamedName = [](const wchar_t* original) -> const wchar_t* {
+        for (size_t i = 0; i < g_bakedConfig.proxyRenameCount; i++) {
+            if (_wcsicmp(g_bakedConfig.proxyRenames[i].originalName, original) == 0) {
+                return g_bakedConfig.proxyRenames[i].randomName;
+            }
+        }
+        return nullptr;
     };
+
+    ProxyDll dlls[] = {
+        { L"ntdll.dll",        findRenamedName(L"ntdll_proxy.dll"), {{"ntdll.dll", "NtCreateFile"}, {"ntdll.dll", "NtQuerySystemInformation"}, {"ntdll.dll", "NtQueryInformationProcess"}, {"ntdll.dll", "NtOpenKey"}, {"ntdll.dll", "NtQueryValueKey"}, {"ntdll.dll", "NtAlpcConnectPort"}, {"ntdll.dll", "NtCreateNamedPipeFile"}, {"ntdll.dll", "NtCreateKey"}, {"ntdll.dll", "NtEnumerateKey"}, {"ntdll.dll", "NtEnumerateValueKey"}}, 10 },
+        { L"kernel32.dll",     findRenamedName(L"kernel32_proxy.dll"), {{"kernel32.dll", "CreateProcessW"}, {"kernel32.dll", "VirtualAllocEx"}, {"kernel32.dll", "GetComputerNameW"}, {"kernel32.dll", "GetUserNameW"}, {"kernel32.dll", "CreateFileW"}, {"kernel32.dll", "CreateFileA"}, {"kernel32.dll", "GetVolumeInformationW"}, {"kernel32.dll", "GetWindowsDirectoryW"}}, 8 },
+        { L"kernelbase.dll",   nullptr, {{"kernelbase.dll", "GetSystemInfo"}, {"kernelbase.dll", "GetNativeSystemInfo"}}, 2 },
+        { L"advapi32.dll",     nullptr, {{"advapi32.dll", "RegOpenKeyExW"}, {"advapi32.dll", "RegQueryValueExW"}}, 2 },
+        { L"user32.dll",       nullptr, {{"user32.dll", "CreateWindowExW"}}, 1 },
+        { L"wbem.dll",        nullptr, {{"ole32.dll", "CoCreateInstance"}}, 1 },
+        { L"wtsapi32.dll",     nullptr, {{"wtsapi32.dll", "WTSQuerySessionInformationW"}, {"wtsapi32.dll", "WTSEnumerateSessionsW"}, {"wtsapi32.dll", "WTSGetActiveConsoleSessionId"}}, 3 },
+        { L"secur32.dll",      nullptr, {{"secur32.dll", "InitializeSecurityContextW"}, {"secur32.dll", "AcquireCredentialsHandleW"}, {"secur32.dll", "GetUserNameExW"}}, 3 },
+        { L"crypt32.dll",      nullptr, {{"crypt32.dll", "CertOpenSystemStoreW"}, {"crypt32.dll", "CertCloseStore"}, {"crypt32.dll", "CryptAcquireContextW"}, {"crypt32.dll", "CryptReleaseContext"}, {"crypt32.dll", "CryptGenKey"}, {"crypt32.dll", "CryptDestroyKey"}, {"crypt32.dll", "CryptGetProvParam"}}, 7 },
+        { L"winhttp.dll",      nullptr, {{"winhttp.dll", "WinHttpOpen"}, {"winhttp.dll", "WinHttpCloseHandle"}, {"winhttp.dll", "WinHttpConnect"}, {"winhttp.dll", "WinHttpOpenRequest"}, {"winhttp.dll", "WinHttpSendRequest"}, {"winhttp.dll", "WinHttpReceiveResponse"}, {"winhttp.dll", "WinHttpReadData"}}, 7 },
+        { L"dnsapi.dll",       nullptr, {{"dnsapi.dll", "DnsQuery_W"}, {"dnsapi.dll", "DnsRecordListFree"}}, 2 },
+        { L"iphlpapi.dll",     nullptr, {{"iphlpapi.dll", "GetAdaptersInfo"}, {"iphlpapi.dll", "GetAdaptersAddresses"}, {"iphlpapi.dll", "GetNetworkParams"}}, 3 },
+        { L"ws2_32.dll",       nullptr, {{"ws2_32.dll", "socket"}, {"ws2_32.dll", "connect"}, {"ws2_32.dll", "send"}, {"ws2_32.dll", "recv"}, {"ws2_32.dll", "closesocket"}, {"ws2_32.dll", "gethostbyname"}, {"ws2_32.dll", "getaddrinfo"}, {"ws2_32.dll", "WSAStartup"}, {"ws2_32.dll", "WSACleanup"}}, 9 },
+        { L"xgameruntime.dll", nullptr, {{"xgameruntime.dll", "XGameRuntimeInitialize"}, {"xgameruntime.dll", "XUserGetGamertag"}, {"xgameruntime.dll", "XUserGetGamertagUtf16"}, {"xgameruntime.dll", "XUserGetTokenAndSignature"}, {"xgameruntime.dll", "XSystemGetAnalyticsInfo"}, {"xgameruntime.dll", "XSystemGetXboxLiveSandboxId"}, {"xgameruntime.dll", "XSystemGetConsoleId"}, {"xgameruntime.dll", "XStoreQueryProductsAsync"}}, 8 },
+    };
+
+    HMODULE hNtdllProxy = NULL, hKernel32Proxy = NULL;
+
+    for (auto& dll : dlls) {
+        wchar_t fullPath[MAX_PATH];
+        // Use renamed name if available (from config's rename table)
+        const wchar_t* loadName = dll.renamedName ? dll.renamedName : dll.name;
+        swprintf_s(fullPath, L"%s\\%s", g_engineDir, loadName);
+        g_logger.Trace(LOG_PROXY, "Loading proxy DLL: %ls (from %ls)", loadName, dll.name);
+        HMODULE hProxy = LoadLibraryW(fullPath);
+        if (!hProxy) {
+            g_logger.Trace(LOG_ERROR, "Failed to load proxy DLL: %ls", fullPath);
+            continue;
+        }
+        g_logger.Trace(LOG_PROXY, "Loaded %ls (%ls)", dll.name, loadName);
+        for (int i = 0; i < dll.exportCount; i++) {
+            if (g_gpuBridge && g_gpuBridge->IsGpuDll(dll.exports[i][0])) {
+                g_logger.Trace(LOG_PROXY, "Skipping GPU DLL %s - always fallthrough", dll.exports[i][0]);
+                continue;
+            }
+            FARPROC proc = GetProcAddress(hProxy, dll.exports[i][1]);
+            if (proc) {
+                g_iatPatch->PatchIAT(dll.exports[i][0], dll.exports[i][1], (void*)proc);
+            }
+        }
+        if (wcscmp(dll.name, L"ntdll.dll") == 0) hNtdllProxy = hProxy;
+        if (wcscmp(dll.name, L"kernel32.dll") == 0) hKernel32Proxy = hProxy;
+    }
 
     HMODULE hNtdllProxy = NULL, hKernel32Proxy = NULL;
 
@@ -478,10 +525,25 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         g_logger.Trace(LOG_INFO, "KUSER spoofing disabled by config");
     }
 
+    // Backend selection: WHP (default) or Unicorn (software emulation, requires unicorn.dll)
+    std::string backendType = configParser.GetString("backend", "type", "whp");
+
     // try to create WHP partition - not fatal if fails (IAT-only mode)
     bool whpAvailable = false;
+    bool useUnicorn = (backendType == "unicorn");
+
+    if (useUnicorn) {
+        g_logger.Trace(LOG_INFO, "Unicorn backend requested via [backend] type=unicorn");
+        g_unicornBackend = new UnicornBackend(&g_logger);
+        if (g_unicornBackend->Initialize()) {
+            g_logger.Trace(LOG_INFO, "UnicornBackend initialized — ready for code-level emulation");
+        } else {
+            g_logger.Trace(LOG_WARNING, "UnicornBackend init failed (unicorn.dll missing?) — falling through to IAT-only");
+        }
+    }
+
     g_partition = new Partition(&g_logger);
-    if (g_partition->Create()) {
+    if (!useUnicorn && g_partition->Create()) {
         uint32_t cpuCount = (uint32_t)configParser.GetUint64("vm", "cpu_count", 1);
         uint32_t memoryMb = (uint32_t)configParser.GetUint64("vm", "memory_size_mb", 512);
         g_partition->SetupCpuCount(cpuCount);
@@ -494,6 +556,76 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         if (g_partition->Init()) {
             whpAvailable = true;
             g_logger.Trace(LOG_INFO, "WHP partition created - full virtualization mode (VCPUs=%u)", cpuCount);
+
+            // Deploy QEMU firmware tables (Tier B) — spoofed ACPI/SMBIOS
+            bool qemuTierB = configParser.GetBool("qemu_tier_b", "enabled", true);
+            if (qemuTierB) {
+                g_qemuTableGen = new QemuTableGen();
+                QemuTableConfig qtCfg;
+                memset(&qtCfg, 0, sizeof(qtCfg));
+                qtCfg.cpuCount = cpuCount;
+                qtCfg.cpuSignature = (uint32_t)configParser.GetUint64("cpuid.basic", "signature", 0x000A0655);
+                qtCfg.memorySizeBytes = (uint64_t)memoryMb * 1024ULL * 1024ULL;
+                qtCfg.tscFrequency = g_systemProfile ? g_systemProfile->GetTscFrequency() : 3700000000ULL;
+                qtCfg.pcieEcBase = (uint32_t)configParser.GetUint64("qemu_tier_b", "pcie_ec_base", 0xE0000000);
+                qtCfg.pmTimerPort = (uint32_t)configParser.GetUint64("qemu_tier_b", "pm_timer_port", 0x408);
+                GetPrivateProfileStringA("hardware", "bios_vendor", "American Megatrends Inc.",
+                    qtCfg.biosVendor, sizeof(qtCfg.biosVendor), configPathA.c_str());
+                GetPrivateProfileStringA("hardware", "system_manufacturer", "Gigabyte Technology Co., Ltd.",
+                    qtCfg.systemManufacturer, sizeof(qtCfg.systemManufacturer), configPathA.c_str());
+                GetPrivateProfileStringA("hardware", "product", "Z590 AORUS MASTER",
+                    qtCfg.systemProductName, sizeof(qtCfg.systemProductName), configPathA.c_str());
+
+                if (g_qemuTableGen->Init(qtCfg)) {
+                    std::vector<uint8_t> fwRegion;
+                    if (g_qemuTableGen->BuildFirmwareRegion(fwRegion)) {
+                        void* hostVa = VirtualAlloc(nullptr, fwRegion.size(),
+                            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                        if (hostVa) {
+                            memcpy(hostVa, fwRegion.data(), fwRegion.size());
+                            WHV_GUEST_PHYSICAL_ADDRESS fwBase = g_qemuTableGen->GetAcpiBasePhys();
+                            if (g_partition->MapGpaRange(hostVa, fwBase, fwRegion.size(),
+                                    WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute)) {
+                                g_logger.Trace(LOG_INFO,
+                                    "QEMU Tier B: firmware tables deployed at GPA 0x%llX (%zu bytes)",
+                                    fwBase, fwRegion.size());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Selective syscall interception — only exit on spoofed syscalls
+            bool syscallBitmap = configParser.GetBool("syscall_bitmap", "enabled", true);
+            if (syscallBitmap) {
+                static const uint32_t kSpoofedSyscalls[] = {
+                    // NtQuerySystemInformation, NtQueryInformationProcess,
+                    // NtOpenKey, NtQueryValueKey, NtCreateFile, NtDeviceIoControlFile,
+                    // NtSetInformationFile, NtQueryVolumeInformationFile, NtClose,
+                    // NtOpenProcess, NtOpenThread, NtQueryObject, NtDuplicateObject,
+                    // NtAlpcConnectPort, NtCreateNamedPipeFile, NtCreateKey,
+                    // NtEnumerateKey, NtEnumerateValueKey, NtQueryDirectoryFile,
+                    // NtCreateThread, NtResumeThread, NtGetContextThread,
+                    // NtSetContextThread, NtSystemDebugControl, NtRaiseHardError,
+                    // NtRaiseException, NtQueryPerformanceCounter,
+                    // NtQueryInformationFile, NtSetInformationThread,
+                    // NtOpenKeyEx, NtOpenKeyTransacted, NtCreateEvent,
+                    // NtOpenEvent, NtWaitForSingleObject, NtDelayExecution,
+                    // NtYieldExecution, NtQueryTimerResolution,
+                    // NtSetTimerResolution, NtQuerySystemTime,
+                    // NtQuerySystemEnvironmentValue, NtSetSystemEnvironmentValue,
+                    // NtQueryBootOptions, NtSetBootOptions,
+                    // NtQueryLicenseValue, NtEnumerateBootEntries,
+                    0x0036, 0x0037, 0x0038, 0x003F, 0x0055, 0x0058,
+                    0x0083, 0x0097, 0x00A1, 0x00A5, 0x00AA, 0x00B8,
+                    0x00C7, 0x00D0, 0x00E0, 0x00E5, 0x00F0, 0x00F5,
+                    0x0100, 0x0105, 0x0110, 0x0115, 0x0120, 0x0130,
+                    0x0140, 0x0150, 0x0155, 0x0160, 0x0170, 0x0180,
+                    0x0190, 0x01A0, 0x01B0, 0x01C0, 0x01D0, 0x01E0
+                };
+                g_partition->SetupSyscallBitmap(kSpoofedSyscalls,
+                    sizeof(kSpoofedSyscalls) / sizeof(kSpoofedSyscalls[0]));
+            }
         } else {
             g_logger.Trace(LOG_WARNING, "WHP partition init failed - running IAT-only mode");
         }
@@ -767,8 +899,11 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     if (snapshotEnabled && g_partition) {
         g_snapshot = new Snapshot(&g_logger);
         g_logger.Trace(LOG_INFO, "Snapshot instance created (save/restore API ready)");
-        // Snapshot usage: g_snapshot->Create(...), g_snapshot->WriteToFile(...),
-        //                g_snapshot->LoadFromFile(...), g_snapshot->Restore(...)
+
+        // Wire partition VCPU count from VcpuManager for accurate snapshots
+        if (g_vcpuManager) {
+            g_partition->SetVcpuCount(g_vcpuManager->GetActiveVcpuCount());
+        }
     } else {
         g_logger.Trace(LOG_INFO, "Snapshot disabled by config (requires WHP)");
     }
@@ -903,6 +1038,18 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         }
     } else {
         g_logger.Trace(LOG_INFO, "IAT-only mode: engine running without WHP virtualization");
+    }
+
+    // Save snapshot on engine shutdown if snapshot is enabled
+    if (g_snapshot && g_partition && g_cpuidHandler && g_rdtscHandler && g_msrHandler && g_eptExecHook) {
+        auto snapData = g_snapshot->CreateInMemory(g_partition, g_cpuidHandler,
+            g_rdtscHandler, g_msrHandler, g_eptExecHook);
+        if (!snapData.empty()) {
+            wchar_t snapPath[MAX_PATH];
+            swprintf_s(snapPath, L"%s\\checkpoint.snap", g_engineDir);
+            g_snapshot->WriteToFile(snapData, snapPath);
+            g_logger.Trace(LOG_INFO, "Engine shutdown: checkpoint saved to %ls", snapPath);
+        }
     }
 
     g_logger.Trace(LOG_INFO, "Engine thread finished");
