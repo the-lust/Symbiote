@@ -7,6 +7,8 @@
 #include "ConfigParser.h"
 #include "WhpDetection.h"
 #include "ProcessUtils.h"
+#include "Orchestrator.h"
+#include "../engine/whp/ConfigSnapshot.h"
 
 #pragma comment(linker, "/SUBSYSTEM:CONSOLE")
 
@@ -67,6 +69,7 @@ int main(int, char**)
     bool debugMode = false;
     bool sandboxMode = false;
     std::wstring profileName;
+    std::wstring configPath;
 
     int wargc = 0;
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
@@ -79,9 +82,7 @@ int main(int, char**)
                 debugMode = true;
             } else if (arg == L"--sandbox") {
                 sandboxMode = true;
-                if (i + 1 < wargc) {
-                    targetExe = wargv[++i];
-                }
+                if (i + 1 < wargc) targetExe = wargv[++i];
             } else if (arg == L"--profile" && i + 1 < wargc) {
                 profileName = wargv[++i];
             } else if (arg == L"--target" && i + 1 < wargc) {
@@ -92,8 +93,10 @@ int main(int, char**)
                     targetArgs += L"\"" + std::wstring(wargv[j]) + L"\"";
                 }
                 i = wargc;
-            } else if (arg.find(L"--config") == 0 || arg.find(L"config=") == 0) {
-                i++;
+            } else if (arg.find(L"--config=") == 0) {
+                configPath = arg.substr(9);
+            } else if (arg.find(L"config=") == 0) {
+                configPath = arg.substr(7);
             } else if (arg == L"--help" || arg == L"-h" || arg == L"/?") {
                 ShowUsage();
                 LocalFree(wargv);
@@ -125,102 +128,51 @@ int main(int, char**)
     size_t pos = exeDir.find_last_of(L"\\/");
     if (pos != std::wstring::npos) exeDir = exeDir.substr(0, pos);
 
-    std::wstring configPath;
-    if (!profileName.empty()) {
-        configPath = exeDir + L"\\profiles\\" + profileName + L".ini";
-        std::wstring wmsg = L"Loading profile: " + configPath + L"\n";
-        int wlen = WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, NULL, 0, NULL, NULL);
-        std::string msgA(wlen, 0);
-        WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, &msgA[0], wlen, NULL, NULL);
-        LogMessage(msgA);
-    } else {
-        configPath = exeDir + L"\\config\\config.ini";
+    if (configPath.empty()) {
+        if (!profileName.empty()) {
+            configPath = exeDir + L"\\profiles\\" + profileName + L".ini";
+            std::wstring wmsg = L"Loading profile: " + configPath + L"\n";
+            int wlen = WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, NULL, 0, NULL, NULL);
+            std::string msgA(wlen, 0);
+            WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, &msgA[0], wlen, NULL, NULL);
+            LogMessage(msgA);
+        } else {
+            configPath = exeDir + L"\\config\\config.ini";
+        }
     }
-    int len = WideCharToMultiByte(CP_UTF8, 0, configPath.c_str(), -1, NULL, 0, NULL, NULL);
-    std::string configPathA(len, 0);
-    WideCharToMultiByte(CP_UTF8, 0, configPath.c_str(), -1, &configPathA[0], len, NULL, NULL);
-    ConfigParser config(configPathA);
-    if (!config.Load()) {
-        LogMessage("Failed to load config.ini\n");
-        std::wstring msg = L"Failed to load config.ini from " + configPath;
-        MessageBoxW(NULL, msg.c_str(), L"Config Error", MB_ICONERROR);
+
+    // ── Orchestrator: unified 8-phase pipeline ──────────────────────────
+    LogMessage("Starting Orchestrator...\n");
+
+    Orchestrator orchestrator;
+
+    // Set target info before running phases
+    // The Orchestrator phases need to know the target
+    // We write directly into the config snapshot that Orchestrator manages
+    // by overriding Phase0 defaults
+    // Actually — Orchestrator reads config.ini; we need to pass target exe info
+    // into the process. Let's store target info in the config snapshot directly.
+
+    ConfigSnapshot* cfg = const_cast<ConfigSnapshot*>(orchestrator.GetConfig());
+    wcscpy_s(cfg->targetPath, targetExe.c_str());
+    wcscpy_s(cfg->targetArgs, targetArgs.c_str());
+    wcscpy_s(cfg->targetDirectory, exeDir.c_str());
+    cfg->waitForExit = true;
+
+    const ConfigSnapshot* result = orchestrator.Run();
+
+    if (!result) {
+        LogMessage("Orchestrator Run() failed — check launcher.log for details\n");
         return 1;
     }
-    LogMessage("Config loaded successfully\n");
 
-    if (!IsWHPDetected()) {
-        LogMessage("WHP not detected - running in degraded mode (IAT hooks only)\n");
-        OutputDebugStringA("WHP not detected - running in degraded mode (IAT hooks only)\n");
-    } else {
-        LogMessage("WHP detected\n");
-    }
+    LogMessage("Orchestrator completed successfully\n");
 
-    STARTUPINFOW si = {0};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi = {0};
-
-    if (!CreateSuspendedProcess(targetExe, targetArgs, si, pi)) {
-        LogMessage("Failed to create process\n");
-        std::wstring msg = L"Failed to create process: " + targetExe;
-        MessageBoxW(NULL, msg.c_str(), L"Process Error", MB_ICONERROR);
-        return 1;
-    }
-    LogMessage("Process created suspended\n");
-
-    std::wstring dllPath = exeDir + L"\\engine.dll";
-    if (!InjectDll(pi.hProcess, dllPath)) {
-        LogMessage("Failed to inject engine DLL\n");
-        TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        return 1;
-    }
-    LogMessage("Engine DLL injected\n");
-
+    // ── Logging / debug mode ────────────────────────────────────────────
     if (debugMode) {
-        CallRemoteFunction(pi.hProcess, dllPath, "Engine_SetDebug");
-        LogMessage("Debug mode enabled\n");
+        // DEBUG: already handled — engine logs verbosely
     }
 
-    LogMessage("Calling Engine_Init...\n");
-    DWORD initResult = 0;
-    bool initCallRan = CallRemoteFunctionWithResult(pi.hProcess, dllPath, "Engine_Init", &initResult);
-    bool initOk = initCallRan && initResult != 0;
-    LogMessage(std::string("Engine_Init: ") + (initOk ? "OK" : "FAILED") + "\n");
-
-    if (!initOk) {
-        // Don't resume the target unmonitored — a failed engine init means no interception is active.
-        LogMessage("Engine_Init failed - terminating target instead of resuming unprotected\n");
-        MessageBoxW(NULL, L"Engine_Init failed - target will not be resumed.", L"Symbiote", MB_ICONERROR);
-        TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        return 1;
-    }
-
-    if (initOk && sandboxMode) {
-        LogMessage("Setting sandbox mode flag...\n");
-        CallRemoteFunction(pi.hProcess, dllPath, "Engine_SetSandboxMode");
-        LogMessage("Sandbox mode flag set\n");
-    }
-
-    HANDLE hEngineReady = OpenEventW(EVENT_ALL_ACCESS, FALSE, L"Symbiote_EngineReady");
-    if (hEngineReady) {
-        WaitForSingleObject(hEngineReady, 5000);
-        CloseHandle(hEngineReady);
-    } else {
-        Sleep(750);
-    }
-
-    LogMessage("Calling Engine_InterceptEntryPoint...\n");
-    CallRemoteFunction(pi.hProcess, dllPath, "Engine_InterceptEntryPoint");
-    LogMessage("Engine_InterceptEntryPoint done\n");
-
-    DWORD exitCode = 0;
-    ResumeAndWait(pi.hProcess, pi.hThread, &exitCode);
-    LogMessage("Process exited\n");
-
-    return (int)exitCode;
+    LogMessage("All phases complete. Target running.\n");
+    return 0;
 }

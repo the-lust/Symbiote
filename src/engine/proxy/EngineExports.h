@@ -61,6 +61,6 @@ extern "C" {
 extern "C" {
     // Build the export table at the given shared memory address (called at engine init)
     void Engine_BuildExportTable(void* sharedMemAddr);
-    // Look up a function by its ID (used by proxy DLLs)
-    void* Engine_GetExport(uint32_t funcId);
+    // Look up a function by its ID — sole named export from engine.dll
+    __declspec(dllexport) void* __stdcall Engine_GetExport(uint32_t funcId);
 }

@@ -1,17 +1,21 @@
 #pragma once
 #include <windows.h>
 #include <cstdint>
+#include "../shared/SharedMemory.h"
 #include "../engine/whp/ConfigSnapshot.h"
 #include "ProxyRenamer.h"
+
+// Forward declarations
+struct DetectedDriver;
 
 // Orchestrator manages the full startup sequence:
 // Phase 0: INI bake → ConfigSnapshot (done by launcher entry)
 // Phase 1: BYOVD detect & open
 // Phase 2: Kernel proxy injection (SSDT, EPROCESS, LSTAR, IDT)
 // Phase 3: VHDX mount / sandbox setup
-// Phase 4: WHP partition + VCPU creation
-// Phase 5: Proxy DLL rename
-// Phase 6: Inject engine + config snapshot into target
+// Phase 4: WHP partition config (deferred to engine)
+// Phase 5: Proxy DLL rename + copy to target dir
+// Phase 6: Create target process, inject engine + shared memory
 // Phase 7: Resume target process
 
 struct PhaseResult {
@@ -26,10 +30,9 @@ public:
     ~Orchestrator();
 
     // Main entry: run ALL phases
-    // Returns the final ConfigSnapshot ready for engine injection
     const ConfigSnapshot* Run();
 
-    // Individual phase execution (for granular error handling)
+    // Individual phase execution
     PhaseResult Phase0_BakeConfig(const wchar_t* iniPath);
     PhaseResult Phase1_ByovdDetect();
     PhaseResult Phase2_KernelProxyInject();
@@ -39,24 +42,34 @@ public:
     PhaseResult Phase6_InjectEngine();
     PhaseResult Phase7_ResumeTarget();
 
-    // Tear down everything in reverse order
+    // Tear down everything
     void Shutdown();
 
     // Accessors
     const ConfigSnapshot* GetConfig() const { return m_config; }
-    const DetectedDriver* GetDriver() const { return m_driver; }
     ProxyRenamer* GetRenamer() { return &m_renamer; }
+    const PROCESS_INFORMATION& GetProcessInfo() const { return m_pi; }
+    uint64_t GetRunSeed() const { return m_seed; }
 
 private:
-    // Generate random seed for this run (from BCrypt or RDRAND)
     uint64_t GenerateSeed();
+    bool CreateSharedMemory();
+    void DestroySharedMemory();
 
     ConfigSnapshot* m_config;
     DetectedDriver* m_driver;
-    ProxyRenamer   m_renamer;
-    HANDLE         m_hTargetProcess;
-    HANDLE         m_hTargetThread;
-    uint32_t       m_targetPid;
-    uint64_t       m_seed;
-    bool           m_active;
+    ProxyRenamer    m_renamer;
+    uint64_t        m_seed;
+    bool            m_active;
+
+    // Process management
+    PROCESS_INFORMATION m_pi;
+    STARTUPINFOW        m_si;
+    HANDLE              m_hTargetProcess;
+    HANDLE              m_hTargetThread;
+    uint32_t            m_targetPid;
+
+    // Shared memory
+    HANDLE  m_hSharedMem;
+    void*   m_hSharedMemMap;
 };

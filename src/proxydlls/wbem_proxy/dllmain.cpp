@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include "Logger.h"
 #include "ProxyExport.h"
+#include "../shared/ProxyExportTable.h"
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "wbemuuid.lib")
@@ -32,11 +33,9 @@ static void InitHwIdEmuBridge()
     static bool init = false;
     if (init) return;
     init = true;
-    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
-    if (!hEngine) return;
-    g_fnDiskCount = (HwIdEmu_GetDiskCount_t)GetProcAddress(hEngine, "HwIdEmu_GetDiskCount");
-    g_fnGetDisk   = (HwIdEmu_GetDisk_t)GetProcAddress(hEngine, "HwIdEmu_GetDisk");
-    g_fnSysInfo   = (HwIdEmu_GetSystemInfo_t)GetProcAddress(hEngine, "HwIdEmu_GetSystemInfo");
+    g_fnDiskCount = (HwIdEmu_GetDiskCount_t)ResolveEngineExport(FUNC_HWID_GET_DISK_COUNT);
+    g_fnGetDisk   = (HwIdEmu_GetDisk_t)ResolveEngineExport(FUNC_HWID_GET_DISK);
+    g_fnSysInfo   = (HwIdEmu_GetSystemInfo_t)ResolveEngineExport(FUNC_HWID_GET_SYSTEM_INFO);
 }
 
 static bool HwIdEmuAvailable() { return g_fnDiskCount && g_fnGetDisk && g_fnSysInfo; }

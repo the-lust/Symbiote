@@ -13,6 +13,7 @@ typedef LONG NTSTATUS;
 #include <ntstatus.h>
 #include "Logger.h"
 #include "ProxyExport.h"
+#include "../shared/ProxyExportTable.h"
 
 // KEY_VALUE_PARTIAL_INFORMATION from ntddk.h
 typedef struct _KEY_VALUE_PARTIAL_INFORMATION {
@@ -53,15 +54,12 @@ static RouteSyscall_t GetRouteSyscall()
     static bool init = false;
     if (!init) {
         init = true;
-        HMODULE hEngine = GetModuleHandleW(L"engine.dll");
-        if (hEngine) {
-            route = (RouteSyscall_t)GetProcAddress(hEngine, "RouteSyscall");
-        }
+        route = (RouteSyscall_t)ResolveEngineExport(FUNC_ROUTE_SYSCALL);
     }
     return route;
 }
 
-// ── FileRedirection exports (lazy-loaded from engine.dll) ─────────────────
+// ── FileRedirection exports (resolved via Engine_GetExport) ────────────────
 typedef BOOL (__stdcall* FileRedir_ShouldRedirect_t)(const wchar_t*);
 typedef BOOL (__stdcall* FileRedir_GetRedirectedPath_t)(const wchar_t*, wchar_t*, uint32_t*, BOOL);
 
@@ -73,14 +71,11 @@ static void InitFileRedirExports()
     static bool init = false;
     if (init) return;
     init = true;
-    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
-    if (hEngine) {
-        g_fnFileRedir_ShouldRedirect = (FileRedir_ShouldRedirect_t)GetProcAddress(hEngine, "FileRedir_ShouldRedirect");
-        g_fnFileRedir_GetRedirectedPath = (FileRedir_GetRedirectedPath_t)GetProcAddress(hEngine, "FileRedir_GetRedirectedPath");
-    }
+    g_fnFileRedir_ShouldRedirect = (FileRedir_ShouldRedirect_t)ResolveEngineExport(FUNC_FILE_REDIR_SHOULD_REDIRECT);
+    g_fnFileRedir_GetRedirectedPath = (FileRedir_GetRedirectedPath_t)ResolveEngineExport(FUNC_FILE_REDIR_GET_PATH);
 }
 
-// ── FirmwareTableSpoofer exports (lazy-loaded from engine.dll) ────────────
+// ── FirmwareTableSpoofer exports (resolved via Engine_GetExport) ────────────
 typedef BOOL (__stdcall* FwTable_GetSmbios_t)(uint32_t*, uint8_t*);
 typedef BOOL (__stdcall* FwTable_SanitizeSmbios_t)(uint8_t*, uint32_t);
 typedef BOOL (__stdcall* FwTable_GetAcpi_t)(const char*, uint32_t*, uint8_t*);
@@ -103,13 +98,10 @@ static void InitFirmwareExports()
     static bool init = false;
     if (init) return;
     init = true;
-    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
-    if (hEngine) {
-        g_fnGetSmbios = (FwTable_GetSmbios_t)GetProcAddress(hEngine, "FwTable_GetSmbios");
-        g_fnSanitizeSmbios = (FwTable_SanitizeSmbios_t)GetProcAddress(hEngine, "FwTable_SanitizeSmbios");
-        g_fnGetAcpi = (FwTable_GetAcpi_t)GetProcAddress(hEngine, "FwTable_GetAcpi");
-        g_fnSanitizeAcpi = (FwTable_SanitizeAcpi_t)GetProcAddress(hEngine, "FwTable_SanitizeAcpi");
-    }
+    g_fnGetSmbios = (FwTable_GetSmbios_t)ResolveEngineExport(FUNC_FW_GET_SMBIOS);
+    g_fnSanitizeSmbios = (FwTable_SanitizeSmbios_t)ResolveEngineExport(FUNC_FW_SANITIZE_SMBIOS);
+    g_fnGetAcpi = (FwTable_GetAcpi_t)ResolveEngineExport(FUNC_FW_GET_ACPI);
+    g_fnSanitizeAcpi = (FwTable_SanitizeAcpi_t)ResolveEngineExport(FUNC_FW_SANITIZE_ACPI);
 }
 
 static void InitRegistryRedirExports()
@@ -117,11 +109,8 @@ static void InitRegistryRedirExports()
     static bool init = false;
     if (init) return;
     init = true;
-    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
-    if (hEngine) {
-        g_fnRegRedir_ShouldRedirect = (RegRedir_ShouldRedirect_t)GetProcAddress(hEngine, "RegRedir_ShouldRedirect");
-        g_fnRegRedir_GetRedirectedValue = (RegRedir_GetRedirectedValue_t)GetProcAddress(hEngine, "RegRedir_GetRedirectedValue");
-    }
+    g_fnRegRedir_ShouldRedirect = (RegRedir_ShouldRedirect_t)ResolveEngineExport(FUNC_REG_REDIR_SHOULD_REDIRECT);
+    g_fnRegRedir_GetRedirectedValue = (RegRedir_GetRedirectedValue_t)ResolveEngineExport(FUNC_REG_REDIR_GET_REDIRECTED);
 }
 
 // ── Helper: check and get a redirected registry value ─────────────────────
@@ -145,11 +134,8 @@ static void InitIpcFilter()
     static bool init = false;
     if (init) return;
     init = true;
-    HMODULE hEngine = GetModuleHandleW(L"engine.dll");
-    if (hEngine) {
-        g_fnBlockAlpc = (IpcFilter_ShouldBlockAlpc_t)GetProcAddress(hEngine, "IpcFilter_ShouldBlockAlpc");
-        g_fnBlockPipe = (IpcFilter_ShouldBlockPipe_t)GetProcAddress(hEngine, "IpcFilter_ShouldBlockPipe");
-    }
+    g_fnBlockAlpc = (IpcFilter_ShouldBlockAlpc_t)ResolveEngineExport(FUNC_IPC_FILTER_BLOCK_ALPC);
+    g_fnBlockPipe = (IpcFilter_ShouldBlockPipe_t)ResolveEngineExport(FUNC_IPC_FILTER_BLOCK_PIPE);
 }
 
 // ── NtAlpcConnectPort hook ──────────────────────────────────────────────

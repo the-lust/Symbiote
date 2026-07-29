@@ -4,15 +4,14 @@
 #include "whp/RegistryRedirection.h"
 #include "whp/FileRedirection.h"
 #include "whp/ByovdDriver.h"
+#include "proxy/SyscallBridge.h"
 #include <cstring>
 #include <string>
 
 // ── Function Address Table ────────────────────────────────────────────────
-// All exported symbols are resolved via this table at initialization time.
-// No named exports exist in memory — GetProcAddress by name will fail.
-// The table address is passed via shared memory from launcher.
-//
-// Keep the table versioned: increment kExportTableVersion on any change.
+// Sole named export: Engine_GetExport(uint32_t funcId) -> void*
+// All other exports are resolved through this function by ID.
+// No GetProcAddress-by-name works for the 22+ implementation functions.
 
 constexpr uint32_t kExportTableVersion = 1;
 
@@ -21,28 +20,30 @@ struct ExportEntry {
     void*    funcPtr;
 };
 
-// Function IDs — shared knowledge between launcher and engine
+// Function IDs — must match ProxyExportTable.h's ProxyFuncId enum
 enum ExportFuncId : uint32_t {
-    EXPORT_HWID_GET_DISK_COUNT = 1,
-    EXPORT_HWID_GET_DISK = 2,
-    EXPORT_HWID_GET_SYSTEM_INFO = 3,
-    EXPORT_HWID_GET_VOLUME_SERIAL = 4,
-    EXPORT_FW_GET_SMBIOS = 5,
-    EXPORT_FW_GET_ACPI = 6,
-    EXPORT_FW_GET_FIRMWARE = 7,
-    EXPORT_FW_SANITIZE_SMBIOS = 8,
-    EXPORT_FW_SANITIZE_ACPI = 9,
-    EXPORT_REG_REDIR_SHOULD_REDIRECT = 10,
-    EXPORT_REG_REDIR_GET_REDIRECTED_VALUE = 11,
-    EXPORT_IPC_FILTER_SHOULD_BLOCK_ALPC = 12,
-    EXPORT_IPC_FILTER_SHOULD_BLOCK_PIPE = 13,
+    EXPORT_HWID_GET_DISK_COUNT        = 1,
+    EXPORT_HWID_GET_DISK              = 2,
+    EXPORT_HWID_GET_SYSTEM_INFO       = 3,
+    EXPORT_HWID_GET_VOLUME_SERIAL     = 4,
+    EXPORT_FW_GET_SMBIOS              = 5,
+    EXPORT_FW_GET_ACPI                = 6,
+    EXPORT_FW_GET_FIRMWARE            = 7,
+    EXPORT_FW_SANITIZE_SMBIOS         = 8,
+    EXPORT_FW_SANITIZE_ACPI           = 9,
+    EXPORT_REG_REDIR_SHOULD_REDIRECT  = 10,
+    EXPORT_REG_REDIR_GET_REDIRECTED   = 11,
+    EXPORT_IPC_FILTER_BLOCK_ALPC      = 12,
+    EXPORT_IPC_FILTER_BLOCK_PIPE      = 13,
     EXPORT_FILE_REDIR_SHOULD_REDIRECT = 14,
-    EXPORT_FILE_REDIR_GET_REDIRECTED_PATH = 15,
-    EXPORT_BYOVD_IS_AVAILABLE = 16,
-    EXPORT_BYOVD_READ_PHYSICAL = 17,
-    EXPORT_BYOVD_WRITE_PHYSICAL = 18,
-    EXPORT_BYOVD_READ_KERNEL = 19,
-    EXPORT_BYOVD_WRITE_KERNEL = 20,
+    EXPORT_FILE_REDIR_GET_PATH        = 15,
+    EXPORT_BYOVD_IS_AVAILABLE         = 16,
+    EXPORT_BYOVD_READ_PHYSICAL        = 17,
+    EXPORT_BYOVD_WRITE_PHYSICAL       = 18,
+    EXPORT_BYOVD_READ_KERNEL          = 19,
+    EXPORT_BYOVD_WRITE_KERNEL         = 20,
+    EXPORT_ROUTE_SYSCALL              = 21,
+    EXPORT_GET_SPOOFED_IDENTITY       = 22,
     EXPORT_COUNT
 };
 
@@ -321,6 +322,8 @@ static ExportEntry g_exportTable[EXPORT_COUNT + 1] = {
     {EXPORT_BYOVD_WRITE_PHYSICAL,           (void*)_Byovd_WritePhysicalMemory},
     {EXPORT_BYOVD_READ_KERNEL,              (void*)_Byovd_ReadKernelMemory},
     {EXPORT_BYOVD_WRITE_KERNEL,             (void*)_Byovd_WriteKernelMemory},
+    {EXPORT_ROUTE_SYSCALL,                  (void*)RouteSyscall},
+    {EXPORT_GET_SPOOFED_IDENTITY,           nullptr},  // placeholder
 };
 
 // Export table header: version + count + function table address
@@ -345,7 +348,11 @@ void Engine_BuildExportTable(void* sharedMemAddr)
     }
 }
 
-// Lookup a function by ID (used internally by proxy DLLs)
+// ── Sole named export: Engine_GetExport ──────────────────────────────────
+// All other functions are resolved through this by ID.
+#pragma comment(linker, "/EXPORT:Engine_GetExport=Engine_GetExport")
+
+// Lookup a function by ID (used by proxy DLLs)
 void* Engine_GetExport(uint32_t funcId)
 {
     for (uint32_t i = 0; i <= EXPORT_COUNT; i++) {

@@ -131,6 +131,15 @@ struct ConfigSnapshot {
     KernelProxyConfigSnapshot kernelProxy;
     MemoryConfigSnapshot memory;
 
+    // Backend type (whp, unicorn) — baked from [backend] section
+    wchar_t backendType[32];
+
+    // Target process info — set by Orchestrator Phase 6
+    wchar_t targetPath[MAX_PATH];
+    wchar_t targetArgs[1024];
+    wchar_t targetDirectory[MAX_PATH];
+    bool    waitForExit;
+
     // Proxy DLL rename table
     size_t proxyRenameCount;
     ProxyRenameEntry proxyRenames[kMaxProxyDlls];
