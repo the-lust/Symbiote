@@ -48,6 +48,10 @@ set(LAUNCHER_SOURCES
     src/launcher/Main.cpp
     src/launcher/ConfigParser.cpp
     src/launcher/ProcessUtils.cpp
+    src/launcher/ProxyRenamer.cpp
+    src/launcher/Orchestrator.cpp
+    src/engine/byovd/ByovdDetect.cpp
+    src/kernelproxy/KernelProxy.cpp
     src/launcher/app.manifest
 )
 if(NOT SYMBIOTE_NO_WHP)
@@ -86,6 +90,7 @@ set(ENGINE_SOURCES
     src/engine/emu/DeviceIoEmu.cpp
     src/engine/emu/HwIdEmu.cpp
     src/engine/emu/MemoryGuardEmu.cpp
+    src/engine/emu/QemuTableGen.cpp
     src/engine/emu/StackSpoofer.cpp
     # Kernel abstraction
     src/engine/kernel/MinimalKernel.cpp

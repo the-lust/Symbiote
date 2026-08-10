@@ -4,7 +4,10 @@
 #include <string>
 #include <array>
 
+#ifndef SYMBIOTE_KMAXPROXYDLLS
+#define SYMBIOTE_KMAXPROXYDLLS
 constexpr size_t kMaxProxyDlls = 32;
+#endif
 
 struct RenameTableEntry {
     wchar_t originalName[MAX_PATH];  // original name on disk (e.g., L"engine.dll")

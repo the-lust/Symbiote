@@ -99,11 +99,13 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
         m_timingCoordinator->DetectCpuidAfterRdtsc(leaf, (uint64_t)now.QuadPart);
     }
 
-    // Per-process tracking: if a PID is registered, only override for that process
+    // Per-process tracking: if a PID is registered, only override for that process.
+    // NOTE: non-target processes run REAL CPUID here by design — the partition
+    // hosts the whole session and the registered target (game + its spawned
+    // helpers) is the spoof boundary; anything outside it is left native.
     if (m_magicCpuid && m_magicCpuid->HasTargetPid()) {
         uint64_t currentPid = (uint64_t)GetCurrentProcessId();
         if (currentPid != m_magicCpuid->GetTargetPid()) {
-            // Not the registered process - pass through without override
             int cpuInfo[4] = {0};
             __cpuidex(cpuInfo, leaf, subleaf);
             *rax = (uint32_t)cpuInfo[0];
@@ -115,50 +117,32 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
         }
     }
 
-    // zero hypervisor leaves
-    if (leaf >= 0x40000000 && leaf <= 0x4000FFFF) {
-        *rax = 0;
-        *rbx = 0;
-        *rcx = 0;
-        *rdx = 0;
-        m_logger->Trace(LOG_CPUID, "CPUID leaf=0x%X subleaf=0x%X => HIDDEN (hypervisor)", leaf, subleaf);
-        return true;
-    }
+    // Exit-latency telemetry (aggregated; logged every 1000 exits)
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
 
-    // Brand string leaves (0x80000002-0x80000004)
-    if (HandleBrandStringLeaf(leaf, rax, rbx, rcx, rdx)) {
-        m_logger->Trace(LOG_CPUID, "CPUID leaf=0x%X => BRAND: RAX=0x%08llX RBX=0x%08llX RCX=0x%08llX RDX=0x%08llX",
-            leaf, *rax, *rbx, *rcx, *rdx);
-        return true;
-    }
+    uint32_t eax, ebx, ecx, edx;
+    EvaluateLeaf(leaf, subleaf, &eax, &ebx, &ecx, &edx);
+    *rax = eax;
+    *rbx = ebx;
+    *rcx = ecx;
+    *rdx = edx;
 
-    bool spoofed = false;
-    CpuidResult result;
-
-    if (m_backend && m_backend->HandleCpuid(leaf, subleaf, result)) {
-        *rax = result.eax;
-        *rbx = result.ebx;
-        *rcx = result.ecx;
-        *rdx = result.edx;
-        spoofed = true;
-    } else {
-        int cpuInfo[4] = {0};
-        __cpuidex(cpuInfo, leaf, subleaf);
-        *rax = (uint32_t)cpuInfo[0];
-        *rbx = (uint32_t)cpuInfo[1];
-        *rcx = (uint32_t)cpuInfo[2];
-        *rdx = (uint32_t)cpuInfo[3];
-    }
-
-    // Apply universal feature masking
-    ApplyUniversalMask(leaf, subleaf, rax, rbx, rcx, rdx);
-
-    // Clear hypervisor present bit + SMX/TXT bit in leaf 1 ECX
-    // BOTH bits must be cleared: hypervisor present is the most detectable,
-    // SMX/TXT is a secondary indicator of virtualized environment.
-    if (leaf == 1) {
-        *rcx &= ~CPUID_ECX_HYPERVISOR_BIT;
-        *rcx &= ~CPUID_ECX_SMX_BIT;
+    QueryPerformanceCounter(&t1);
+    if (m_backend) {
+        uint64_t tscFreq = m_backend->GetTscFrequency();
+        if (tscFreq) {
+            LARGE_INTEGER qpf;
+            QueryPerformanceFrequency(&qpf);
+            uint64_t deltaCycles = (uint64_t)((t1.QuadPart - t0.QuadPart) * (int64_t)tscFreq / qpf.QuadPart);
+            m_exitCount++;
+            m_exitLatencyAccumCycles += deltaCycles;
+            if (m_exitCount % 1000 == 0) {
+                m_logger->Trace(LOG_TIMING, "CPUID exit-latency telemetry: avg=%llu cycles over last 1000 exits",
+                    m_exitLatencyAccumCycles / 1000);
+                m_exitLatencyAccumCycles = 0;
+            }
+        }
     }
 
     // Capture to fingerprint log
@@ -167,10 +151,89 @@ bool CpuidHandler::HandleCpuid(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rb
             (uint32_t)*rax, (uint32_t)*rbx, (uint32_t)*rcx, (uint32_t)*rdx);
     }
 
-    m_logger->Trace(LOG_CPUID, "CPUID leaf=0x%X subleaf=0x%X => %s: RAX=0x%08llX RBX=0x%08llX RCX=0x%08llX RDX=0x%08llX",
-        leaf, subleaf, spoofed ? "SPOOFED" : "PASSTHROUGH", *rax, *rbx, *rcx, *rdx);
+    m_logger->Trace(LOG_CPUID, "CPUID leaf=0x%X subleaf=0x%X => WS1: RAX=0x%08llX RBX=0x%08llX RCX=0x%08llX RDX=0x%08llX",
+        leaf, subleaf, *rax, *rbx, *rcx, *rdx);
 
     return true;
+}
+
+void CpuidHandler::EvaluateCpuidForProcess(uint64_t pid, uint32_t leaf, uint32_t subleaf,
+                                           uint32_t* eax, uint32_t* ebx,
+                                           uint32_t* ecx, uint32_t* edx)
+{
+    if (m_magicCpuid && m_magicCpuid->HasTargetPid() && pid != m_magicCpuid->GetTargetPid()) {
+        int cpuInfo[4] = {0};
+        __cpuidex(cpuInfo, leaf, subleaf);
+        *eax = (uint32_t)cpuInfo[0];
+        *ebx = (uint32_t)cpuInfo[1];
+        *ecx = (uint32_t)cpuInfo[2];
+        *edx = (uint32_t)cpuInfo[3];
+        return;
+    }
+    EvaluateLeaf(leaf, subleaf, eax, ebx, ecx, edx);
+}
+
+void CpuidHandler::EvaluateLeaf(uint32_t leaf, uint32_t subleaf,
+                                uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx)
+{
+    // Hypervisor leaves: always zero — WHP/Hyper-V presence must be invisible
+    if (leaf >= 0x40000000 && leaf <= 0x4000FFFF) {
+        *eax = 0; *ebx = 0; *ecx = 0; *edx = 0;
+        return;
+    }
+
+    // Brand string leaves: from the frozen brand string, else TIP, else zero
+    if (leaf >= 0x80000002 && leaf <= 0x80000004) {
+        uint64_t ra = 0, rb = 0, rc = 0, rd = 0;
+        if (HandleBrandStringLeaf(leaf, &ra, &rb, &rc, &rd)) {
+            *eax = (uint32_t)ra; *ebx = (uint32_t)rb;
+            *ecx = (uint32_t)rc; *edx = (uint32_t)rd;
+            return;
+        }
+    }
+
+    CpuidResult result;
+    if (m_backend && m_backend->HandleCpuid(leaf, subleaf, result)) {
+        *eax = result.eax; *ebx = result.ebx;
+        *ecx = result.ecx; *edx = result.edx;
+    } else {
+        // WS-1 zero-rule: leaves absent from the frozen TIP are ZEROED, never
+        // answered from real hardware (that would leak the host CPU identity).
+        *eax = 0; *ebx = 0; *ecx = 0; *edx = 0;
+        LogZeroRuleMiss(leaf, subleaf);
+    }
+
+    uint64_t ra = *eax, rb = *ebx, rc = *ecx, rd = *edx;
+    ApplyUniversalMask(leaf, subleaf, &ra, &rb, &rc, &rd);
+    *eax = (uint32_t)ra; *ebx = (uint32_t)rb;
+    *ecx = (uint32_t)rc; *edx = (uint32_t)rd;
+
+    // Leaf 1: hypervisor-present bit (ECX[31]) and SMX/TXT (ECX[6]) must be
+    // clear — both are direct virtualized-environment indicators.
+    if (leaf == 1) {
+        *ecx &= ~CPUID_ECX_HYPERVISOR_BIT;
+        *ecx &= ~CPUID_ECX_SMX_BIT;
+    }
+
+    // Max-leaf clamp (defense-in-depth): never advertise a range beyond the
+    // frozen profile even if a misconfigured TIP entry says otherwise.
+    if (leaf == 0 && *eax > 0x0D) *eax = 0x0D;
+    if (leaf == 0x80000000 && *eax > 0x80000008) *eax = 0x80000008;
+}
+
+void CpuidHandler::LogZeroRuleMiss(uint32_t leaf, uint32_t subleaf)
+{
+    m_zeroRuleTotal++;
+    if (leaf != m_zeroRuleLastLeaf || subleaf != m_zeroRuleLastSubleaf) {
+        m_zeroRuleLastLeaf = leaf;
+        m_zeroRuleLastSubleaf = subleaf;
+        m_zeroRuleMissCount = 0;
+        m_logger->Trace(LOG_CPUID, "CPUID leaf=0x%X subleaf=0x%X => ZEROED (TIP miss, zero-rule)", leaf, subleaf);
+    } else if (++m_zeroRuleMissCount >= 1000) {
+        m_zeroRuleMissCount = 0;
+        m_logger->Trace(LOG_CPUID, "CPUID leaf=0x%X subleaf=0x%X => ZEROED (TIP miss, zero-rule, %llu total hits)",
+            leaf, subleaf, m_zeroRuleTotal);
+    }
 }
 
 void CpuidHandler::ApplyUniversalMask(uint32_t leaf, uint32_t subleaf,
@@ -188,14 +251,15 @@ void CpuidHandler::ApplyUniversalMask(uint32_t leaf, uint32_t subleaf,
     *rdx = ((uint64_t)edx) | (*rdx & 0xFFFFFFFF00000000ULL);
 }
 
-void CpuidHandler::GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount)
+void CpuidHandler::BuildCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount,
+                                        uint32_t hvHigh)
 {
     int idx = 0;
 
-    // WHP CPUID result list pre-populates values so WHP doesn't need to VM-exit for these leaves.
-    auto add = [&](uint32_t leaf, uint32_t, uint32_t eax,
-                   uint32_t ebx, uint32_t ecx, uint32_t edx) {
+    auto add = [&](uint32_t leaf, uint32_t subleaf) {
         if (idx >= maxCount) return;
+        uint32_t eax, ebx, ecx, edx;
+        EvaluateLeaf(leaf, subleaf, &eax, &ebx, &ecx, &edx);
         results[idx].Function = leaf;
         results[idx].Reserved[0] = 0;
         results[idx].Reserved[1] = 0;
@@ -207,211 +271,43 @@ void CpuidHandler::GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count,
         idx++;
     };
 
-    // Leaf 0: Vendor string + max leaf
-    int cpuInfo[4] = {0};
-    __cpuidex(cpuInfo, 0, 0);
-    uint32_t maxLeaf = (uint32_t)cpuInfo[0];
-    add(0, 0, maxLeaf, 0x756E6547, 0x6C65746E, 0x49656E69); // "GenuineIntel"
-
-    // Leaf 1: Feature info — use spoofed from backend or generic Haswell-like
-    CpuidResult cr;
-    if (m_backend && m_backend->HandleCpuid(1, 0, cr)) {
-        uint32_t ecx1 = cr.ecx & ~CPUID_ECX_HYPERVISOR_BIT;
-        ApplyFeatureMask(1, 0, m_cpuVendor, &cr.eax, &cr.ebx, &ecx1, &cr.edx);
-        add(1, 0, cr.eax, cr.ebx, ecx1, cr.edx);
-    } else {
-        __cpuidex(cpuInfo, 1, 0);
-        uint32_t eax1 = (uint32_t)cpuInfo[0], ebx1 = (uint32_t)cpuInfo[1];
-        uint32_t ecx1 = (uint32_t)cpuInfo[2] & ~CPUID_ECX_HYPERVISOR_BIT;
-        uint32_t edx1 = (uint32_t)cpuInfo[3];
-        ApplyFeatureMask(1, 0, m_cpuVendor, &eax1, &ebx1, &ecx1, &edx1);
-        add(1, 0, eax1, ebx1, ecx1, edx1);
-    }
-
-    // Leaf 7 subleaf 0: Structured extended features — masked
-    CpuidResult cr7;
-    if (m_backend && m_backend->HandleCpuid(7, 0, cr7)) {
-        ApplyFeatureMask(7, 0, m_cpuVendor, &cr7.eax, &cr7.ebx, &cr7.ecx, &cr7.edx);
-        add(7, 0, cr7.eax, cr7.ebx, cr7.ecx, cr7.edx);
-    } else {
-        __cpuidex(cpuInfo, 7, 0);
-        uint32_t eax7 = (uint32_t)cpuInfo[0];
-        uint32_t ebx7 = (uint32_t)cpuInfo[1];
-        uint32_t ecx7 = (uint32_t)cpuInfo[2];
-        uint32_t edx7 = (uint32_t)cpuInfo[3];
-        ApplyFeatureMask(7, 0, m_cpuVendor, &eax7, &ebx7, &ecx7, &edx7);
-        add(7, 0, eax7, ebx7, ecx7, edx7);
-    }
-
-    // Leaf 0xA: PMU — zeroed
-    add(0xA, 0, 0, 0, 0, 0);
-
-    // Leaf 0x1A: Hybrid topology — from backend or zero (non-hybrid CPU)
-    CpuidResult cr1a;
-    if (m_backend && m_backend->HandleCpuid(0x1A, 0, cr1a)) {
-        add(0x1A, 0, cr1a.eax, cr1a.ebx, cr1a.ecx, cr1a.edx);
-    } else {
-        add(0x1A, 0, 0, 0, 0, 0);
-    }
-    if (m_backend && m_backend->HandleCpuid(0x1A, 1, cr1a)) {
-        add(0x1A, 1, cr1a.eax, cr1a.ebx, cr1a.ecx, cr1a.edx);
-    } else {
-        add(0x1A, 1, 0, 0, 0, 0);
-    }
-
-    // Leaves 0x80000000-0x80000008 (extended): from backend or generic
-    if (m_backend && m_backend->HandleCpuid(0x80000000, 0, cr)) {
-        add(0x80000000, 0, cr.eax, cr.ebx, cr.ecx, cr.edx);
-    } else {
-        __cpuidex(cpuInfo, 0x80000000, 0);
-        add(0x80000000, 0, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1], (uint32_t)cpuInfo[2], (uint32_t)cpuInfo[3]);
-    }
-    if (m_backend && m_backend->HandleCpuid(0x80000001, 0, cr)) {
-        uint32_t ecxEx = cr.ecx, edxEx = cr.edx;
-        ApplyFeatureMask(0x80000001, 0, m_cpuVendor, &cr.eax, &cr.ebx, &ecxEx, &edxEx);
-        add(0x80000001, 0, cr.eax, cr.ebx, ecxEx, edxEx);
-    } else {
-        __cpuidex(cpuInfo, 0x80000001, 0);
-        uint32_t eaxEx = (uint32_t)cpuInfo[0], ebxEx = (uint32_t)cpuInfo[1];
-        uint32_t ecxEx = (uint32_t)cpuInfo[2], edxEx = (uint32_t)cpuInfo[3];
-        ApplyFeatureMask(0x80000001, 0, m_cpuVendor, &eaxEx, &ebxEx, &ecxEx, &edxEx);
-        add(0x80000001, 0, eaxEx, ebxEx, ecxEx, edxEx);
-    }
-
-    // Brand string leaves — populated from our brand string or auto-generated
-    if (m_hasBrandString) {
-        for (uint32_t lf = 0x80000002; lf <= 0x80000004; lf++) {
-            uint64_t ra, rb, rc, rd;
-            HandleBrandStringLeaf(lf, &ra, &rb, &rc, &rd);
-            add(lf, 0, (uint32_t)ra, (uint32_t)rb, (uint32_t)rc, (uint32_t)rd);
+    // Standard leaves 0x0..0x1F with the profile's subleaf coverage. Every
+    // value is produced by EvaluateLeaf (TIP or zero-rule) — nothing native.
+    static const struct { uint32_t leaf; uint32_t subCount; } kStd[] = {
+        {0x0, 1}, {0x1, 1}, {0x2, 1}, {0x3, 1}, {0x4, 5}, {0x5, 1}, {0x6, 1}, {0x7, 2},
+        {0x8, 1}, {0x9, 1}, {0xA, 1}, {0xB, 2}, {0xC, 1}, {0xD, 4}, {0xE, 1}, {0xF, 1},
+        {0x10, 1}, {0x11, 1}, {0x12, 1}, {0x13, 1}, {0x14, 2}, {0x15, 1}, {0x16, 1},
+        {0x17, 1}, {0x18, 1}, {0x19, 1}, {0x1A, 2}, {0x1B, 1}, {0x1C, 1}, {0x1D, 1},
+        {0x1E, 1}, {0x1F, 3},
+    };
+    for (const auto& e : kStd) {
+        for (uint32_t sub = 0; sub < e.subCount; sub++) {
+            add(e.leaf, sub);
         }
     }
 
-    // Hypervisor leaves 0x40000000-0x40000006: hidden (all zeros)
-    for (uint32_t lf = 0x40000000; lf <= 0x40000006; lf++) {
-        add(lf, 0, 0, 0, 0, 0);
+    // Extended leaves (TIP-driven; unlisted ones fall to the zero-rule)
+    for (uint32_t lf = 0x80000000; lf <= 0x80000008; lf++) {
+        add(lf, 0);
+    }
+
+    // Hypervisor range — always zero, never served from the TIP
+    for (uint32_t lf = 0x40000000; lf <= hvHigh; lf++) {
+        add(lf, 0);
     }
 
     *count = idx;
-    m_logger->Trace(LOG_WHP, "CpuidResultList populated: %d leaves (WHP exits only for unlisted leaves)", idx);
+    m_logger->Trace(LOG_WHP, "CpuidResultList populated: %d leaves (policy: TIP or zero-rule; no native values)", idx);
+}
+
+void CpuidHandler::GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount)
+{
+    BuildCpuidResultList(results, count, maxCount, 0x4000000F);
 }
 
 void CpuidHandler::GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount)
 {
-    int idx = 0;
-
-    auto add = [&](uint32_t leaf, uint32_t subleaf, uint32_t eax,
-                   uint32_t ebx, uint32_t ecx, uint32_t edx) {
-        if (idx >= maxCount) return;
-        results[idx].Function = leaf;
-        results[idx].Reserved[0] = 0;
-        results[idx].Reserved[1] = 0;
-        results[idx].Reserved[2] = 0;
-        results[idx].Eax = eax;
-        results[idx].Ebx = ebx;
-        results[idx].Ecx = ecx;
-        results[idx].Edx = edx;
-        idx++;
-        (void)subleaf;
-    };
-
-    // Enumerate standard leaves 0x00-0xFF
-    for (uint32_t leaf = 0; leaf <= 0xFF; leaf++) {
-        int cpuInfo[4] = {0};
-        __cpuidex(cpuInfo, leaf, 0);
-        uint32_t eax = (uint32_t)cpuInfo[0];
-        uint32_t ebx = (uint32_t)cpuInfo[1];
-        uint32_t ecx = (uint32_t)cpuInfo[2];
-        uint32_t edx = (uint32_t)cpuInfo[3];
-
-        // Apply feature masking
-        if (leaf == 1) {
-            ecx &= ~CPUID_ECX_HYPERVISOR_BIT;
-            ecx &= ~CPUID_ECX_SMX_BIT;
-        }
-        ApplyFeatureMask(leaf, 0, m_cpuVendor, &eax, &ebx, &ecx, &edx);
-
-        // Skip hypervisor leaves (0x40000000 range) — handled separately
-        add(leaf, 0, eax, ebx, ecx, edx);
-
-        // Handle subleaves for cache/topology (leaf 4, leaf B, leaf D, leaf 14h)
-        if (leaf == 4) {
-            for (uint32_t sub = 1; sub <= 3; sub++) {
-                __cpuidex(cpuInfo, leaf, sub);
-                uint32_t seax = (uint32_t)cpuInfo[0];
-                uint32_t sebx = (uint32_t)cpuInfo[1];
-                uint32_t secx = (uint32_t)cpuInfo[2];
-                uint32_t sedx = (uint32_t)cpuInfo[3];
-                ApplyFeatureMask(leaf, sub, m_cpuVendor, &seax, &sebx, &secx, &sedx);
-                add(leaf, sub, seax, sebx, secx, sedx);
-            }
-        }
-        if (leaf == 7) {
-            for (uint32_t sub = 1; sub <= 2; sub++) {
-                __cpuidex(cpuInfo, leaf, sub);
-                uint32_t seax = (uint32_t)cpuInfo[0];
-                uint32_t sebx = (uint32_t)cpuInfo[1];
-                uint32_t secx = (uint32_t)cpuInfo[2];
-                uint32_t sedx = (uint32_t)cpuInfo[3];
-                ApplyFeatureMask(leaf, sub, m_cpuVendor, &seax, &sebx, &secx, &sedx);
-                add(leaf, sub, seax, sebx, secx, sedx);
-            }
-        }
-        if (leaf == 0xB) {
-            for (uint32_t sub = 1; sub <= 2; sub++) {
-                __cpuidex(cpuInfo, leaf, sub);
-                add(leaf, sub, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1],
-                    (uint32_t)cpuInfo[2], (uint32_t)cpuInfo[3]);
-            }
-        }
-        if (leaf == 0xD) {
-            for (uint32_t sub = 1; sub <= 2; sub++) {
-                __cpuidex(cpuInfo, leaf, sub);
-                add(leaf, sub, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1],
-                    (uint32_t)cpuInfo[2], (uint32_t)cpuInfo[3]);
-            }
-        }
-        if (leaf == 0x1A) {
-            __cpuidex(cpuInfo, leaf, 1);
-            uint32_t seax = (uint32_t)cpuInfo[0];
-            uint32_t sebx = (uint32_t)cpuInfo[1];
-            uint32_t secx = (uint32_t)cpuInfo[2];
-            uint32_t sedx = (uint32_t)cpuInfo[3];
-            ApplyFeatureMask(leaf, 1, m_cpuVendor, &seax, &sebx, &secx, &sedx);
-            add(leaf, 1, seax, sebx, secx, sedx);
-        }
-    }
-
-    // Extended leaves 0x80000000-0x800000FF
-    for (uint32_t leaf = 0x80000000; leaf <= 0x800000FF; leaf++) {
-        int cpuInfo[4] = {0};
-        __cpuidex(cpuInfo, leaf, 0);
-        uint32_t eax = (uint32_t)cpuInfo[0];
-        uint32_t ebx = (uint32_t)cpuInfo[1];
-        uint32_t ecx = (uint32_t)cpuInfo[2];
-        uint32_t edx = (uint32_t)cpuInfo[3];
-
-        if (leaf >= 0x80000002 && leaf <= 0x80000004) {
-            // Brand string — use configured brand
-            uint64_t ra, rb, rc, rd;
-            if (HandleBrandStringLeaf(leaf, &ra, &rb, &rc, &rd)) {
-                eax = (uint32_t)ra; ebx = (uint32_t)rb;
-                ecx = (uint32_t)rc; edx = (uint32_t)rd;
-            }
-        } else {
-            ApplyFeatureMask(leaf, 0, m_cpuVendor, &eax, &ebx, &ecx, &edx);
-        }
-
-        add(leaf, 0, eax, ebx, ecx, edx);
-    }
-
-    // Hypervisor leaves 0x40000000-0x400000FF — all zeros
-    for (uint32_t leaf = 0x40000000; leaf <= 0x400000FF; leaf++) {
-        add(leaf, 0, 0, 0, 0, 0);
-    }
-
-    *count = idx;
-    m_logger->Trace(LOG_WHP, "Comprehensive CpuidResultList populated: %d leaves (all leaves pre-cached, no VM-exits)", idx);
+    BuildCpuidResultList(results, count, maxCount, 0x400000FF);
 }
 
 bool CpuidHandler::Serialize(std::vector<uint8_t>& buffer) const

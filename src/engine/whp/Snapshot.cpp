@@ -227,7 +227,7 @@ bool Snapshot::RestoreInMemory(const std::vector<uint8_t>& snapshotData,
                 hOffset += msrHandler->Deserialize(hData + hOffset, hRemain - hOffset);
             }
             if (hRemain > hOffset && eptExecHook) {
-                eptExecHook->Deserialize(hData + hOffset, hRemain - hOffset);
+                eptExecHook->Deserialize(hData + hOffset, (uint32_t)(hRemain - hOffset));
             }
         }
     }
@@ -426,7 +426,7 @@ bool Snapshot::Restore(const std::vector<uint8_t>& snapshotData,
                 hOffset += msrHandler->Deserialize(hData + hOffset, hRemain - hOffset);
             }
             if (hRemain > hOffset && eptExecHook) {
-                eptExecHook->Deserialize(hData + hOffset, hRemain - hOffset);
+                eptExecHook->Deserialize(hData + hOffset, (uint32_t)(hRemain - hOffset));
             }
         }
     }

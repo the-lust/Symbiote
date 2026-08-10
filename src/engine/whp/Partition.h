@@ -78,9 +78,10 @@ public:
     void SetVcpuCount(uint32_t count) { m_vcpuCount = count; }
     uint32_t GetVcpuCount() const { return m_vcpuCount; }
 
-    // Selective syscall interception — only WHP exits on ~200 spoofed syscalls
-    // instead of all ~2200, dramatically reducing VM-exit overhead.
-    // Each index is the syscall number. Call before Init().
+    // Syscall interception setup. M0 finding: WHP exposes NO per-syscall exit
+    // bitmap (WHvPartitionPropertyCodeSyscallExitBitmap never existed); every
+    // syscall traps via LSTAR->HLT. Implemented as a documented no-op — the
+    // list is kept for audit purposes. See Partition.cpp for the full analysis.
     bool SetupSyscallBitmap(const uint32_t* spoofedSyscallIndices, uint32_t count);
 
 private:

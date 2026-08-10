@@ -62,6 +62,7 @@ ENGINE_SRCS := \
     $(SRC_DIR)/engine/emu/TimingEmu.cpp \
     $(SRC_DIR)/engine/emu/VirtualState.cpp \
     $(SRC_DIR)/engine/emu/DeviceIoEmu.cpp \
+    $(SRC_DIR)/engine/emu/QemuTableGen.cpp \
     $(SRC_DIR)/engine/emu/ThreadHider.cpp \
     $(SRC_DIR)/engine/profile/GpuProfile.cpp \
     $(SRC_DIR)/engine/profile/TimingProfile.cpp \
@@ -83,7 +84,11 @@ LAUNCHER_SRCS := \
     $(SRC_DIR)/launcher/Main.cpp \
     $(SRC_DIR)/launcher/ConfigParser.cpp \
     $(SRC_DIR)/launcher/ProcessUtils.cpp \
+    $(SRC_DIR)/launcher/ProxyRenamer.cpp \
+    $(SRC_DIR)/launcher/Orchestrator.cpp \
     $(SRC_DIR)/launcher/WhpDetection.cpp \
+    $(SRC_DIR)/engine/byovd/ByovdDetect.cpp \
+    $(SRC_DIR)/kernelproxy/KernelProxy.cpp \
     $(SRC_DIR)/engine/log/Logger.cpp
 
 ENGINE_OBJS    := $(ENGINE_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)

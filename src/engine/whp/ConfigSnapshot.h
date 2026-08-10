@@ -6,7 +6,10 @@
 #include <array>
 
 // Maximum proxy DLLs supported
+#ifndef SYMBIOTE_KMAXPROXYDLLS
+#define SYMBIOTE_KMAXPROXYDLLS
 constexpr size_t kMaxProxyDlls = 32;
+#endif
 
 struct ProxyRenameEntry {
     wchar_t originalName[64];   // e.g., L"ntdll_proxy.dll"

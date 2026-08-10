@@ -6,6 +6,8 @@
 #include "proxy/InlineHook.h"
 
 class CaptureLogger;
+class CpuidHandler;
+class RdtscHandler;
 
 class AllocTracker {
 public:
@@ -15,6 +17,10 @@ public:
     bool Initialize();
     void Shutdown();
     void SetCaptureLogger(CaptureLogger* cap) { m_capLogger = cap; }
+    // WS-1: secondary interceptors must answer guest CPUID/RDTSC with the same
+    // TIP/zero-rule policy, never with real hardware values.
+    void SetCpuidHandler(CpuidHandler* h) { m_cpuidHandler = h; }
+    void SetRdtscHandler(RdtscHandler* h) { m_rdtscHandler = h; }
 
     LONG OnException(EXCEPTION_POINTERS* ep);
 
@@ -36,6 +42,8 @@ private:
 
     Logger* m_logger;
     CaptureLogger* m_capLogger;
+    CpuidHandler* m_cpuidHandler = nullptr;
+    RdtscHandler* m_rdtscHandler = nullptr;
     CRITICAL_SECTION m_cs;
     std::vector<TrackedPage> m_trackedPages;
     void* m_vehHandle;

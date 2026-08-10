@@ -1,6 +1,7 @@
 #include "SystemProfile.h"
 #include "ConfigParser.h"
 #include <cstring>
+#include <cstdio>
 
 SystemProfile::SystemProfile()
     : m_tscOffset(0ULL), m_apicFrequency(100000000ULL)
@@ -15,28 +16,118 @@ void SystemProfile::LoadFromConfig(ConfigParser* config)
     m_tscOffset = config->GetUint64("timing", "tsc_offset", m_tscOffset);
     m_apicFrequency = config->GetUint64("timing", "apic_frequency", m_apicFrequency);
 
-    // CPUID leaf overrides from [cpuid] section
-    struct CfgLeaf { uint32_t leaf; uint32_t subleaf; const char* key; };
-    CfgLeaf leaves[] = {
-        {0x0, 0, "leaf_0x0"}, {0x1, 0, "leaf_0x1"}, {0x2, 0, "leaf_0x2"},
-        {0x4, 0, "leaf_0x4_0"}, {0x4, 1, "leaf_0x4_1"}, {0x4, 2, "leaf_0x4_2"}, {0x4, 3, "leaf_0x4_3"},
-        {0x7, 0, "leaf_0x7"}, {0x7, 1, "leaf_0x7_1"},
-        {0xB, 0, "leaf_0xB_0"}, {0xB, 1, "leaf_0xB_1"},
-        {0x1A, 0, "leaf_0x1A_0"}, {0x1A, 1, "leaf_0x1A_1"},
-        {0x1F, 0, "leaf_0x1F_0"}, {0x1F, 1, "leaf_0x1F_1"}, {0x1F, 2, "leaf_0x1F_2"},
-        {0x80000000, 0, "leaf_0x80000000"}, {0x80000001, 0, "leaf_0x80000001"},
-        {0x80000002, 0, "leaf_0x80000002"}, {0x80000003, 0, "leaf_0x80000003"},
-        {0x80000004, 0, "leaf_0x80000004"}, {0x80000005, 0, "leaf_0x80000005"},
-        {0x80000006, 0, "leaf_0x80000006"}, {0x80000007, 0, "leaf_0x80000007"},
-        {0x80000008, 0, "leaf_0x80000008"},
+    uint32_t procCount = (uint32_t)config->GetUint64("system", "processor_count", m_processorCount);
+    if (procCount >= 1 && procCount <= 256) m_processorCount = procCount;
+
+    // Frozen-profile rule: if the config carries ANY [cpuid] leaf, it is the
+    // authoritative TIP — the built-in default profile is wiped so no leaf can
+    // silently leak a default CPU's values (e.g. i9-10900K 3.7GHz leaf 0x16
+    // against a 2.0GHz donor). Leaves without a config entry then fall to the
+    // zero-rule at the handler.
+    bool configHasCpuid = false;
+    {
+        struct ProbeRange { uint32_t leaf; uint32_t subCount; };
+        static const ProbeRange kProbe[] = {
+            {0x0,1},{0x1,1},{0x2,1},{0x3,1},{0x4,5},{0x5,1},{0x6,1},{0x7,2},
+            {0x8,1},{0x9,1},{0xA,1},{0xB,2},{0xC,1},{0xD,4},{0xE,1},{0xF,1},
+            {0x10,1},{0x11,1},{0x12,1},{0x13,1},{0x14,2},{0x15,1},{0x16,1},
+            {0x17,1},{0x18,1},{0x19,1},{0x1A,2},{0x1B,1},{0x1C,1},{0x1D,1},
+            {0x1E,1},{0x1F,3},
+            {0x80000000,1},{0x80000001,1},{0x80000002,1},{0x80000003,1},
+            {0x80000004,1},{0x80000005,1},{0x80000006,1},{0x80000007,1},{0x80000008,1},
+        };
+        for (const auto& r : kProbe) {
+            char leafSection[64];
+            snprintf(leafSection, sizeof(leafSection), "cpuid.leaf_%X", r.leaf);
+            const char* sections[4] = { "cpuid", "cpuid.basic", "cpuid.ext", leafSection };
+            for (uint32_t sub = 0; sub < r.subCount && !configHasCpuid; sub++) {
+                char keyPlain[64], keySub[64], keyNum[64];
+                const char* keys[3] = { nullptr, nullptr, nullptr };
+                if (sub == 0) {
+                    snprintf(keyPlain, sizeof(keyPlain), "leaf_0x%X", r.leaf);
+                    keys[0] = keyPlain;
+                }
+                snprintf(keySub, sizeof(keySub), "leaf_0x%X_sub%u", r.leaf, sub);
+                keys[1] = keySub;
+                snprintf(keyNum, sizeof(keyNum), "leaf_0x%X_%u", r.leaf, sub);
+                keys[2] = keyNum;
+                for (const char* sec : sections) {
+                    for (const char* key : keys) {
+                        if (!key || !key[0]) continue;
+                        if (config->GetUint64(sec, std::string(key) + "_eax", 0xFFFFFFFFu) != 0xFFFFFFFFu) {
+                            configHasCpuid = true;
+                            break;
+                        }
+                    }
+                    if (configHasCpuid) break;
+                }
+            }
+        }
+    }
+    if (configHasCpuid) {
+        m_cpuidLeaves.clear();
+    }
+
+    // WS-1: TIP-driven full-leaf table. Every leaf the frozen profile may carry
+    // (standard 0x0..0x1F, extended 0x80000000..0x80000008) is loaded from the
+    // [cpuid] section with a convention-agnostic key match, tried in order:
+    //   plain  "leaf_0x<LEAF>"            (subleaf 0 only)
+    //   "leaf_0x<LEAF>_sub<N>"            (capture/profile convention)
+    //   "leaf_0x<LEAF>_<N>"               (older convention)
+    // The first variant that yields any non-sentinel value wins. This fixes the
+    // previous key-name mismatches (leaf_0x4_0 vs leaf_0x4_sub0) that silently
+    // dropped the 0x4/0xB/0xD subleaf entries, and the leaves that were never
+    // queried at all (0x5/0x6/0x8/0x9/0xA/0xD), which made the engine serve the
+    // built-in i9-10900K default profile instead of the donor's frozen values.
+    struct CfgLeafRange { uint32_t leaf; uint32_t subCount; };
+    static const CfgLeafRange kRanges[] = {
+        {0x0, 1}, {0x1, 1}, {0x2, 1}, {0x3, 1}, {0x4, 5}, {0x5, 1}, {0x6, 1}, {0x7, 2},
+        {0x8, 1}, {0x9, 1}, {0xA, 1}, {0xB, 2}, {0xC, 1}, {0xD, 4}, {0xE, 1}, {0xF, 1},
+        {0x10, 1}, {0x11, 1}, {0x12, 1}, {0x13, 1}, {0x14, 2}, {0x15, 1}, {0x16, 1},
+        {0x17, 1}, {0x18, 1}, {0x19, 1}, {0x1A, 2}, {0x1B, 1}, {0x1C, 1}, {0x1D, 1},
+        {0x1E, 1}, {0x1F, 3},
+        {0x80000000, 1}, {0x80000001, 1}, {0x80000002, 1}, {0x80000003, 1},
+        {0x80000004, 1}, {0x80000005, 1}, {0x80000006, 1}, {0x80000007, 1}, {0x80000008, 1},
     };
-    for (auto& cl : leaves) {
-        uint32_t eax = (uint32_t)config->GetUint64("cpuid", std::string(cl.key) + "_eax", 0xFFFFFFFF);
-        uint32_t ebx = (uint32_t)config->GetUint64("cpuid", std::string(cl.key) + "_ebx", 0xFFFFFFFF);
-        uint32_t ecx = (uint32_t)config->GetUint64("cpuid", std::string(cl.key) + "_ecx", 0xFFFFFFFF);
-        uint32_t edx = (uint32_t)config->GetUint64("cpuid", std::string(cl.key) + "_edx", 0xFFFFFFFF);
-        if (eax != 0xFFFFFFFF || ebx != 0xFFFFFFFF || ecx != 0xFFFFFFFF || edx != 0xFFFFFFFF) {
-            SetCpuid(cl.leaf, cl.subleaf, eax, ebx, ecx, edx);
+
+    for (const auto& r : kRanges) {
+        for (uint32_t sub = 0; sub < r.subCount; sub++) {
+            // Key variants, tried per section: plain (subleaf 0), "_subN", "_N"
+            char keyPlain[64], keySub[64], keyNum[64];
+            const char* keys[3] = { nullptr, nullptr, nullptr };
+            if (sub == 0) {
+                snprintf(keyPlain, sizeof(keyPlain), "leaf_0x%X", r.leaf);
+                keys[0] = keyPlain;
+            }
+            snprintf(keySub, sizeof(keySub), "leaf_0x%X_sub%u", r.leaf, sub);
+            keys[1] = keySub;
+            snprintf(keyNum, sizeof(keyNum), "leaf_0x%X_%u", r.leaf, sub);
+            keys[2] = keyNum;
+
+            // Sections, most generic first: flat [cpuid] (capture/profile
+            // convention), the documented split headers, and per-leaf headers.
+            char leafSection[64];
+            snprintf(leafSection, sizeof(leafSection), "cpuid.leaf_%X", r.leaf);
+            const char* sections[4] = { "cpuid", "cpuid.basic", "cpuid.ext", leafSection };
+
+            bool any = false;
+            uint32_t v[4] = {0, 0, 0, 0};
+            for (const char* sec : sections) {
+                for (const char* key : keys) {
+                    if (!key || !key[0]) continue;
+                    uint64_t e = config->GetUint64(sec, std::string(key) + "_eax", 0xFFFFFFFFu);
+                    uint64_t b = config->GetUint64(sec, std::string(key) + "_ebx", 0xFFFFFFFFu);
+                    uint64_t c = config->GetUint64(sec, std::string(key) + "_ecx", 0xFFFFFFFFu);
+                    uint64_t d = config->GetUint64(sec, std::string(key) + "_edx", 0xFFFFFFFFu);
+                    if (e == 0xFFFFFFFFu && b == 0xFFFFFFFFu && c == 0xFFFFFFFFu && d == 0xFFFFFFFFu)
+                        continue;
+                    v[0] = (uint32_t)e; v[1] = (uint32_t)b; v[2] = (uint32_t)c; v[3] = (uint32_t)d;
+                    any = true;
+                    break;
+                }
+                if (any) break;
+            }
+            if (any) SetCpuid(r.leaf, sub, v[0], v[1], v[2], v[3]);
         }
     }
 
@@ -62,15 +153,16 @@ void SystemProfile::LoadHybridFromConfig(ConfigParser* config)
     if (!hasAny) return;
 
     m_hybridTopology.isHybrid = true;
-    m_hybridTopology.nativeModelId = eax;
-    m_hybridTopology.coreType = ecx;
-    m_hybridTopology.subleaf1Eax = sub1eax;
-    m_hybridTopology.subleaf1Ebx = sub1ebx;
-    m_hybridTopology.subleaf1Ecx = sub1ecx;
-    m_hybridTopology.subleaf1Edx = sub1edx;
+    m_hybridTopology.nativeModelId = (eax != 0xFFFFFFFFu) ? eax : 0;
+    m_hybridTopology.coreType = (ecx != 0xFFFFFFFFu) ? ecx : 0;
+    m_hybridTopology.subleaf1Eax = (sub1eax != 0xFFFFFFFFu) ? sub1eax : 0;
+    m_hybridTopology.subleaf1Ebx = (sub1ebx != 0xFFFFFFFFu) ? sub1ebx : 0;
+    m_hybridTopology.subleaf1Ecx = (sub1ecx != 0xFFFFFFFFu) ? sub1ecx : 0;
+    m_hybridTopology.subleaf1Edx = (sub1edx != 0xFFFFFFFFu) ? sub1edx : 0;
 
-    SetCpuid(0x1A, 0, eax, 0, ecx, 0);
-    SetCpuid(0x1A, 1, sub1eax, sub1ebx, sub1ecx, sub1edx);
+    SetCpuid(0x1A, 0, m_hybridTopology.nativeModelId, 0, m_hybridTopology.coreType, 0);
+    SetCpuid(0x1A, 1, m_hybridTopology.subleaf1Eax, m_hybridTopology.subleaf1Ebx,
+             m_hybridTopology.subleaf1Ecx, m_hybridTopology.subleaf1Edx);
 }
 
 bool SystemProfile::GetCpuid(uint32_t leaf, uint32_t subleaf,

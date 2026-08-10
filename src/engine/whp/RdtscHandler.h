@@ -3,6 +3,7 @@
 #include <WinHvPlatform.h>
 #include <atomic>
 #include <thread>
+#include <vector>
 #include "Logger.h"
 
 class IKernelBackend;
@@ -19,6 +20,11 @@ public:
 
     bool HandleRdtsc(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t* rdx, uint64_t* rip);
     bool HandleRdtscp(WHV_VP_EXIT_CONTEXT* ctx, uint64_t* rax, uint64_t* rdx, uint64_t* rcx, uint64_t* rip);
+
+    // Spoiled TSC value for the current moment, without VEH/exit side effects —
+    // usable from secondary interceptors (e.g. the AllocTracker guard-page VEH)
+    // so a guest RDTSC served there is consistent with the exit-handler path.
+    uint64_t ReadSpoofedTsc();
 
     // CounterUpdater: background thread that advances a synthetic TSC at ~3GHz
     void StartCounterUpdater();

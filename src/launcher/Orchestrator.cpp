@@ -235,10 +235,9 @@ PhaseResult Orchestrator::Phase5_RenameDlls() {
     m_renamer.GenerateNames();
 
     // Copy renamed DLLs to target directory
-    wchar_t* targetDir = m_config->targetDirectory;
-    if (!targetDir[0]) wcscpy_s(targetDir, launcherDir);
+    if (!m_config->targetDirectory[0]) wcscpy_s(m_config->targetDirectory, launcherDir);
 
-    if (!m_renamer.ApplyRenames(targetDir)) {
+    if (!m_renamer.ApplyRenames(m_config->targetDirectory[0] ? m_config->targetDirectory : launcherDir)) {
         wcscpy_s(r.errorMsg, L"Proxy DLL rename copies failed");
         r.success = false;
         return r;
@@ -279,7 +278,7 @@ PhaseResult Orchestrator::Phase6_InjectEngine() {
     // Step 3: inject engine.dll
     wchar_t engineDllPath[MAX_PATH];
     GetModuleFileNameW(nullptr, engineDllPath, MAX_PATH);
-    lastSlash = wcsrchr(engineDllPath, L'\\');
+    wchar_t* lastSlash = wcsrchr(engineDllPath, L'\\');
     if (lastSlash) *(lastSlash + 1) = L'\0';
     wcscat_s(engineDllPath, L"engine.dll");
 
@@ -372,6 +371,7 @@ bool Orchestrator::CreateSharedMemory() {
     hdr->exportTableOffset = (hdr->exportTableOffset + 7) & ~7;
 
     ExportEntry* exports = (ExportEntry*)((uint8_t*)m_hSharedMemMap + hdr->exportTableOffset);
+    (void)exports;
     // Populate with the engine's actual export table
     // These are filled by the engine at init; we pre-populate with placeholder IDs
     hdr->exportTableCount = 0;

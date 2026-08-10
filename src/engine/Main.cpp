@@ -257,33 +257,6 @@ static void SetupIatHooks(bool enableEat = false)
         if (wcscmp(dll.name, L"kernel32.dll") == 0) hKernel32Proxy = hProxy;
     }
 
-    HMODULE hNtdllProxy = NULL, hKernel32Proxy = NULL;
-
-    for (auto& dll : dlls) {
-        wchar_t fullPath[MAX_PATH];
-        swprintf_s(fullPath, L"%s\\%s", g_engineDir, dll.name);
-        g_logger.Trace(LOG_PROXY, "Loading proxy DLL: %ls", fullPath);
-        HMODULE hProxy = LoadLibraryW(fullPath);
-        if (!hProxy) {
-            g_logger.Trace(LOG_ERROR, "Failed to load proxy DLL: %ls", fullPath);
-            continue;
-        }
-        g_logger.Trace(LOG_PROXY, "Loaded %ls", dll.name);
-        for (int i = 0; i < dll.exportCount; i++) {
-            // skip GPU DLLs - always fall through to real system
-            if (g_gpuBridge && g_gpuBridge->IsGpuDll(dll.exports[i][0])) {
-                g_logger.Trace(LOG_PROXY, "Skipping GPU DLL %s - always fallthrough", dll.exports[i][0]);
-                continue;
-            }
-            FARPROC proc = GetProcAddress(hProxy, dll.exports[i][1]);
-            if (proc) {
-                g_iatPatch->PatchIAT(dll.exports[i][0], dll.exports[i][1], (void*)proc);
-            }
-        }
-        if (wcscmp(dll.name, L"ntdll.dll") == 0) hNtdllProxy = hProxy;
-        if (wcscmp(dll.name, L"kernel32.dll") == 0) hKernel32Proxy = hProxy;
-    }
-
     // EAT (Export Address Table) patching
     if (enableEat) {
         g_logger.Trace(LOG_PROXY, "EAT patching enabled");
@@ -595,7 +568,11 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
                 }
             }
 
-            // Selective syscall interception — only exit on spoofed syscalls
+            // Syscall interception — M0 finding: WHP has no per-syscall exit bitmap
+            // (the API was fabricated in an earlier version and never compiled).
+            // The list below is passed to SetupSyscallBitmap (documented no-op) and
+            // serves as the audit trail of syscalls that MUST be answered; all
+            // syscalls actually trap via LSTAR->HLT.
             bool syscallBitmap = configParser.GetBool("syscall_bitmap", "enabled", true);
             if (syscallBitmap) {
                 static const uint32_t kSpoofedSyscalls[] = {
@@ -793,6 +770,10 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         } else {
             g_allocTracker = new AllocTracker(&g_logger);
             if (g_captureLogger) g_allocTracker->SetCaptureLogger(g_captureLogger);
+            // WS-1: the VEH must answer guest CPUID/RDTSC with the shared
+            // TIP/zero-rule policy, not with real hardware values
+            g_allocTracker->SetCpuidHandler(g_cpuidHandler);
+            g_allocTracker->SetRdtscHandler(g_rdtscHandler);
             if (g_allocTracker->Initialize()) {
                 g_logger.Trace(LOG_INFO, "AllocTracker initialized - tracking executable allocations");
             } else {

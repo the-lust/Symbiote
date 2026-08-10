@@ -68,7 +68,7 @@ const wchar_t* ProxyRenamer::GetRandomName(const wchar_t* original) const {
 }
 
 bool ProxyRenamer::RestoreNames(const wchar_t* targetDir) {
-    wchar_t srcPath[MAX_PATH], dstPath[MAX_PATH];
+    wchar_t srcPath[MAX_PATH];
     for (size_t i = 0; i < m_count; i++) {
         swprintf_s(srcPath, L"%s\\%s", targetDir, m_entries[i].randomName);
         // Delete the random-named copy (original stays)

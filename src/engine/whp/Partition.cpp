@@ -106,14 +106,15 @@ bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
 {
     if (!m_handle) return false;
 
-    // Pre-populate hypervisor leaves + leaf 1 ECX[31]
-    WHV_X64_CPUID_RESULT results[32];
+    // Pre-populate the full policy list (standard + extended + hypervisor-zero
+    // leaves). WS-1: every cached leaf is TIP-or-zero, never native.
+    WHV_X64_CPUID_RESULT results[96];
     int count = 0;
 
     auto add = [&](uint32_t leaf, uint32_t subleaf, uint32_t eax,
                    uint32_t ebx, uint32_t ecx, uint32_t edx) {
         (void)subleaf;
-        if (count >= 32) return;
+        if (count >= 96) return;
         results[count].Function = leaf;
         results[count].Reserved[0] = 0;
         results[count].Reserved[1] = 0;
@@ -130,11 +131,9 @@ bool Partition::SetupCpuidResultList(CpuidHandler* cpuidHandler)
     if (cpuidHandler) {
         cpuidHandler->GetCpuidResultList(results, &count, 32);
     } else {
-        // Minimal result list (no CpuidHandler available)
-        int cpuInfo[4];
-        __cpuidex(cpuInfo, 1, 0);
-        add(1, 0, (uint32_t)cpuInfo[0], (uint32_t)cpuInfo[1],
-            (uint32_t)cpuInfo[2] & ~(1u << 31), (uint32_t)cpuInfo[3]);
+        // No CpuidHandler available — WS-1 zero-rule: never answer from real
+        // hardware. The fallback list only carries zeros (leaf 1 = zero).
+        add(1, 0, 0, 0, 0, 0);
     }
 
     // Always add hypervisor leaves 0x40000000-0x4000000F as zeros
@@ -749,43 +748,26 @@ bool Partition::SetupSyscallBitmap(const uint32_t* spoofedSyscallIndices, uint32
 {
     if (!m_handle) return false;
 
-    // WHP's MSR bitmaps control which SYSCALL causes VM exit.
-    // By default, all SYSCALL instructions exit. We reconfigure to
-    // only exit on the ~200 syscalls we need to spoof, letting
-    // the other ~2000 execute natively at full speed.
+    // M0 finding: there is NO per-syscall exit bitmap in the real WHP API.
+    // WHvPartitionPropertyCodeSyscallExitBitmap / WHV_SYSCALL_EXIT_BITMAP do not
+    // exist in any shipped WinHvPlatform.h (verified against SDK 26100 and the
+    // Microsoft docs), and there is no WHvRunVpExitReasonX64Syscall exit reason.
+    // The only per-SYSCALL interception mechanisms WHP offers are:
+    //   - LSTAR redirection to a HLT page (used by VcpuManager::SetupLstarMsrs):
+    //     EVERY syscall traps as WHvRunVpExitReasonX64Halt. This is the path that
+    //     actually handles all ~2200 syscalls today.
+    //   - EPT execute-access hooks on the ntdll syscall stub region (EptExecHook /
+    //     SystemSpoofer::HandleEptSyscallIntercept) for selective interception.
     //
-    // The bitmap is an 8KB MSR bitmap (similar to VMCS MSR bitmaps).
-    // Bit N controls whether RFLAGS.TF-like EXIT on SYSCALL N.
-    // We zero the entire "don't exit on SYSCALL" bitmap, then set
-    // only the indices we need.
-    //
-    // NOTE: WHP doesn't expose a direct per-syscall exit bitmap API.
-    // Instead we use WHvSetPartitionProperty with 
-    // WHvPartitionPropertyCodeSyscallExitBitmap.
-
-    WHV_SYSCALL_EXIT_BITMAP bitmap;
-    memset(&bitmap, 0, sizeof(bitmap));
-
-    // Set bits for each spoofed syscall index
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t idx = spoofedSyscallIndices[i];
-        if (idx < 4096) {
-            bitmap.Data[idx / 64] |= (1ULL << (idx % 64));
-        }
-    }
-
-    HRESULT hr = WHvSetPartitionProperty(m_handle,
-        WHvPartitionPropertyCodeSyscallExitBitmap,
-        &bitmap, sizeof(bitmap));
-    if (FAILED(hr)) {
-        m_logger->Trace(LOG_WARNING,
-            "SetupSyscallBitmap: WHvSetPartitionProperty failed 0x%08X — "
-            "all-syscall-exit fallback", hr);
-        return false;
-    }
+    // So the "~200 exit, ~2000 native fallthrough" claim is not achievable through
+    // a partition property. The caller (Main.cpp) passes the spoofed-syscall list
+    // for documentation/audit purposes; keep this as an explicit no-op so nobody
+    // re-introduces the fabricated API.
+    (void)spoofedSyscallIndices;
+    (void)count;
 
     m_logger->Trace(LOG_WHP,
-        "Syscall bitmap installed: %u spoofed syscalls exit, ~%u pass through natively",
-        count, 4096 - count);
+        "SetupSyscallBitmap: no-op (WHP has no per-syscall exit bitmap; "
+        "all syscalls trap via LSTAR->HLT; selective EPT interception is available)");
     return true;
 }

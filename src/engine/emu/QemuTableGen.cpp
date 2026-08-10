@@ -2,6 +2,18 @@
 #include <cstring>
 #include <algorithm>
 
+// MSVC has no __attribute__((packed)); use pragma pack there, keep the
+// attribute for GCC/Clang (mingw preset).
+#ifdef _MSC_VER
+#define SYM_PACK_BEGIN   __pragma(pack(push, 1))
+#define SYM_PACK_END     __pragma(pack(pop))
+#define SYM_PACKED_CLOSE(name) name = {}
+#else
+#define SYM_PACK_BEGIN
+#define SYM_PACK_END
+#define SYM_PACKED_CLOSE(name) __attribute__((packed)) name = {}
+#endif
+
 QemuTableGen::QemuTableGen() : m_initialized(false) {
     memset(&m_config, 0, sizeof(m_config));
 }
@@ -74,6 +86,7 @@ bool QemuTableGen::GenerateAcpiTables(
     memcpy(outRsdp.data(), &rsdp, sizeof(Rsdp));
 
     // --- FADT (Fixed ACPI Description Table) ---
+    SYM_PACK_BEGIN
     struct Facp {
         AcpiHeader header;
         uint32_t facsAddr;
@@ -113,7 +126,8 @@ bool QemuTableGen::GenerateAcpiTables(
         uint16_t prefWidth;
         uint64_t addrFadtBase;
         uint64_t addrXsdtBase;
-    } __attribute__((packed)) facp = {};
+    } SYM_PACKED_CLOSE(facp);
+    SYM_PACK_END
     memcpy(facp.header.signature, "FACP", 4);
     facp.header.length = sizeof(Facp);
     facp.header.revision = 6;
@@ -175,7 +189,7 @@ bool QemuTableGen::GenerateAcpiTables(
     // Root scope: Scope(\)
     dsdt.rootScope[0] = 0x10;  // Scope opcode
     dsdt.rootScope[1] = 0x40;  // PkgLength (future)
-    dsdt.rootScope[2] = 0x5C;  // NameString: \
+    dsdt.rootScope[2] = 0x5C;  // NameString: backslash
     dsdt.rootScope[3] = 0x00;  // TermList
     dsdt.endScope = 0x79;      // EndTag
     dsdt.endScope2 = 0x00;
@@ -184,6 +198,7 @@ bool QemuTableGen::GenerateAcpiTables(
     memcpy(outDsdt.data(), &dsdt, sizeof(DsdtTemplate));
 
     // --- HPET table ---
+    SYM_PACK_BEGIN
     struct HpetTable {
         AcpiHeader header;
         uint32_t   id;
@@ -192,7 +207,8 @@ bool QemuTableGen::GenerateAcpiTables(
         uint16_t   seqNum;
         uint16_t   minTick;
         uint8_t    pageProtect;
-    } __attribute__((packed)) hpet = {};
+    } SYM_PACKED_CLOSE(hpet);
+    SYM_PACK_END
     memcpy(hpet.header.signature, "HPET", 4);
     hpet.header.length = sizeof(HpetTable);
     hpet.header.revision = 1;
@@ -218,11 +234,13 @@ bool QemuTableGen::GenerateAcpiTables(
         uint8_t  busEnd;
         uint32_t reserved;
     };
+    SYM_PACK_BEGIN
     struct McfgTable {
         AcpiHeader header;
         uint64_t   reserved;
         McfgEntry  entry;
-    } __attribute__((packed)) mcfg = {};
+    } SYM_PACKED_CLOSE(mcfg);
+    SYM_PACK_END
     memcpy(mcfg.header.signature, "MCFG", 4);
     mcfg.header.length = sizeof(McfgTable);
     mcfg.header.revision = 1;
@@ -232,7 +250,7 @@ bool QemuTableGen::GenerateAcpiTables(
     memcpy(mcfg.header.creatorId, creatorId, 4);
     memcpy(mcfg.header.creatorRev, creatorRev, 4);
     mcfg.entry.baseAddress = m_config.pcieEcBase ? m_config.pcieEcBase : 0xE0000000ULL;
-    mcfg.entry.segmentGroup = m_config.pcieSegmentGroup;
+    mcfg.entry.segmentGroup = (uint16_t)m_config.pcieSegmentGroup;
     mcfg.entry.busStart = 0;
     mcfg.entry.busEnd = 0xFF;
     ComputeChecksum(&mcfg.header);
@@ -478,9 +496,9 @@ bool QemuTableGen::BuildFirmwareRegion(std::vector<uint8_t>& outRegion) {
         return false;
 
     // Lay out at ACPI base with 0x1000 alignment
-    uint64_t base = GetAcpiBasePhys();
     size_t offset = 0;
     auto place = [&](std::vector<uint8_t>& tbl, const char* name, uint64_t align) {
+        (void)name;
         // Align
         if (offset % align) offset += align - (offset % align);
         offset += tbl.size();
@@ -516,6 +534,7 @@ bool QemuTableGen::BuildFirmwareRegion(std::vector<uint8_t>& outRegion) {
 }
 
 bool QemuTableGen::DeployToPartition(void* partitionHandle) {
+    (void)partitionHandle;
     // Stub: walk WHP partition and map firmware GPA range
     return true;
 }

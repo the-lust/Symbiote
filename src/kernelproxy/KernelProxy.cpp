@@ -1,4 +1,5 @@
 #include "KernelProxy.h"
+#include "../engine/byovd/ByovdDetect.h"
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -78,6 +79,7 @@ bool KernelProxy::InjectSsdtHooks(const SsdtTableInitParams& params) {
 
 bool KernelProxy::DeployEprocessSanitizer(const EprocessSanitizerParams& params) {
     if (!(m_caps & BYOVD_CAP_PHYSICAL_MEM)) return false;
+    (void)params;
 
     // Write EPROCESS sanitizer stub kernel code + thread creation into non-paged pool
     // The stub will:
@@ -110,6 +112,7 @@ bool KernelProxy::DeployEprocessSanitizer(const EprocessSanitizerParams& params)
 
 bool KernelProxy::InstallLstarMonitor(const LstarMonitorParams& params) {
     if (!(m_caps & BYOVD_CAP_PHYSICAL_MEM)) return false;
+    (void)params;
 
     // Install a timer DPC or thread that:
     // 1) Reads MSR 0xC0000082 (LSTAR)
@@ -130,6 +133,7 @@ bool KernelProxy::InstallLstarMonitor(const LstarMonitorParams& params) {
 
 bool KernelProxy::InstallIdtHook(const IdtHookParams& params) {
     if (!(m_caps & BYOVD_CAP_PHYSICAL_MEM)) return false;
+    (void)params;
     // In real implementation:
     // 1) Read IDT via SIDT
     // 2) Replace vector params.targetVector with our handler
@@ -218,6 +222,7 @@ uint64_t KernelProxy::FindNtosBase() {
 bool KernelProxy::InjectStub(const wchar_t* stubName, const uint8_t* stubData, size_t stubSize,
                               uint64_t physBase, uint64_t* outPhys, void** outVa) {
     if (!m_hDevice) return false;
+    (void)stubName;
 
     // Allocate non-paged pool via BYOVD
     DWORD bytesRet = 0;
@@ -251,6 +256,7 @@ bool KernelProxy::InjectStub(const wchar_t* stubName, const uint8_t* stubData, s
 
 bool KernelProxy::HookSsdtEntry(uint32_t index, void* newHandler, void** oldHandler) {
     if (!m_ntosBase) return false;
+    (void)index; (void)newHandler; (void)oldHandler;
 
     // KiServiceTable is exported from ntoskrnl.exe
     // We need to:

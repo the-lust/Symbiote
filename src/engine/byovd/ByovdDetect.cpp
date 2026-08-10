@@ -31,7 +31,7 @@ const VulnerableDriverEntry ByovdDetect::kKnownDrivers[8] = {
 };
 
 ByovdDetect::ByovdDetect() {
-    // Default drivers directory: <exe_dir>\drivers\
+    // Default drivers directory: <exe_dir> + drivers subfolder
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     wchar_t* lastSlash = wcsrchr(exePath, L'\\');
@@ -126,6 +126,9 @@ void ByovdDetect::RemoveInstalled() {
 }
 
 void ByovdDetect::CloseAll() {
+    // Remove installed drivers first (stop + delete service)
+    RemoveInstalled();
+
     for (auto& dd : m_detected) {
         if (dd.deviceHandle && dd.deviceHandle != INVALID_HANDLE_VALUE) {
             CloseHandle(dd.deviceHandle);
@@ -423,18 +426,4 @@ uint64_t ByovdDetect::ValidateCapabilities(HANDLE hDevice, const VulnerableDrive
     }
 
     return caps;
-}
-
-void ByovdDetect::CloseAll() {
-    // Remove installed drivers first (stop + delete service)
-    RemoveInstalled();
-
-    for (auto& dd : m_detected) {
-        if (dd.deviceHandle && dd.deviceHandle != INVALID_HANDLE_VALUE) {
-            CloseHandle(dd.deviceHandle);
-            dd.deviceHandle = INVALID_HANDLE_VALUE;
-        }
-    }
-    m_detected.clear();
-    m_active.reset();
 }

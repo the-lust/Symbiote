@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <cstdint>
+#include <cwchar>
 
 // Shared memory protocol between launcher and engine.
 // The launcher creates a file mapping before engine injection.

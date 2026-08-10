@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <WinHvPlatform.h>
+#include <vector>
 #include "Logger.h"
 
 class IKernelBackend;
@@ -35,9 +36,45 @@ public:
     void GetComprehensiveCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount);
     void GetCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount);
 
+    // WS-1 policy entry usable from secondary interceptors (e.g. the AllocTracker
+    // guard-page VEH) so every CPUID the guest can observe is answered by the
+    // same TIP/zero-rule logic. Honors the same per-process passthrough rule as
+    // HandleCpuid: pid == registered target (or no target) -> policy; otherwise
+    // the real hardware values are returned.
+    void EvaluateCpuidForProcess(uint64_t pid, uint32_t leaf, uint32_t subleaf,
+                                 uint32_t* eax, uint32_t* ebx,
+                                 uint32_t* ecx, uint32_t* edx);
+
 private:
     bool HandleBrandStringLeaf(uint32_t leaf, uint64_t* rax, uint64_t* rbx,
                                uint64_t* rcx, uint64_t* rdx);
+
+    // WS-1 policy: a single evaluate path shared by the VM-exit handler and the
+    // WHP CPUID result-list builders, so cached and exit-served leaves answer
+    // identically. Order: hypervisor range -> zeros; brand leaves -> brand
+    // string; TIP (backend) -> frozen profile values; otherwise ZERO-RULE
+    // (unlisted leaves are zeroed, never answered from real hardware).
+    // Universal feature mask applied, leaf-1 ECX[31]/SMX cleared.
+    void EvaluateLeaf(uint32_t leaf, uint32_t subleaf,
+                      uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx);
+
+    // Throttled log for zero-rule hits (first miss per leaf, then every 1000)
+    void LogZeroRuleMiss(uint32_t leaf, uint32_t subleaf);
+    uint32_t m_zeroRuleLastLeaf = 0xFFFFFFFF;
+    uint32_t m_zeroRuleLastSubleaf = 0xFFFFFFFF;
+    uint32_t m_zeroRuleMissCount = 0;
+    uint64_t m_zeroRuleTotal = 0;
+
+    // Per-handler exit-latency telemetry (aggregated, logged every 1000 exits)
+    uint64_t m_exitCount = 0;
+    uint64_t m_exitLatencyAccumCycles = 0;
+
+    // WS-1 result-list builder (shared by GetCpuidResultList /
+    // GetComprehensiveCpuidResultList). Covers standard 0x0..0x1F with the
+    // profile's subleaves, extended 0x80000000..0x80000008, and the hypervisor
+    // range 0x40000000..hvHigh all evaluated through EvaluateLeaf.
+    void BuildCpuidResultList(WHV_X64_CPUID_RESULT* results, int* count, int maxCount,
+                              uint32_t hvHigh);
 
     Logger* m_logger;
     class IKernelBackend* m_backend;

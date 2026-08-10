@@ -1,5 +1,7 @@
 #define WIN32_NO_STATUS
 #include "AllocTracker.h"
+#include "CpuidHandler.h"
+#include "RdtscHandler.h"
 #include "capture/CaptureLogger.h"
 #include <windows.h>
 #ifndef NTSTATUS
@@ -321,31 +323,38 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
 
         LeaveCriticalSection(&m_cs);
 
-        // Full register emulation: execute real instruction then spoof
+        // Full register emulation through the shared WS-1 policy — never real
+        // hardware values (a guard-page CPUID/RDTSC is still guest-visible)
         if (isCpuid) {
-            int cpuInfo[4] = {0};
             uint32_t leaf = (uint32_t)ep->ContextRecord->Rax;
             uint32_t subleaf = (uint32_t)ep->ContextRecord->Rcx;
-            __cpuidex(cpuInfo, leaf, subleaf);
-            ep->ContextRecord->Rax = (uint64_t)(uint32_t)cpuInfo[0];
-            ep->ContextRecord->Rbx = (uint64_t)(uint32_t)cpuInfo[1];
-            ep->ContextRecord->Rcx = (uint64_t)(uint32_t)cpuInfo[2];
-            ep->ContextRecord->Rdx = (uint64_t)(uint32_t)cpuInfo[3];
-
-            // Mirror the WHP spoofing: clear hypervisor bit
-            if (leaf == 1) {
-                ep->ContextRecord->Rcx &= ~(1u << 31);
-                ep->ContextRecord->Rcx &= ~(1u << 6);
+            uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+            if (m_cpuidHandler) {
+                m_cpuidHandler->EvaluateCpuidForProcess(GetCurrentProcessId(), leaf, subleaf,
+                    &eax, &ebx, &ecx, &edx);
+            } else {
+                int cpuInfo[4] = {0};
+                __cpuidex(cpuInfo, leaf, subleaf);
+                eax = (uint32_t)cpuInfo[0];
+                ebx = (uint32_t)cpuInfo[1];
+                ecx = (uint32_t)cpuInfo[2];
+                edx = (uint32_t)cpuInfo[3];
+                if (leaf == 1) {
+                    ecx &= ~(1u << 31);
+                    ecx &= ~(1u << 6);
+                }
             }
-        } else if (isRdtsc) {
-            ep->ContextRecord->Rax = (uint64_t)(uint32_t)__rdtsc();
-            ep->ContextRecord->Rdx = (uint64_t)(__rdtsc() >> 32);
-        } else if (isRdtscp) {
-            unsigned aux;
-            uint64_t tsc = __rdtscp(&aux);
-            ep->ContextRecord->Rax = (uint64_t)(uint32_t)tsc;
-            ep->ContextRecord->Rdx = (uint64_t)(tsc >> 32);
-            ep->ContextRecord->Rcx = 1;
+            ep->ContextRecord->Rax = (uint64_t)eax;
+            ep->ContextRecord->Rbx = (uint64_t)ebx;
+            ep->ContextRecord->Rcx = (uint64_t)ecx;
+            ep->ContextRecord->Rdx = (uint64_t)edx;
+        } else if (isRdtsc || isRdtscp) {
+            uint64_t spoofedTsc = m_rdtscHandler ? m_rdtscHandler->ReadSpoofedTsc() : __rdtsc();
+            ep->ContextRecord->Rax = (uint64_t)(uint32_t)spoofedTsc;
+            ep->ContextRecord->Rdx = (uint64_t)(spoofedTsc >> 32);
+            if (isRdtscp) {
+                ep->ContextRecord->Rcx = 1;
+            }
         }
 
         // Advance RIP past the instruction
@@ -362,9 +371,11 @@ LONG AllocTracker::HandleGuardPage(EXCEPTION_POINTERS* ep)
                     (uint32_t)ep->ContextRecord->Rdx,
                     (void*)pageBase);
             } else if (isRdtsc) {
-                m_capLogger->CaptureRdtsc("RDTSC", rip, __rdtsc());
+                m_capLogger->CaptureRdtsc("RDTSC", rip, m_rdtscHandler ? m_rdtscHandler->ReadSpoofedTsc() : __rdtsc());
             } else if (isRdtscp) {
-                unsigned aux; m_capLogger->CaptureRdtsc("RDTSCP", rip, __rdtscp(&aux));
+                unsigned aux;
+                uint64_t spoofedTsc = m_rdtscHandler ? m_rdtscHandler->ReadSpoofedTsc() : __rdtscp(&aux);
+                m_capLogger->CaptureRdtsc("RDTSCP", rip, spoofedTsc);
             }
         }
 

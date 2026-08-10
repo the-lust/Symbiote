@@ -113,7 +113,7 @@ private:
     // Every VCPU exits to HandleMsrRead/HandleMsrWrite on its own host thread, and MsrHandler
     // is a single global instance — m_trackedMsrs is genuinely accessed concurrently and
     // std::unordered_map is not safe for that without external synchronization.
-    SRWLOCK m_trackedMsrsLock = SRWLOCK_INIT;
+    mutable SRWLOCK m_trackedMsrsLock = SRWLOCK_INIT;
     std::unordered_map<uint32_t, uint64_t> m_trackedMsrs;
     uint64_t m_vmxMsrs[MSR_IA32_VMX_COUNT]; // cached real HW values for 0x480-0x493
 

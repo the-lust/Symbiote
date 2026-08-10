@@ -164,6 +164,16 @@ void RdtscHandler::CounterUpdaterThread(RdtscHandler* handler)
     }
 }
 
+uint64_t RdtscHandler::ReadSpoofedTsc()
+{
+    uint64_t realTsc = ReadTSC();
+    uint64_t counterTsc = s_counterTsc.load();
+    if (counterTsc > 0 && m_counterRunning.load()) {
+        return counterTsc + m_tscOffset;
+    }
+    return realTsc + m_tscOffset;
+}
+
 bool RdtscHandler::HandleRdtsc(WHV_VP_EXIT_CONTEXT*, uint64_t* rax, uint64_t* rdx, uint64_t*)
 {
     // Use CounterUpdater TSC if available, else real TSC with offset
