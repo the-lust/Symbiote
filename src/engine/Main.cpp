@@ -38,6 +38,7 @@
 #include "whp/VeSimulation.h"
 #include "whp/ConsistencyVerifier.h"
 #include "whp/WhpHiding.h"
+#include "kernel/VirtualClock.h"
 #include "whp/SandboxFallthrough.h"
 #include "whp/ByovdDriver.h"
 #include "emu/QemuTableGen.h"
@@ -468,6 +469,23 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         uint32_t tscNoise = (uint32_t)configParser.GetUint64("timing", "tsc_noise", 100);
         g_rdtscHandler->SetNoiseEnabled(tscNoise > 0);
         g_rdtscHandler->SetNoiseAmplitude(tscNoise);
+
+        // CounterUpdater must advance the synthetic TSC at the TIP frequency
+        // (the donor's 1.995 GHz), not the 3.7 GHz hardcoded default — otherwise
+        // KUSER time (derived from this TSC via VirtualClock) drifts from the
+        // guest-visible TSC rate and every TSC-vs-time measurement jitters.
+        uint64_t tipTsc = g_systemProfile->GetTscFrequency();
+        if (tipTsc > 100000000ULL && tipTsc < 10000000000ULL) {
+            g_rdtscHandler->SetTscFrequency(tipTsc);
+        }
+
+        // Shared time authority: KUSER + NtQuerySystemTime + RDTSC all derive
+        // from this handler's spoofed TSC (VirtualClock is also re-configured
+        // from [kuser] in KuserSync::LoadConfig if non-default values are set).
+        VirtualClock::Get().SetTscSource(g_rdtscHandler);
+        VirtualClock::Get().Configure(
+            configParser.GetUint64("timing", "qpc_frequency", 10000000),
+            tipTsc > 100000000ULL && tipTsc < 10000000000ULL ? tipTsc : 1995375200ULL);
     } else {
         g_logger.Trace(LOG_INFO, "RDTSC spoofing disabled by config");
     }
@@ -614,6 +632,7 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
         // EPT hook for KUSER page + kernel memory hooks
         g_eptHook = new EptHook(&g_logger, g_partition);
         g_kuserSync = new KuserSync(&g_logger, g_partition);
+        g_kuserSync->SetRdtscHandler(g_rdtscHandler);
 
         g_exitDispatcher = new ExitDispatcher(&g_logger);
         g_exitDispatcher->RegisterHandler(WHvRunVpExitReasonMemoryAccess, g_eptHook);
@@ -680,6 +699,14 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
                 g_guestPageTableBuilt = true;
                 g_logger.Trace(LOG_INFO, "Guest page tables built: CR3=0x%llX",
                     g_partition->GetPageTable()->GetPml4Gpa());
+
+                // GuestPageTable::Build skips EPT-mapping the KUSER page (the
+                // host's real page must never be reachable), but re-assert the
+                // spoof mapping so no page-table builder change can ever leave
+                // that GPA unmapped or pointing at the host page.
+                if (g_kuserSync) {
+                    g_kuserSync->ReapplyGpaMapping();
+                }
             } else {
                 g_logger.Trace(LOG_WARNING, "Failed to build guest page tables — running IAT-only mode");
             }

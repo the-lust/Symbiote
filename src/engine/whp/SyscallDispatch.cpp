@@ -1,6 +1,7 @@
 #include "SyscallDispatch.h"
 #include "SyscallTables.h"
 #include "Logger.h"
+#include "../kernel/VirtualClock.h"
 #include <cstring>
 #include <cwchar>
 #include <winternl.h>
@@ -702,7 +703,10 @@ bool SyscallDispatch::HandleNtQueryVirtualMemory(uint64_t* args, uint64_t& resul
     return true;
 }
 
-// ─── P1.5: NtQuerySystemTime — correlate with TimingCoordinator ────────
+// ─── P1.5: NtQuerySystemTime — served from the shared VirtualClock so it is
+// byte-consistent with KUSER_SHARED_DATA.SystemTime (both derive from the same
+// spoofed TSC via VirtualClock). A prior version returned the NATIVE system
+// time here — a leak vector and inconsistent with the KUSER spoof.
 bool SyscallDispatch::HandleNtQuerySystemTime(uint64_t* args, uint64_t& result)
 {
     if (!args[0]) {
@@ -710,16 +714,7 @@ bool SyscallDispatch::HandleNtQuerySystemTime(uint64_t* args, uint64_t& result)
         return true;
     }
 
-    // Return current system time from QPC-based calculation
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
-
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-    uint64_t sysTime = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-
-    // Apply a proportional offset to stay consistent with KUSER_SHARED_DATA
-    *(int64_t*)(uintptr_t)args[0] = sysTime;
+    *(int64_t*)(uintptr_t)args[0] = (int64_t)VirtualClock::Get().SystemTime();
 
     result = STATUS_SUCCESS;
     return true;

@@ -96,6 +96,7 @@ set(ENGINE_SOURCES
     src/engine/kernel/MinimalKernel.cpp
     src/engine/kernel/SystemProfile.cpp
     src/engine/kernel/KernelBackend.cpp
+    src/engine/kernel/VirtualClock.cpp
     # Profiles
     src/engine/profile/GpuProfile.cpp
     src/engine/profile/StorageProfile.cpp

@@ -1,5 +1,6 @@
 #include "GuestPageTable.h"
 #include "Partition.h"
+#include "KuserLayout.h"
 #include <cstring>
 
 #define GPT_LOG(fmt, ...) m_logger->Trace(LOG_WHP, "GuestPT: " fmt, ##__VA_ARGS__)
@@ -196,6 +197,42 @@ bool GuestPageTable::MapProcessRegion(HANDLE hProcess, uint64_t baseAddr, uint64
         SetPte(pte, (WHV_GUEST_PHYSICAL_ADDRESS)va, true, writable, executable);
     }
 
+    // KUSER_SHARED_DATA page: the guest PTE above points it at the identity
+    // GPA, but the EPT mapping for that GPA must NEVER point at the host's
+    // real KUSER page (identity leak). KuserSync owns GPA KUSER_VA and maps
+    // its spoofed page there. Split the EPT map around the KUSER page so the
+    // rest of the region (if any) still maps normally.
+    uint64_t regionStart = baseAddr;
+    uint64_t regionEnd = baseAddr + regionSize;
+    uint64_t kuserPage = KUSER_VA & ~0xFFFULL;
+
+    if (kuserPage >= regionStart && kuserPage < regionEnd) {
+        GPT_LOG("Skipping EPT map of host KUSER page at VA=0x%llX (KuserSync owns GPA)",
+            kuserPage);
+        if (kuserPage > regionStart) {
+            uint64_t leftSize = kuserPage - regionStart;
+            WHV_MAP_GPA_RANGE_FLAGS flagsL = WHvMapGpaRangeFlagRead;
+            if (writable) flagsL = (WHV_MAP_GPA_RANGE_FLAGS)(flagsL | WHvMapGpaRangeFlagWrite);
+            if (executable) flagsL = (WHV_MAP_GPA_RANGE_FLAGS)(flagsL | WHvMapGpaRangeFlagExecute);
+            if (!m_partition->MapGpaRange((void*)regionStart, regionStart, leftSize, flagsL)) {
+                GPT_ERR("Failed to EPT-map left split at 0x%llX size=%llu", regionStart, leftSize);
+                return false;
+            }
+        }
+        if (kuserPage + 0x1000 < regionEnd) {
+            uint64_t rightStart = kuserPage + 0x1000;
+            uint64_t rightSize = regionEnd - rightStart;
+            WHV_MAP_GPA_RANGE_FLAGS flagsR = WHvMapGpaRangeFlagRead;
+            if (writable) flagsR = (WHV_MAP_GPA_RANGE_FLAGS)(flagsR | WHvMapGpaRangeFlagWrite);
+            if (executable) flagsR = (WHV_MAP_GPA_RANGE_FLAGS)(flagsR | WHvMapGpaRangeFlagExecute);
+            if (!m_partition->MapGpaRange((void*)rightStart, rightStart, rightSize, flagsR)) {
+                GPT_ERR("Failed to EPT-map right split at 0x%llX size=%llu", rightStart, rightSize);
+                return false;
+            }
+        }
+        return true;
+    }
+
     // Map the entire region to the partition (EPT)
     WHV_MAP_GPA_RANGE_FLAGS flags = WHvMapGpaRangeFlagRead;
     if (writable) flags = (WHV_MAP_GPA_RANGE_FLAGS)(flags | WHvMapGpaRangeFlagWrite);
@@ -213,6 +250,12 @@ bool GuestPageTable::MapDynamicPage(uint64_t va, bool)
 {
     // Handle EPT violations by mapping a single page on demand
     uint64_t pageBase = va & ~0xFFFULL;
+
+    // KUSER page is owned by KuserSync's spoof mapping — never identity-map
+    // the host's real page over it.
+    if (pageBase == (KUSER_VA & ~0xFFFULL)) {
+        return true;
+    }
 
     // Check if this page is already mapped in the partition
     // (We can't easily check EPT, so just re-map — WHP handles duplicates)

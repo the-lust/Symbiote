@@ -1,12 +1,14 @@
 #include "KuserSync.h"
 #include "Partition.h"
 #include "ConfigParser.h"
+#include "RdtscHandler.h"
+#include "../kernel/VirtualClock.h"
 #include <cstring>
 
 KuserSync::KuserSync(Logger* logger, Partition* partition)
-    : m_logger(logger), m_partition(partition),
+    : m_logger(logger), m_partition(partition), m_rdtscHandler(nullptr),
       m_syncThread(nullptr), m_stopEvent(nullptr), m_running(false),
-      m_spoofedKuser(nullptr),
+      m_gpaMapped(false), m_spoofedKuser(nullptr),
       m_systemTimeOffset(0), m_interruptTimeOffset(0), m_utcBias(-300)
 {
 }
@@ -15,20 +17,38 @@ KuserSync::~KuserSync()
 {
     StopSyncThread();
     if (m_spoofedKuser) {
-        if (m_partition) {
+        if (m_partition && m_gpaMapped) {
             m_partition->UnmapGpaRange(KUSER_GPA, KUSER_PAGE_SIZE);
+            m_gpaMapped = false;
         }
         VirtualFree(m_spoofedKuser, 0, MEM_RELEASE);
+        m_spoofedKuser = nullptr;
     }
 }
 
 bool KuserSync::Initialize()
 {
+    if (m_spoofedKuser) return true;
+
+    // Fail-loud layout gate: pre-19041 KUSER layouts are NOT byte-certified
+    // in this codebase (see KuserLayout.h). Spoofing them would be fabrication.
+    if (!KuserIsModernLayout(m_buildNumber)) {
+        m_logger->Trace(LOG_ERROR,
+            "KuserSync: KUSER layout for build %u (< 19041) is not byte-certified; "
+            "refusing to spoof (WS-9 matrix)",
+            m_buildNumber);
+        return false;
+    }
+
     m_spoofedKuser = VirtualAlloc(NULL, KUSER_PAGE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!m_spoofedKuser) {
         m_logger->Trace(LOG_ERROR, "KuserSync: failed to allocate KUSER buffer");
         return false;
     }
+
+    // Zero-rule base: the page starts fully zeroed; only TIP-config fields and
+    // math-module values are ever written. Nothing is copied from the host.
+    memset(m_spoofedKuser, 0, KUSER_PAGE_SIZE);
 
     if (m_partition) {
         WHV_MAP_GPA_RANGE_FLAGS flags = (WHV_MAP_GPA_RANGE_FLAGS)(WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite);
@@ -38,174 +58,195 @@ bool KuserSync::Initialize()
             m_spoofedKuser = nullptr;
             return false;
         }
+        m_gpaMapped = true;
     }
 
     ApplyStaticSpoofs();
     SyncTimeFields();
 
-    m_logger->Trace(LOG_EPT, "KUSER buffer allocated at %p and mapped at GPA 0x%llX", m_spoofedKuser, KUSER_GPA);
+    m_logger->Trace(LOG_EPT, "KUSER buffer allocated at %p and mapped at GPA 0x%llX "
+        "(identity-mapped guest PTEs: KUSER VA == GPA)", m_spoofedKuser, KUSER_GPA);
     return true;
 }
 
 bool KuserSync::Initialize(ConfigParser* config)
 {
-    if (!Initialize()) return false;
-
     if (config) {
-        m_systemTimeOffset = static_cast<int64_t>(config->GetUint64("kuser", "system_time_offset", 0));
-        m_interruptTimeOffset = static_cast<int64_t>(config->GetUint64("kuser", "interrupt_time_offset", 0));
-        m_utcBias = config->GetInt("kuser", "utc_bias", -300);
-        m_ntMajorVersion = (uint8_t)config->GetInt("kuser", "nt_major_version", 0x0A);
-        m_ntMinorVersion = (uint8_t)config->GetInt("kuser", "nt_minor_version", 0x00);
-        m_buildNumber = (uint16_t)config->GetInt("kuser", "build_number", 19045);
-        m_numberOfPhysicalPages = config->GetUint64("kuser", "number_of_physical_pages", 0x7FF7E);
-        m_suiteMask = (uint32_t)config->GetInt("kuser", "suite_mask", 0x0110);
-        m_productTypeIsValid = (uint8_t)config->GetInt("kuser", "product_type_is_valid", 0x01);
-        m_activeProcessorCount = (uint32_t)config->GetInt("kuser", "active_processor_count", 4);
-        m_nativeProcessorArchitecture = (uint16_t)config->GetInt("kuser", "native_processor_architecture", 0x0009);
-        m_logger->Trace(LOG_EPT, "KUSER config: sysTimeOff=%lld intTimeOff=%lld utcBias=%d build=%d pages=0x%llX suite=0x%04X procCount=%u",
-            m_systemTimeOffset, m_interruptTimeOffset, m_utcBias,
-            m_buildNumber, m_numberOfPhysicalPages, m_suiteMask, m_activeProcessorCount);
+        LoadConfig(config);
+    }
+    return Initialize();
+}
+
+bool KuserSync::ReapplyGpaMapping()
+{
+    if (!m_spoofedKuser || !m_partition) return m_gpaMapped;
+
+    WHV_MAP_GPA_RANGE_FLAGS flags = (WHV_MAP_GPA_RANGE_FLAGS)(WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite);
+    if (!m_partition->MapGpaRange(m_spoofedKuser, KUSER_GPA, KUSER_PAGE_SIZE, flags)) {
+        m_logger->Trace(LOG_ERROR, "KuserSync: ReapplyGpaMapping failed at GPA 0x%llX", KUSER_GPA);
+        return false;
+    }
+    m_gpaMapped = true;
+    m_logger->Trace(LOG_EPT, "KuserSync: spoof mapping re-asserted at GPA 0x%llX", KUSER_GPA);
+    return true;
+}
+
+void KuserSync::LoadConfig(ConfigParser* config)
+{
+    m_systemTimeOffset = static_cast<int64_t>(config->GetUint64("kuser", "system_time_offset", 0));
+    m_interruptTimeOffset = static_cast<int64_t>(config->GetUint64("kuser", "interrupt_time_offset", 0));
+    m_utcBias = config->GetInt("kuser", "utc_bias", -300);
+    m_ntMajorVersion = (uint32_t)config->GetInt("kuser", "nt_major_version", 10);
+    m_ntMinorVersion = (uint32_t)config->GetInt("kuser", "nt_minor_version", 0);
+    m_buildNumber = (uint32_t)config->GetInt("kuser", "build_number", 19045);
+    m_productType = (uint32_t)config->GetInt("kuser", "product_type", 1);
+    m_productTypeIsValid = (uint8_t)config->GetInt("kuser", "product_type_is_valid", 1);
+    m_nativeProcessorArchitecture = (uint16_t)config->GetInt("kuser", "native_processor_architecture", 9);
+    m_suiteMask = (uint32_t)config->GetInt("kuser", "suite_mask", 0x0110);
+    m_activeProcessorCount = (uint32_t)config->GetInt("kuser", "active_processor_count", 4);
+    m_activeGroupCount = (uint32_t)config->GetInt("kuser", "active_group_count", 1);
+    m_numberOfPhysicalPages = config->GetUint64("kuser", "number_of_physical_pages", 0x1FA054);
+    m_qpcFrequency = config->GetUint64("kuser", "qpc_frequency", config->GetUint64("timing", "qpc_frequency", 10000000));
+    m_tscFrequency = config->GetUint64("kuser", "tsc_frequency", config->GetUint64("timing", "tsc_frequency", 1995375200));
+    m_systemTimeAnchor = config->GetUint64("kuser", "system_time_anchor", 0);
+    m_mitigationPolicies = (uint8_t)config->GetInt("kuser", "mitigation_policies", 0x0A);
+    m_cyclesPerYield = (uint16_t)config->GetInt("kuser", "cycles_per_yield", 9);
+    m_sharedDataFlags = (uint32_t)config->GetInt("kuser", "shared_data_flags", 0);
+
+    // Optional byte-exact ProcessorFeatures blob (hex, e.g. 64 bytes captured
+    // from the donor machine). Absent -> all zeros (zero-rule).
+    std::string blob = config->GetString("kuser", "processor_features", "");
+    memset(m_processorFeatures, 0, sizeof(m_processorFeatures));
+    if (!blob.empty()) {
+        size_t nibbles = 0;
+        for (size_t i = 0; i < blob.size(); i++) {
+            char c = blob[i];
+            int v = -1;
+            if (c >= '0' && c <= '9') v = c - '0';
+            else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+            else continue;
+            if (nibbles < sizeof(m_processorFeatures) * 2) {
+                if ((nibbles & 1) == 0) m_processorFeatures[nibbles / 2] = (uint8_t)(v << 4);
+                else m_processorFeatures[nibbles / 2] |= (uint8_t)v;
+                nibbles++;
+            }
+        }
+        m_logger->Trace(LOG_EPT, "KUSER: processor_features blob applied (%zu nibbles)", nibbles);
     }
 
-    return true;
+    m_logger->Trace(LOG_EPT,
+        "KUSER config: build=%u ver=%u.%u product=%u arch=%u suite=0x%04X pages=0x%llX "
+        "procCount=%u group=%u qpc=%llu tsc=%llu utcBias=%d anchor=0x%llX sysOff=%lld intOff=%lld",
+        m_buildNumber, m_ntMajorVersion, m_ntMinorVersion, m_productType,
+        m_nativeProcessorArchitecture, m_suiteMask, m_numberOfPhysicalPages,
+        m_activeProcessorCount, m_activeGroupCount, m_qpcFrequency, m_tscFrequency,
+        m_utcBias, m_systemTimeAnchor, m_systemTimeOffset, m_interruptTimeOffset);
+
+    // Wire the shared clock so NtQuerySystemTime and KUSER.SystemTime agree.
+    VirtualClock::Get().Configure(m_qpcFrequency, m_tscFrequency);
+    VirtualClock::Get().SetTscSource(m_rdtscHandler);
+    VirtualClock::Get().SetSystemTimeOffset(m_systemTimeOffset);
+    if (m_systemTimeAnchor != 0) {
+        VirtualClock::Get().SetSystemTimeAnchor(m_systemTimeAnchor);
+    }
+}
+
+void KuserSync::SetKSystemTime(KSYSTEM_TIME_X64* dst, uint64_t value)
+{
+    // KSYSTEM_TIME write pattern: LowPart + High1Time, then High2Time mirrors
+    // High1Time so readers doing the tear check see a stable 64-bit value.
+    dst->LowPart = (uint32_t)(value & 0xFFFFFFFF);
+    dst->High1Time = (int32_t)(value >> 32);
+    dst->High2Time = dst->High1Time;
 }
 
 void KuserSync::ApplyStaticSpoofs()
 {
-    uint8_t* kuser = (uint8_t*)m_spoofedKuser;
+    if (!m_spoofedKuser) return;
 
-    // tick count multiplier + initial tick
-    *(uint64_t*)(kuser + 0x000) = 0x0FA0000000000000ULL;
+    KUSER_SHARED_DATA_X64* k = (KUSER_SHARED_DATA_X64*)m_spoofedKuser;
 
-    // NtMajorVersion (0x260), NtMinorVersion (0x261), BuildNumber (0x262-0x263)
-    kuser[0x260] = m_ntMajorVersion;
-    kuser[0x261] = m_ntMinorVersion;
-    *(uint16_t*)(kuser + 0x262) = m_buildNumber;
-    kuser[0x264] = 0x00; // CSDVersion
-    // NativeProcessorArchitecture (0x26A-0x26B = USHORT)
-    *(uint16_t*)(kuser + 0x26A) = m_nativeProcessorArchitecture;
-    // ProductTypeIsValid (0x268 byte, 0x269-0x26B reserved)
-    kuser[0x268] = m_productTypeIsValid;
-    // SuiteMask (0x26C = ULONG) - bits 0-1: Personal=0x0200, Professional=0x0110
-    *(uint32_t*)(kuser + 0x26C) = m_suiteMask;
+    // ---- Identity fields (TIP-config) ----
+    k->NtBuildNumber = m_buildNumber;
+    k->NtProductType = m_productType;
+    k->ProductTypeIsValid = m_productTypeIsValid;
+    k->NativeProcessorArchitecture = m_nativeProcessorArchitecture;
+    k->NtMajorVersion = m_ntMajorVersion;
+    k->NtMinorVersion = m_ntMinorVersion;
+    memcpy(k->ProcessorFeatures, m_processorFeatures, sizeof(k->ProcessorFeatures));
+    k->SuiteMask = m_suiteMask;
+    k->NumberOfPhysicalPages = (uint32_t)m_numberOfPhysicalPages;
+    k->FullNumberOfPhysicalPages = m_numberOfPhysicalPages;
+    k->ActiveProcessorCount = m_activeProcessorCount;
+    k->ActiveGroupCount = (uint8_t)m_activeGroupCount;
+    k->UnparkedProcessorCount = (uint16_t)m_activeProcessorCount;
+    k->MitigationPolicies = m_mitigationPolicies;
+    k->CyclesPerYield = m_cyclesPerYield;
+    k->SharedDataFlags = m_sharedDataFlags;
 
-    // ProcessorFeatures - comprehensive feature bitmask matching i7-4510U
-    // Layout: 64 bytes starting at 0x270, first half at 0x270, second half at 0x2B0
-    //
-    // A prior version wrote 12 values here at offsets that overlapped each other by up to
-    // 7 bytes (0x270 then 0x272 then 0x273, 0x281 then 0x282 then 0x283, ...), each clobbering
-    // most of the write before it — the same bug as KuserHook::CopyStaticSpoofs, fixed there
-    // the same way. Laid out sequentially, the first 9 of these 12 values exactly fill the
-    // 0x270-0x2B0 range (64 bytes) where the separately-written "second half" block below
-    // begins; the remaining 3 values (originally at the overlapping 0x29C/0x2A4/0x2AC offsets)
-    // have nowhere left to go without spilling into that block, so they're dropped rather than
-    // corrupting it. This means the intended full 12-value pattern doesn't actually fit in real
-    // KUSER_SHARED_DATA's ProcessorFeatures field as originally written — getting bit-exact
-    // parity with a real i7-4510U here would need the layout re-derived from a real reference
-    // dump, not just a self-consistency fix.
-    *(uint64_t*)(kuser + 0x270) = 0x00ULL;
-    *(uint64_t*)(kuser + 0x278) = 0x010100000000ULL;
-    *(uint64_t*)(kuser + 0x280) = 0x0100000101000000ULL;
-    *(uint64_t*)(kuser + 0x288) = 0x0100000100000101ULL;
-    *(uint64_t*)(kuser + 0x290) = 0x0101000001000001ULL;
-    *(uint64_t*)(kuser + 0x298) = 0x0101010000010000ULL;
-    *(uint32_t*)(kuser + 0x2A0) = 0x01010101;
-    *(uint32_t*)(kuser + 0x2A4) = 0x01010101;
-    *(uint64_t*)(kuser + 0x2A8) = 0x0101010101010101ULL;
-    // Second half of ProcessorFeatures (0x2B0-0x2CF)
-    *(uint64_t*)(kuser + 0x2B0) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x2B8) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x2C0) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x2C8) = 0x0000000000000000ULL;
+    // ---- Environment/math fields (real-validated constants) ----
+    // 0x8664 = IMAGE_FILE_MACHINE_AMD64 for both bounds (real machines: 0x8664/0x8664).
+    k->ImageNumberLow = 0x8664;
+    k->ImageNumberHigh = 0x8664;
+    k->LargePageMinimum = 0x200000; // 2 MB
+    k->QpcFrequency = (int64_t)m_qpcFrequency;
+    // Real Win10/Win11 with QPC=10MHz: 0x0FA00000 (262144000). Scaled by the
+    // configured QPC frequency, validated against the live machine.
+    k->TickCountMultiplier = (uint32_t)((m_qpcFrequency * (1ULL << 32)) / 163840000ULL);
+    k->QpcSystemTimeIncrement = 0x8000000000000000ULL; // matches 10MHz-QPC systems
+    k->QpcInterruptTimeIncrement = 0x8000000000000000ULL;
+    k->QpcSystemTimeIncrementShift = 1;
+    k->QpcInterruptTimeIncrementShift = 1;
 
-    // NumberOfPhysicalPages @ 0x2D8 (SIZE_T) — must match host RAM
-    *(uint64_t*)(kuser + 0x2D8) = m_numberOfPhysicalPages;
+    // ---- Debugger/VM surface: explicitly clean ----
+    k->KdDebuggerEnabled = 0;        // no kernel debugger
+    k->SystemCall = 0;               // AMD64: nonzero = altered syscall view -> MUST be 0
+    k->SafeBootMode = 0;
+    k->VirtualizationFlags = 0;
 
-    // KdDebuggerEnabled @ 0x2D4 — bit
-    kuser[0x2D4] = 0x02;
-    kuser[0x2D5] = 0x01;
-    // ActiveProcessorCount @ 0x2E8 (actually at 0x3C0 in Win10+)
-    *(volatile uint32_t*)(kuser + 0x3C0) = m_activeProcessorCount;
-    // SystemExpirationDate: none (0x2F0-0x2FF)
-    *(uint64_t*)(kuser + 0x2f0) = 0x0ULL;
-    *(uint64_t*)(kuser + 0x2f4) = 0x0ULL;
-    // DualFact and Debug flags (0x300-0x310)
-    *(uint32_t*)(kuser + 0x300) = 0x00000000;
-    *(uint32_t*)(kuser + 0x308) = 0x00000000;
-    *(uint32_t*)(kuser + 0x310) = 0x00000000;
+    // ---- Zero-rule: everything not config-verified stays 0 (page was zeroed) ----
+    // Includes: TimeZoneBias fields (driven in SyncTimeFields), Cookie,
+    // ConsoleSessionForegroundProcessId, InterruptTimeBias, QpcBias,
+    // TimeZoneBiasEffectiveStart/End, BootId, LastSystemRITEventTickCount,
+    // EnclaveFeatureMask, TelemetryCoverageRound, UserModeGlobalLogger,
+    // TimeSlip, SystemExpirationDate, ActiveConsoleId, DismountCount,
+    // ComPlusPackage, RNGSeedVersion, TimeZoneBiasStamp, TestRetInstruction.
 
-    // ReservedForFlags and alignment (0x378-0x390)
-    *(uint64_t*)(kuser + 0x378) = 0x0100000000ULL;
-    *(uint64_t*)(kuser + 0x380) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x388) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x390) = 0x0000000000000000ULL;
-    // Thermal and idle info (0x398-0x3C0)
-    *(uint64_t*)(kuser + 0x398) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x3A0) = 0x00000000ULL;
-    *(uint64_t*)(kuser + 0x3B0) = 0x0000000000000000ULL;
-    // DeepSleepData and IdleInfo (0x3C0-0x3F0)
-    *(uint64_t*)(kuser + 0x3C0) = 0x83000100000010ULL;
-    *(uint64_t*)(kuser + 0x3C8) = 0x0000000000000000ULL;
-    // Cookie and cycle fields (0x3D8-0x3F0)
-    *(uint64_t*)(kuser + 0x3D8) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x3E0) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x3E8) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x3F0) = 0x0000000000000000ULL;
-    *(uint64_t*)(kuser + 0x3F8) = 0x0000000000000000ULL;
+    // TimeZoneBias (config utc_bias, 100ns units) — KSYSTEM_TIME triplet.
+    SetKSystemTime(&k->TimeZoneBias, (uint64_t)(int64_t)m_utcBias * 10000000LL);
 
-    m_logger->Trace(LOG_EPT, "KUSER static spoofs applied (full page)");
+    m_logger->Trace(LOG_EPT, "KUSER static spoofs applied (layout-typed, zero-rule base)");
 }
 
 void KuserSync::SyncTimeFields()
 {
     if (!m_spoofedKuser) return;
 
-    uint8_t* realKuser = (uint8_t*)0x7FFE0000;
-    uint8_t* spoofed = (uint8_t*)m_spoofedKuser;
+    VirtualClock& clock = VirtualClock::Get();
 
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    KUSER_SHARED_DATA_X64* k = (KUSER_SHARED_DATA_X64*)m_spoofedKuser;
 
-    uint64_t tickCount = qpc.QuadPart / 10000;
-    uint64_t interruptTime = qpc.QuadPart + m_interruptTimeOffset;
-    uint64_t sysTime;
-    GetSystemTimeAsFileTime((LPFILETIME)&sysTime);
-    sysTime += m_systemTimeOffset;
+    uint64_t vqpc = clock.VirtualQpc100ns();
+    uint64_t sysTime = clock.SystemTime();
+    uint64_t intTime = vqpc + (uint64_t)(int64_t)m_interruptTimeOffset;
+    uint64_t tickCount = clock.TickCountQuad();
 
-    // SystemTime (0x318 = low, 0x320 = high)
-    *(volatile uint64_t*)(spoofed + 0x318) = sysTime;
-    *(volatile uint64_t*)(spoofed + 0x320) = sysTime >> 32;
+    SetKSystemTime(&k->SystemTime, sysTime);
+    SetKSystemTime(&k->InterruptTime, intTime);
 
-    // InterruptTime (0x328 = low, 0x330 = high)
-    *(volatile uint64_t*)(spoofed + 0x328) = interruptTime;
-    *(volatile uint64_t*)(spoofed + 0x330) = interruptTime >> 32;
+    k->TickCountQuad = tickCount;
+    k->TickCountHigh2Time = (int32_t)(tickCount >> 32);
+    k->TickCountLowDeprecated = (uint32_t)tickCount;
 
-    // InterruptTime bias copy (0x338 = low, 0x340 = high)
-    *(volatile uint64_t*)(spoofed + 0x338) = interruptTime;
-    *(volatile uint64_t*)(spoofed + 0x340) = interruptTime >> 32;
+    k->TimeUpdateLock = clock.TimeUpdateLock();
+    k->BaselineSystemTimeQpc = vqpc;
+    k->BaselineInterruptTimeQpc = vqpc;
 
-    // TickCount (0x348 = low, 0x34C = high, 0x350 = high alternate)
-    *(volatile uint32_t*)(spoofed + 0x348) = (uint32_t)(tickCount & 0xFFFFFFFF);
-    *(volatile uint32_t*)(spoofed + 0x34C) = (uint32_t)(tickCount >> 32);
-    *(volatile uint32_t*)(spoofed + 0x350) = (uint32_t)(tickCount >> 32);
-
-    // TickCount bias and time zone bias fields
-    *(volatile uint32_t*)(spoofed + 0x354) = *(volatile uint32_t*)(realKuser + 0x354);
-    *(volatile uint32_t*)(spoofed + 0x358) = m_utcBias;
-    *(volatile uint32_t*)(spoofed + 0x35C) = *(volatile uint32_t*)(realKuser + 0x35C);
-    *(volatile uint32_t*)(spoofed + 0x360) = *(volatile uint32_t*)(realKuser + 0x360);
-
-    // QPC value
-    *(volatile uint64_t*)(spoofed + 0x370) = qpc.QuadPart;
-
-    // ActiveProcessorCount - dynamically updated on each sync
-    *(volatile uint32_t*)(spoofed + 0x3C0) = m_activeProcessorCount;
-
-    // ACPI thermal zone and power management info - passthrough from host
-    *(volatile uint32_t*)(spoofed + 0x3A0) = *(volatile uint32_t*)(realKuser + 0x3A0);
-    *(volatile uint32_t*)(spoofed + 0x3A8) = *(volatile uint32_t*)(realKuser + 0x3A8);
-    *(volatile uint32_t*)(spoofed + 0x3AC) = *(volatile uint32_t*)(realKuser + 0x3AC);
+    // Keep ActiveProcessorCount authoritative from TIP config every sync
+    // (some kernel paths rewrite it on CPU hot-add in real systems).
+    k->ActiveProcessorCount = m_activeProcessorCount;
+    k->UnparkedProcessorCount = (uint16_t)m_activeProcessorCount;
 }
 
 bool KuserSync::StartSyncThread()

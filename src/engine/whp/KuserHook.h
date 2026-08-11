@@ -1,7 +1,12 @@
 #pragma once
 #include <windows.h>
 #include "Logger.h"
+#include "KuserLayout.h"
 
+// M-B fallback (VEH overlay) used when WHP/EPT is unavailable (IAT-only mode).
+// The guest's reads of KUSER_VA are served from a generated spoofed page in
+// this process; the real KUSER page is never read and never copied (zero-rule).
+// Primary path is KuserSync (EPT split) — this exists only as a fallback.
 class KuserHook {
 public:
     explicit KuserHook(Logger* logger);
@@ -28,13 +33,11 @@ private:
     bool m_running;
 
     bool TryProtectKuserPage();
-    void CopyStaticSpoofs();
-    void ApplyStableSpoofs();
+    void BuildSpoofedPage();
 
     static KuserHook* s_instance;
     static LONG CALLBACK VectoredHandler(EXCEPTION_POINTERS* ep);
     LONG OnException(EXCEPTION_POINTERS* ep);
 
-    static const uint64_t KUSER_VA = 0x7FFE0000;
-    static const uint32_t KUSER_PAGE_SIZE = 0x1000;
+    static const uint32_t KUSER_PAGE_SIZE_ = KUSER_PAGE_SIZE;
 };
