@@ -210,6 +210,62 @@ extern "C" void* __stdcall Proxy_XStoreCanAcquireLicenseForProductAsync(void* st
     return nullptr;
 }
 
+// ─── GDK license/entitlement query APIs (WS-4) ───────────────────────────
+// XStoreQueryGameLicenseAsync / XStoreQueryAddOnLicensesAsync /
+// XStoreQueryLicenseTokenAsync / XStoreGetLicenseEntitlementIdAsync /
+// XStoreGetLicenseSkuIdAsync are the entitlement surface Denuvo-AT-era
+// Xbox-PC titles can call (corpus #5). Fabricating XAsync results without
+// GDK headers + a test title would be lying structs (crash risk) — these are
+// forwarded to the real runtime when present (the machine ships
+// xgameruntime.dll in System32) and fail gracefully otherwise. Full spoofed
+// entitlement payloads (productId/skuId/isShared per ini) are M3 build-out,
+// gated on GDK headers and a live test title.
+
+#define XSTORE_FORWARD_1(name, rettype) \
+    typedef rettype (__stdcall* Real##name##_t)(void* a); \
+    static Real##name##_t g_real##name = nullptr; \
+    extern "C" rettype __stdcall Proxy_##name(void* a) { \
+        if (!g_real##name && g_realXgameruntime) g_real##name = (Real##name##_t)GetProcAddress(g_realXgameruntime, #name); \
+        return g_real##name ? g_real##name(a) : E_NOTIMPL; \
+    }
+
+#define XSTORE_FORWARD_2(name, rettype) \
+    typedef rettype (__stdcall* Real##name##_t)(void* a, void* b); \
+    static Real##name##_t g_real##name = nullptr; \
+    extern "C" rettype __stdcall Proxy_##name(void* a, void* b) { \
+        if (!g_real##name && g_realXgameruntime) g_real##name = (Real##name##_t)GetProcAddress(g_realXgameruntime, #name); \
+        return g_real##name ? g_real##name(a, b) : E_NOTIMPL; \
+    }
+
+#define XSTORE_FORWARD_3(name, rettype) \
+    typedef rettype (__stdcall* Real##name##_t)(void* a, void* b, void* c); \
+    static Real##name##_t g_real##name = nullptr; \
+    extern "C" rettype __stdcall Proxy_##name(void* a, void* b, void* c) { \
+        if (!g_real##name && g_realXgameruntime) g_real##name = (Real##name##_t)GetProcAddress(g_realXgameruntime, #name); \
+        return g_real##name ? g_real##name(a, b, c) : E_NOTIMPL; \
+    }
+
+#define XSTORE_FORWARD_4(name, rettype) \
+    typedef rettype (__stdcall* Real##name##_t)(void* a, void* b, void* c, void* d); \
+    static Real##name##_t g_real##name = nullptr; \
+    extern "C" rettype __stdcall Proxy_##name(void* a, void* b, void* c, void* d) { \
+        if (!g_real##name && g_realXgameruntime) g_real##name = (Real##name##_t)GetProcAddress(g_realXgameruntime, #name); \
+        return g_real##name ? g_real##name(a, b, c, d) : E_NOTIMPL; \
+    }
+
+XSTORE_FORWARD_2(XStoreQueryGameLicenseAsync, HRESULT)
+XSTORE_FORWARD_2(XStoreQueryGameLicenseResult, HRESULT)
+XSTORE_FORWARD_4(XStoreQueryAddOnLicensesAsync, HRESULT)
+XSTORE_FORWARD_3(XStoreQueryLicenseTokenAsync, HRESULT)
+XSTORE_FORWARD_2(XStoreGetLicenseEntitlementIdAsync, HRESULT)
+XSTORE_FORWARD_2(XStoreGetLicenseSkuIdAsync, HRESULT)
+XSTORE_FORWARD_2(XStoreQueryLicenseTokenResult, HRESULT)
+
+#undef XSTORE_FORWARD_1
+#undef XSTORE_FORWARD_2
+#undef XSTORE_FORWARD_3
+#undef XSTORE_FORWARD_4
+
 // ─── Generic forwarder ──────────────────────────────────────────────────
 extern "C" FARPROC __stdcall Proxy_ForwardStub(const char* funcName)
 {
@@ -227,6 +283,13 @@ PROXY_EXPORT(XSystemGetXboxLiveSandboxId, Proxy_XSystemGetXboxLiveSandboxId, 8)
 PROXY_EXPORT(XSystemGetConsoleId, Proxy_XSystemGetConsoleId, 8)
 PROXY_EXPORT(XStoreQueryProductsAsync, Proxy_XStoreQueryProductsAsync, 8)
 PROXY_EXPORT(XStoreCanAcquireLicenseForProductAsync, Proxy_XStoreCanAcquireLicenseForProductAsync, 12)
+PROXY_EXPORT(XStoreQueryGameLicenseAsync, Proxy_XStoreQueryGameLicenseAsync, 8)
+PROXY_EXPORT(XStoreQueryGameLicenseResult, Proxy_XStoreQueryGameLicenseResult, 8)
+PROXY_EXPORT(XStoreQueryAddOnLicensesAsync, Proxy_XStoreQueryAddOnLicensesAsync, 16)
+PROXY_EXPORT(XStoreQueryLicenseTokenAsync, Proxy_XStoreQueryLicenseTokenAsync, 12)
+PROXY_EXPORT(XStoreQueryLicenseTokenResult, Proxy_XStoreQueryLicenseTokenResult, 8)
+PROXY_EXPORT(XStoreGetLicenseEntitlementIdAsync, Proxy_XStoreGetLicenseEntitlementIdAsync, 8)
+PROXY_EXPORT(XStoreGetLicenseSkuIdAsync, Proxy_XStoreGetLicenseSkuIdAsync, 8)
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID)
 {
