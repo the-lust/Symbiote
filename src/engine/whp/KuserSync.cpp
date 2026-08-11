@@ -8,7 +8,7 @@
 KuserSync::KuserSync(Logger* logger, Partition* partition)
     : m_logger(logger), m_partition(partition), m_rdtscHandler(nullptr),
       m_syncThread(nullptr), m_stopEvent(nullptr), m_running(false),
-      m_gpaMapped(false), m_spoofedKuser(nullptr),
+      m_gpaMapped(false), m_syncIterations(0), m_spoofedKuser(nullptr),
       m_systemTimeOffset(0), m_interruptTimeOffset(0), m_utcBias(-300)
 {
 }
@@ -247,6 +247,26 @@ void KuserSync::SyncTimeFields()
     // (some kernel paths rewrite it on CPU hot-add in real systems).
     k->ActiveProcessorCount = m_activeProcessorCount;
     k->UnparkedProcessorCount = (uint16_t)m_activeProcessorCount;
+
+    // ---- Leak monitor (minimal): the guest must ONLY ever see this spoof
+    // page at KUSER GPA, and the spoof page must never be polluted. Every
+    // ~1s: verify the zero-rule zone is intact and re-assert the EPT mapping
+    // (cheap; guard against any external write to the buffer or mapping
+    // replacement exposing the host's real KUSER page).
+    if ((++m_syncIterations & 0x3FF) == 0) {
+        const uint8_t* x = k->XState;
+        bool xIntact = true;
+        for (uint32_t i = 0; i < sizeof(k->XState); i++) {
+            if (x[i] != 0) { xIntact = false; break; }
+        }
+        if (!xIntact) {
+            m_logger->Trace(LOG_ERROR,
+                "KuserSync: LEAK MONITOR: spoof page zero-rule zone modified — restoring");
+            memset((void*)k->XState, 0, sizeof(k->XState));
+            ApplyStaticSpoofs();
+        }
+        ReapplyGpaMapping();
+    }
 }
 
 bool KuserSync::StartSyncThread()

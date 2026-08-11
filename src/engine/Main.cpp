@@ -992,6 +992,11 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     g_consistencyVerifier = new ConsistencyVerifier(&g_logger);
     if (g_consistencyVerifier) {
         g_consistencyVerifier->Initialize();
+        // KUSER-derived checks validate the SPOOFED page (TIP self-coherence,
+        // fail-loud on mismatch); host KUSER becomes environment reference.
+        if (g_kuserSync && g_kuserSync->GetSpoofedKuser()) {
+            g_consistencyVerifier->SetSpoofedKuserSource(g_kuserSync->GetSpoofedKuser());
+        }
         g_consistencyVerifier->VerifyAll();
     }
 

@@ -51,6 +51,7 @@ private:
     HANDLE m_stopEvent;
     bool m_running;
     bool m_gpaMapped;
+    uint32_t m_syncIterations;
 
     void* m_spoofedKuser;
 

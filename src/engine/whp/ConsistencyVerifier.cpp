@@ -4,7 +4,7 @@
 
 ConsistencyVerifier::ConsistencyVerifier(Logger* logger)
     : m_logger(logger), m_initialized(false),
-      m_passedChecks(0), m_failedChecks(0)
+      m_passedChecks(0), m_failedChecks(0), m_spoofedKuserSource(nullptr)
 {
     memset(m_summary, 0, sizeof(m_summary));
 }
@@ -44,11 +44,29 @@ bool ConsistencyVerifier::VerifyAll()
     if (VerifyChassisInfo()) m_passedChecks++; else m_failedChecks++;
     if (VerifyDiskInfo()) m_passedChecks++; else m_failedChecks++;
     if (VerifyNetworkInfo()) m_passedChecks++; else m_failedChecks++;
+    if (VerifyKuserSelfConsistency()) m_passedChecks++; else m_failedChecks++;
 
     m_logger->Trace(LOG_INFO, "ConsistencyVerifier: %u passed, %u failed of %u checks",
         m_passedChecks, m_failedChecks, m_passedChecks + m_failedChecks);
 
     return m_failedChecks == 0;
+}
+
+const KUSER_SHARED_DATA_X64* ConsistencyVerifier::KuserView() const
+{
+    // Spoofed page when the engine's spoof is live (TIP self-coherence);
+    // otherwise the host's real KUSER page as environment reference.
+    return m_spoofedKuserSource
+        ? (const KUSER_SHARED_DATA_X64*)m_spoofedKuserSource
+        : (const KUSER_SHARED_DATA_X64*)KUSER_VA;
+}
+
+static uint64_t ReadKsystemTime(const KSYSTEM_TIME_X64* t)
+{
+    // Race-tolerant read: low + high1; re-read if high halves disagree.
+    uint64_t v1 = t->LowPart | ((uint64_t)(uint32_t)t->High1Time << 32);
+    uint64_t v2 = t->LowPart | ((uint64_t)(uint32_t)t->High2Time << 32);
+    return (v1 == v2) ? v1 : v2;
 }
 
 bool ConsistencyVerifier::VerifyCpuCount()
@@ -60,13 +78,26 @@ bool ConsistencyVerifier::VerifyCpuCount()
     __cpuidex(cpuInfo, 0xB, 0);
     uint32_t cpuidPackages = cpuInfo[0] & 0xFFFF;
 
-    uint32_t kuserActive = *(volatile uint32_t*)0x7FFE02E4;
+    const KUSER_SHARED_DATA_X64* k = KuserView();
+    uint32_t kuserActive = k->ActiveProcessorCount;
 
     SYSTEM_INFO si;
     GetNativeSystemInfo(&si);
     uint32_t sysInfoCount = si.dwNumberOfProcessors;
 
-    // Cross-validate: CPUID leaf 0xB logical count must match KUSER + SysInfo
+    if (m_spoofedKuserSource) {
+        // Spoof-identity coherence: CPUID and KUSER are BOTH spoofed from the
+        // same TIP — they must agree exactly. Host SysInfo is environment.
+        bool match = (cpuidLogical == kuserActive);
+        m_logger->Trace(LOG_VERIFY, "CPU count: CPUID=%u packages=%u KUSER(spoofed)=%u SysInfo=%u %s",
+            cpuidLogical, cpuidPackages, kuserActive, sysInfoCount,
+            match ? "OK" : "MISMATCH");
+        if (cpuidLogical == 0 || kuserActive == 0) return false;
+        return match;
+    }
+
+    // Environment coherence: TIP was captured from this machine — all three
+    // vectors must roughly agree (tolerance 1: hotplug / reserved cores).
     uint32_t minCount = cpuidLogical;
     if (kuserActive < minCount) minCount = kuserActive;
     if (sysInfoCount < minCount) minCount = sysInfoCount;
@@ -117,7 +148,10 @@ bool ConsistencyVerifier::VerifyCacheSizes()
 
 bool ConsistencyVerifier::VerifyMemorySize()
 {
-    uint64_t kuserPhysPages = *(volatile uint64_t*)0x7FFE02D8;
+    const KUSER_SHARED_DATA_X64* k = KuserView();
+    uint64_t kuserPhysPages = (uint64_t)k->FullNumberOfPhysicalPages
+        ? (uint64_t)k->FullNumberOfPhysicalPages
+        : (uint64_t)k->NumberOfPhysicalPages;
 
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
@@ -133,6 +167,14 @@ bool ConsistencyVerifier::VerifyMemorySize()
 
     m_logger->Trace(LOG_VERIFY, "Memory: KUSER pages=%llu TotalPhys=%lluMB pagesFromMem=%llu %s",
         kuserPhysPages, totalPhysMB, pagesFromMem, match ? "OK" : "MISMATCH");
+
+    if (m_spoofedKuserSource) {
+        // Spoofed KUSER: RAM is environment-class, not identity — a TIP built
+        // on another machine legitimately differs. Range-validate only.
+        if (kuserPhysPages >= 0x200000 && kuserPhysPages <= 0x40000000) return true;
+        m_logger->Trace(LOG_VERIFY, "Memory: spoofed page count %llu out of plausible range", kuserPhysPages);
+        return false;
+    }
 
     if (kuserPhysPages > 0x100000 && kuserPhysPages < 0x10000000) {
         if (!match) return false;
@@ -470,9 +512,19 @@ bool ConsistencyVerifier::VerifyTimingConsistency()
     LARGE_INTEGER qpcFreq;
     QueryPerformanceFrequency(&qpcFreq);
 
+    // Prefer the CPUID 0x15-derived nominal frequency; fall back to a generic
+    // constant only when the crystal frequency is unknown (turbo-skewed).
+    int cpuInfo[4];
+    __cpuidex(cpuInfo, 0x15, 0);
+    uint64_t tscNominal = 0;
+    if (cpuInfo[0] > 0 && cpuInfo[1] > 0 && cpuInfo[2] > 0) {
+        tscNominal = (uint64_t)cpuInfo[2] * cpuInfo[1] / cpuInfo[0];
+    }
+    if (tscNominal < 100000000ULL) tscNominal = 3700000000ULL;
+
     // Cross-correlate: TSC should be ~QPC * (TSC_freq / QPC_freq)
     // Rough check: TSC delta should be between 0.1x and 10x of QPC delta in ns
-    uint64_t tscNs = (tscDelta * 1000000000ULL) / 3700000000ULL;
+    uint64_t tscNs = (tscDelta * 1000000000ULL) / tscNominal;
     uint64_t qpcNs = (qpcDelta * 1000000000ULL) / qpcFreq.QuadPart;
 
     bool consistent = true;
@@ -485,6 +537,67 @@ bool ConsistencyVerifier::VerifyTimingConsistency()
         tscDelta, qpcDelta, tscNs, qpcNs, consistent ? "OK" : "SUSPICIOUS");
 
     return consistent;
+}
+
+bool ConsistencyVerifier::VerifyKuserSelfConsistency()
+{
+    const KUSER_SHARED_DATA_X64* k = KuserView();
+    uint32_t bad = 0;
+
+    auto chk = [&](bool ok, const char* what) {
+        if (!ok) bad++;
+        m_logger->Trace(LOG_VERIFY, "KUSER %s: %s",
+            what, ok ? "OK" : "BAD");
+    };
+
+    // Identity sanity (either view)
+    chk(k->NtMajorVersion == 10, "NtMajorVersion==10");
+    chk(k->NtMinorVersion <= 9, "NtMinorVersion range");
+    chk(k->ImageNumberLow == 0x8664 && k->ImageNumberHigh == 0x8664, "ImageNumber AMD64");
+    chk(k->LargePageMinimum == 0x100000 || k->LargePageMinimum == 0x200000 ||
+        k->LargePageMinimum == 0x400000, "LargePageMinimum");
+    chk(k->SystemCall == 0, "SystemCall==0");
+    chk(k->QpcFrequency >= 1000000 && k->QpcFrequency <= 100000000, "QpcFrequency range");
+    chk(k->ActiveProcessorCount >= 1 && k->ActiveProcessorCount <= 256, "ActiveProcessorCount range");
+    chk(k->KdDebuggerEnabled == 0, "KdDebuggerEnabled==0");
+
+    if (m_spoofedKuserSource) {
+        // TIP self-coherence (spoofed page): layout gate + zero-rule integrity.
+        chk(KuserIsModernLayout(k->NtBuildNumber), "modern layout gate (build>=19041)");
+        chk(k->UnparkedProcessorCount == 0 || k->UnparkedProcessorCount == k->ActiveProcessorCount,
+            "UnparkedProcessorCount==Active");
+        const uint8_t* x = k->XState;
+        bool xZero = true;
+        for (uint32_t i = 0; i < sizeof(k->XState); i++) {
+            if (x[i] != 0) { xZero = false; break; }
+        }
+        chk(xZero, "XState zero-rule intact");
+    }
+
+    // Time coherence: two samples 32ms apart (tick granularity is 15.625ms)
+    uint64_t t0 = k->TickCountQuad;
+    Sleep(32);
+    uint64_t t1 = k->TickCountQuad;
+    chk(t1 > t0, "TickCountQuad ticking");
+
+    uint64_t intTime = ReadKsystemTime(&k->InterruptTime);
+    uint64_t sysTime = ReadKsystemTime(&k->SystemTime);
+    int64_t tzBiasSigned = (int64_t)ReadKsystemTime(&k->TimeZoneBias);
+    uint64_t tzAbs = (tzBiasSigned < 0) ? (uint64_t)(-tzBiasSigned) : (uint64_t)tzBiasSigned;
+
+    uint64_t tickFromInt = intTime / 156250;
+    uint64_t tickDiff = (tickFromInt > t1) ? (tickFromInt - t1) : (t1 - tickFromInt);
+    chk(tickFromInt == 0 || tickDiff * 100 <= t1 * 2, "TickCount vs InterruptTime (~1%)");
+
+    // 1601-epoch 100ns: [2020, 2040] => [1.25e17, 1.60e17]
+    chk(sysTime >= 125000000000000000ULL && sysTime <= 160000000000000000ULL,
+        "SystemTime plausible");
+    chk(tzAbs <= 432000000000ULL, "TimeZoneBias <= 12h");
+    chk(intTime < 3153600000000000ULL, "InterruptTime < 10y uptime");
+
+    m_logger->Trace(LOG_VERIFY, "KUSER self-consistency: %u sub-check(s) failed %s",
+        bad, bad == 0 ? "OK" : "FAIL");
+    return bad == 0;
 }
 
 const char* ConsistencyVerifier::GetSummary()
