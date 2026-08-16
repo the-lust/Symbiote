@@ -8,6 +8,7 @@
 #include "WhpDetection.h"
 #include "ProcessUtils.h"
 #include "Orchestrator.h"
+#include "ToolKit.h"
 #include "../engine/whp/ConfigSnapshot.h"
 
 #pragma comment(linker, "/SUBSYSTEM:CONSOLE")
@@ -50,13 +51,24 @@ static void ShowUsage()
         L"   --args <...>              Arguments passed to target\n"
         L"   --sandbox <exe>           Run any .exe inside WHP sandbox\n"
         L"   --profile <name>          Load profiles/<name>.ini (stealth|compat|analysis|capture)\n"
-        L"   config=<path>             Path to config.ini (default: ./config/config.ini)\n\n"
+        L"   config=<path>             Path to config.ini (default: ./config/config.ini)\n"
+        L"   --list-tools              List configured external tools ([tools] in config)\n"
+        L"   --tool <name>             Run an external tool on the target first\n"
+        L"                             (unpackers: steamless gbe opensteamtools steamsls\n"
+        L"                              steamvent steamdira | debuggers/analyzers: ce ghidra\n"
+        L"                              x64dbg binja ida pin)\n"
+        L"   --unpack                  Auto-unpack target via the Steam/SteamStub chain,\n"
+        L"                             then launch the unpacked exe\n"
+        L"   --analyze [dir]           Write dump report.json and run the AI analyzer\n\n"
         L"Examples:\n"
         L"   launcher.exe explorer\n"
         L"   launcher.exe --sandbox notepad.exe\n"
         L"   launcher.exe --target C:\\Windows\\System32\\cmd.exe --args /c dir\n"
         L"   launcher.exe -d --sandbox D:\\games\\mygame.exe\n"
-        L"   launcher.exe --config=custom.ini myapp.exe",
+        L"   launcher.exe --config=custom.ini myapp.exe\n"
+        L"   launcher.exe --list-tools\n"
+        L"   launcher.exe --unpack --target D:\\games\\steamgame.exe\n"
+        L"   launcher.exe --analyze D:\\games\\steamgame\\dump",
         L"Symbiote",
         MB_ICONINFORMATION);
 }
@@ -68,6 +80,11 @@ int main(int, char**)
     bool useExplorer = false;
     bool debugMode = false;
     bool sandboxMode = false;
+    bool listTools = false;
+    bool unpackMode = false;
+    bool analyzeMode = false;
+    std::wstring toolName;
+    std::wstring analyzeDir;
     std::wstring profileName;
     std::wstring configPath;
 
@@ -93,6 +110,17 @@ int main(int, char**)
                     targetArgs += L"\"" + std::wstring(wargv[j]) + L"\"";
                 }
                 i = wargc;
+            } else if (arg == L"--list-tools" || arg == L"--tools") {
+                listTools = true;
+            } else if (arg == L"--unpack") {
+                unpackMode = true;
+            } else if (arg == L"--analyze") {
+                analyzeMode = true;
+                if (i + 1 < wargc && wargv[i + 1][0] != L'-') {
+                    analyzeDir = wargv[++i];
+                }
+            } else if (arg == L"--tool" && i + 1 < wargc) {
+                toolName = wargv[++i];
             } else if (arg.find(L"--config=") == 0) {
                 configPath = arg.substr(9);
             } else if (arg.find(L"config=") == 0) {
@@ -108,20 +136,6 @@ int main(int, char**)
         LocalFree(wargv);
     }
 
-    if (targetExe.empty()) {
-        if (useExplorer) {
-            targetExe = BrowseForExe();
-            if (targetExe.empty()) return 0;
-        } else {
-            ShowUsage();
-            return 0;
-        }
-    }
-
-    if (sandboxMode) {
-        LogMessage("Sandbox mode: forcing all user-mode hooks + WHP intercept\n");
-    }
-
     wchar_t modulePath[MAX_PATH];
     GetModuleFileNameW(NULL, modulePath, MAX_PATH);
     std::wstring exeDir = modulePath;
@@ -131,14 +145,85 @@ int main(int, char**)
     if (configPath.empty()) {
         if (!profileName.empty()) {
             configPath = exeDir + L"\\profiles\\" + profileName + L".ini";
-            std::wstring wmsg = L"Loading profile: " + configPath + L"\n";
-            int wlen = WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, NULL, 0, NULL, NULL);
-            std::string msgA(wlen, 0);
-            WideCharToMultiByte(CP_UTF8, 0, wmsg.c_str(), -1, &msgA[0], wlen, NULL, NULL);
-            LogMessage(msgA);
         } else {
             configPath = exeDir + L"\\config\\config.ini";
         }
+    }
+    std::string configPathA;
+    {
+        int len = WideCharToMultiByte(CP_UTF8, 0, configPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            configPathA.resize(len - 1);
+            WideCharToMultiByte(CP_UTF8, 0, configPath.c_str(), -1, &configPathA[0], len, nullptr, nullptr);
+        }
+    }
+
+    // ── External tools ───────────────────────────────────────────────────
+    ToolKit toolkit(configPathA, exeDir);
+
+    if (listTools) {
+        toolkit.ListTools();
+        return 0;
+    }
+
+    if (analyzeMode) {
+        std::wstring dumpDir = analyzeDir.empty() ? exeDir + L"\\dump\\report" : analyzeDir;
+        if (!toolkit.WriteReport(dumpDir, targetExe, L"")) {
+            LogMessage("Failed to write report\n");
+            return 1;
+        }
+        std::wstring reportPath = dumpDir + L"\\report.json";
+        toolkit.RunAnalyzer(reportPath);
+        LogMessage("Analysis complete\n");
+        return 0;
+    }
+
+    if (unpackMode && !targetExe.empty()) {
+        LogMessage("Unpack mode: running Steam/SteamStub unpack chain\n");
+        std::wstring unpacked;
+        if (!toolkit.UnpackTarget(targetExe, &unpacked)) {
+            LogMessage("Unpack failed — no unpacker configured/succeeded\n");
+            return 1;
+        }
+        LogMessage("Launching unpacked target\n");
+        targetExe = unpacked;
+    }
+
+    if (!toolName.empty() && !targetExe.empty()) {
+        LogMessage("Running external tool before launch\n");
+        int exitCode = -1;
+        std::wstring err;
+        std::string toolNameA;
+        int tlen = WideCharToMultiByte(CP_UTF8, 0, toolName.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (tlen > 0) {
+            toolNameA.resize(tlen - 1);
+            WideCharToMultiByte(CP_UTF8, 0, toolName.c_str(), -1, &toolNameA[0], tlen, nullptr, nullptr);
+        }
+        if (!toolkit.RunTool(toolNameA, targetExe, exeDir + L"\\dump", &exitCode, &err)) {
+            std::string errA;
+            int elen = WideCharToMultiByte(CP_UTF8, 0, err.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            if (elen > 0) {
+                errA.resize(elen - 1);
+                WideCharToMultiByte(CP_UTF8, 0, err.c_str(), -1, &errA[0], elen, nullptr, nullptr);
+            }
+            LogMessage("Tool failed: " + errA + "\n");
+            return 1;
+        }
+        LogMessage("Tool completed (exit " + std::to_string(exitCode) + ")\n");
+    }
+
+    if (targetExe.empty()) {
+        if (useExplorer) {
+            targetExe = BrowseForExe();
+            if (targetExe.empty()) return 0;
+        } else {
+            if (!listTools && !analyzeMode) ShowUsage();
+            return 0;
+        }
+    }
+
+    if (sandboxMode) {
+        LogMessage("Sandbox mode: forcing all user-mode hooks + WHP intercept\n");
     }
 
     // ── Orchestrator: unified 8-phase pipeline ──────────────────────────

@@ -357,10 +357,17 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     }
 
     // check feature toggles from config
+    // Stealth mode ([stealth] always_on, default 1): a section is spoofed
+    // unless it explicitly sets status=0. always_on=0 flips the default to
+    // passthrough ("stealth unless turned off").
+    bool stealthAlwaysOn = configParser.GetBool("stealth", "always_on", true);
     auto CheckSpoof = [&](const char* section, bool defaultVal) -> bool {
         std::string raw = configParser.GetString(section, "status", "");
         if (!raw.empty()) return configParser.GetBool(section, "status", defaultVal);
-        return configParser.GetBool("spoof", section, defaultVal);
+        std::string spoofRaw = configParser.GetString("spoof", section, "");
+        if (!spoofRaw.empty()) return configParser.GetBool("spoof", section, defaultVal);
+        if (!stealthAlwaysOn) return false;
+        return defaultVal;
     };
     bool spoofCpuid   = CheckSpoof("cpuid", true);
     bool spoofRdtsc   = CheckSpoof("rdtsc", true);
@@ -517,7 +524,30 @@ static DWORD WINAPI EngineThread(LPVOID lpParam)
     }
 
     // Backend selection: WHP (default) or Unicorn (software emulation, requires unicorn.dll)
+    // [hypervisor] mode=driver selects the OPTIONAL advanced ring -1 rail
+    // (AMD: SimpleSVM-style, Intel: HyperDbg-style) — NOT BUILT yet: fail loud.
     std::string backendType = configParser.GetString("backend", "type", "whp");
+    std::string hvMode = configParser.GetString("hypervisor", "mode", "");
+    if (hvMode.empty()) hvMode = backendType;
+    bool useDriverRail = (hvMode == "driver");
+
+    if (useDriverRail) {
+        int cpuInfo[4] = {0};
+        __cpuid(cpuInfo, 0);
+        char vendor[13] = {0};
+        memcpy(vendor, &cpuInfo[1], 4);
+        memcpy(vendor + 4, &cpuInfo[3], 4);
+        memcpy(vendor + 8, &cpuInfo[2], 4);
+        const char* driverFamily = (_stricmp(vendor, "AuthenticAMD") == 0)
+            ? "SimpleSVM-style driver backend (AMD)"
+            : "HyperDbg-style driver backend (Intel)";
+        g_logger.Trace(LOG_ERROR,
+            "DRIVER RAIL REQUESTED ([hypervisor] mode=driver) BUT NOT BUILT — "
+            "this CPU would use the %s. Aborting engine init; set "
+            "[hypervisor] mode=whp (primary rail) to run.",
+            driverFamily);
+        return 0;
+    }
 
     // try to create WHP partition - not fatal if fails (IAT-only mode)
     bool whpAvailable = false;

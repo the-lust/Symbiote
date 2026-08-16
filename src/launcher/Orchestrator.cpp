@@ -6,6 +6,7 @@
 #include "../shared/SharedMemory.h"
 #include <cstdio>
 #include <cstring>
+#include <intrin.h>
 #include <bcrypt.h>
 
 #pragma comment(lib, "bcrypt.lib")
@@ -65,13 +66,54 @@ const ConfigSnapshot* Orchestrator::Run() {
 
 // ── Phase 0: bake config ──────────────────────────────────────────────────
 
+static void DetectCpuVendorBackend(wchar_t* out, size_t outLen)
+{
+    int cpuInfo[4] = {0};
+    __cpuid(cpuInfo, 0);
+    char vendor[13] = {0};
+    memcpy(vendor, &cpuInfo[1], 4);
+    memcpy(vendor + 4, &cpuInfo[3], 4);
+    memcpy(vendor + 8, &cpuInfo[2], 4);
+    if (_stricmp(vendor, "AuthenticAMD") == 0) {
+        wcscpy_s(out, outLen, L"SimpleSVM-style (AMD)");
+    } else {
+        wcscpy_s(out, outLen, L"HyperDbg-style (Intel)");
+    }
+}
+
 PhaseResult Orchestrator::Phase0_BakeConfig(const wchar_t* iniPath) {
     PhaseResult r = {true, 0, L""};
     memset(m_config, 0, sizeof(ConfigSnapshot));
     m_config->version = 1;
     m_config->runSeed = m_seed;
 
+    // Stealth mode: always-on by default ("stealth unless turned off").
+    // When always_on=1 a spoof section is enabled unless it explicitly
+    // sets status=0; when always_on=0 everything passes through unless
+    // a section explicitly opts in.
+    bool stealthAlwaysOn = GetPrivateProfileIntW(L"stealth", L"always_on", 1, iniPath) != 0;
+    m_config->stealth.alwaysOn = stealthAlwaysOn;
+
+    auto SpoofFlag = [&](LPCWSTR section, bool defaultVal) -> bool {
+        wchar_t buf[8] = {0};
+        if (GetPrivateProfileStringW(section, L"status", L"", buf, 8, iniPath) > 0) {
+            return _wtoi(buf) != 0;
+        }
+        if (!stealthAlwaysOn) return false;
+        if (GetPrivateProfileStringW(L"spoof", section, L"", buf, 8, iniPath) > 0) {
+            return _wtoi(buf) != 0;
+        }
+        return defaultVal;
+    };
+
     GetPrivateProfileStringW(L"backend", L"type", L"whp", m_config->backendType, 32, iniPath);
+    GetPrivateProfileStringW(L"hypervisor", L"mode", L"whp", m_config->hypervisor.mode, 16, iniPath);
+    m_config->hypervisor.enabled = GetPrivateProfileIntW(L"hypervisor", L"enabled", 1, iniPath) != 0;
+    DetectCpuVendorBackend(m_config->hypervisor.vendorBackend, 32);
+    if (_wcsicmp(m_config->hypervisor.mode, L"driver") == 0) {
+        // Informational: which ring -1 backend family this CPU maps to.
+        wcscpy_s(r.errorMsg, L"Hypervisor driver rail requested (NOT BUILT)");
+    }
     m_config->byovd.enabled = GetPrivateProfileIntW(L"byovd", L"enabled", 1, iniPath) != 0;
     m_config->kernelProxy.enabled = GetPrivateProfileIntW(L"kernel_proxy", L"enabled", 0, iniPath) != 0;
     m_config->kernelProxy.hookSstd = GetPrivateProfileIntW(L"kernel_proxy", L"hook_ssdt", 1, iniPath) != 0;
@@ -98,11 +140,11 @@ PhaseResult Orchestrator::Phase0_BakeConfig(const wchar_t* iniPath) {
     GetPrivateProfileStringW(L"hardware", L"system_uuid", L"00000000-0000-0000-0000-000000000000",
         m_config->bios.systemUuid, 48, iniPath);
 
-    m_config->spoofCpuid = true;
-    m_config->spoofRdtsc = true;
-    m_config->spoofMsr = true;
-    m_config->spoofKuser = true;
-    m_config->spoofStackSpoofer = true;
+    m_config->spoofCpuid = SpoofFlag(L"cpuid", true);
+    m_config->spoofRdtsc = SpoofFlag(L"rdtsc", true);
+    m_config->spoofMsr = SpoofFlag(L"msr", true);
+    m_config->spoofKuser = SpoofFlag(L"kuser", true);
+    m_config->spoofStackSpoofer = SpoofFlag(L"process", true);
     m_config->captureMode = GetPrivateProfileIntW(L"capture", L"enabled", 0, iniPath) != 0;
     m_config->sandboxEnabled = GetPrivateProfileIntW(L"sandbox", L"enabled", 0, iniPath) != 0;
     m_config->snapshotEnabled = GetPrivateProfileIntW(L"snapshot", L"enabled", 0, iniPath) != 0;

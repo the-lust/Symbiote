@@ -22,6 +22,7 @@ The canonical engineering plan for "make Symbiote a working engine" lives in **`
 - [Components](#components)
 - [Building](#building)
 - [Configuration](#configuration)
+- [Tools, extras & external integration](#tools-extras--external-integration)
 - [Sandbox profiles](#sandbox-profiles)
 - [Status](#status)
 - [Related work](#related-work)
@@ -254,16 +255,64 @@ copy config\config.example.ini config\config.ini
 
 then edit it. `config.ini` is gitignored deliberately: it's meant to hold your own hardware profile, and real disk serials, MAC addresses, and system UUIDs shouldn't end up in git history.
 
-A profile is organized by vector — `[cpuid]`, `[msr]`, `[kuser]`, `[hardware]`, `[storage]`, and so on — each with a `status`/`enabled` toggle and the values to serve when it's on. Two defaults worth knowing about explicitly:
+A profile is organized by vector — `[cpuid]`, `[msr]`, `[kuser]`, `[hardware]`, `[storage]`, and so on — each with a `status`/`enabled` toggle and the values to serve when it's on.
+
+**Stealth is always-on unless turned off.** The shipped default:
 
 ```ini
-[cpuid]   status = 0   ; off by default — CPUID interception has to be turned on deliberately
-[rdtsc]   status = 0   ; same for RDTSC
-[msr]     status = 1
-[kuser]   status = 1
+[stealth]
+always_on = 1        ; every spoof vector ENABLED unless a section explicitly sets status=0
+always_on = 0        ; = full passthrough (a section only spoofs if it explicitly opts in)
 ```
 
-CPUID and RDTSC interception default to *off* (passthrough) in the shipped example, everything else defaults to *on*. Don't assume every vector documented in `docs/TECHNIQUES.md` is live without checking the profile you're actually running — `verify.exe` will tell you directly rather than you having to read the ini.
+So you never have to remember to enable vectors — the profile is spoof-first, and the only way a vector leaks is an explicit `status = 0` in its own section (useful for debugging one section at a time). `verify.exe` tells you exactly what's live rather than you having to read the ini.
+
+---
+
+## Tools, extras & external integration
+
+The launcher integrates external tooling without bundling anything — paths come from `[tools]` in `config.ini`, and point at locally installed binaries:
+
+```ini
+[tools]
+; Steam/SteamStub unpack chain (research use on binaries you own):
+steamless = C:\tools\Steamless.exe
+gbe = C:\tools\gbe.exe
+opensteamtools = C:\tools\OpenSteamTools.exe
+steamsls = C:\tools\steamsls.exe
+steamvent = C:\tools\steamvent.exe
+steamdira = C:\tools\steamdira.exe
+; Debuggers / disassemblers / analyzers / tracers:
+ce = C:\Program Files\Cheat Engine\cheatengine-x86_64.exe
+ghidra = C:\ghidra\support\analyzeHeadless.bat
+x64dbg = C:\x64dbg\x64dbg.exe
+binja = C:\BinaryNinja\binaryninja.exe
+ida = C:\IDA\ida.exe
+pin = C:\pin\pin.exe
+; AI analyzer — any local model CLI; %REPORT% is replaced with report.json:
+ai_analyzer = python tools\ai_analyze.py --llm "ollama run llama3.2"
+```
+
+CLI wiring:
+
+| Flag | What it does |
+|---|---|
+| `--list-tools` | Print the registry with availability (path present?) |
+| `--tool <name>` | Run one tool against the target before launch (`launcher.exe --tool steamless --target game.exe`) |
+| `--unpack` | Auto-unpack the target through the chain (steamless → gbe → opensteamtools → steamsls → steamvent → steamdira), first success wins, then launch the unpacked exe |
+| `--analyze [dir]` | Write `dump/report.json` (target, active spoof vectors, tool coverage, dump file list) and run the AI analyzer |
+
+The AI hook ships as `tools/ai_analyze.py`: fully offline, reads the report, prints a heuristic engineering analysis (leaked vectors, unpacker status, next-step suggestions), and can optionally pipe the report into any local model CLI (`--llm "ollama run llama3.2"`). No cloud APIs, no keys.
+
+### Hypervisor rail (optional, advanced)
+
+```ini
+[hypervisor]
+mode = whp        ; PRIMARY rail — WHP user-mode hypervisor (default, preferred)
+mode = driver     ; OPTIONAL ring -1 driver rail — NOT BUILT YET, fails loud
+```
+
+The WHP rail stays the main and primary hypervisor. `mode = driver` reserves an advanced rail for a ring -1 driver backend — SimpleSVM-style on AMD, HyperDbg-style on Intel — that is deliberately not implemented yet: selecting it makes the engine abort init with an explicit error (`hyplog.log`/`launcher.log`) about which backend family your CPU would use, instead of silently running.
 
 ---
 
@@ -296,6 +345,7 @@ Single maintainer, actively worked on, no CI yet. This section is meant to be re
 
 **What's been recently completed:**
 
+- **M2 lead-in: tools/extras wiring + stealth-default + optional driver rail.** `[stealth] always_on=1` is now the shipped default ("stealth unless turned off" — previously CPUID/RDTSC shipped off); the launcher gained a `ToolKit` (registry + spawn + Steam/SteamStub unpack chain + `--list-tools`/`--tool`/`--unpack`/`--analyze`), an offline AI report analyzer (`tools/ai_analyze.py`, optional local-model `--llm` piping), and `[hypervisor] mode=whp|driver` — the driver rail (SimpleSVM-style AMD / HyperDbg-style Intel) is reserved and fails loud when selected, keeping WHP the main and primary rail. All additions are optional and paths point at locally installed tools; nothing is bundled.
 - **M1 exit criteria all met (WS-2/WS-7 closure).** CPUID **and** KUSER are now byte-exact from a real dump: a live `ProcessorFeatures` capture from the donor machine (this machine, Win 11 26200) was verified byte-for-byte against the engine's hex parser (round-trip match) and baked into `config.ini [kuser] processor_features` — closing the last zero-rule placeholder. The KUSER consistency gate ran green against the live host page (all 13 sub-checks), and the leak monitor is armed in the KUSER sync loop.
 - **M1/WS-4 forward coverage (Xbox facade).** `xgameruntime_proxy` now exports the full GDK license/entitlement query surface (`XStoreQueryGameLicenseAsync/Result`, `XStoreQueryAddOnLicensesAsync`, `XStoreQueryLicenseTokenAsync/Result`, `XStoreGetLicenseEntitlementIdAsync`, `XStoreGetLicenseSkuIdAsync`) — forwarded to the real `xgameruntime.dll` (present in System32 on Xbox-PC-capable machines) with graceful `E_NOTIMPL` fallback; engine IAT hook table synced to the 16 exports. Fabricated entitlement payloads (productId/skuId/isShared per ini) are deliberately deferred: they need GDK headers and a live test title to avoid lying structs (M3 build-out).
 - **M1/WS-3 audit (syscall routing) — mechanism confirmed complete.** WHP has no per-syscall exit bitmap (M0 finding); the shipped stack is: proxy APIs → L2 emulated-kernel path, naked syscalls → LSTAR→HLT at L0, selective interception (5 syscalls emulated natively + thread-management handlers) via `DispatchRawSyscall`, everything else forwarded to host ntdll with runtime SSN detection (`GetSyscallNumber` disassembles the real ntdll stub, cross-checked/corrected against static `SyscallTables`). `handle_overflow` note: ~2000 native fallthrough is the intended design.

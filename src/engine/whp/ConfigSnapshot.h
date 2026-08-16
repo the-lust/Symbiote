@@ -118,6 +118,25 @@ struct MemoryConfigSnapshot {
     uint64_t workingSetSize;
 };
 
+// Stealth mode: [stealth] always_on semantics.
+// always_on=1 (default): every spoof vector is ENABLED unless its own
+// section explicitly sets status=0. always_on=0: everything passes
+// through unless a section explicitly opts in.
+struct StealthConfigSnapshot {
+    bool alwaysOn;
+};
+
+// Hypervisor rail selection: [hypervisor] mode.
+// mode=whp     : primary rail — WHP user-mode hypervisor (default, preferred).
+// mode=driver  : OPTIONAL advanced rail — ring -1 hypervisor driver.
+//                AMD -> SimpleSVM-style backend, Intel -> HyperDbg-style
+//                backend. NOT BUILT YET: the engine fails loud if selected.
+struct HypervisorConfigSnapshot {
+    bool enabled;
+    wchar_t mode[16];            // "whp" | "driver"
+    wchar_t vendorBackend[32];   // informational: which driver backend family this CPU would use
+};
+
 struct ConfigSnapshot {
     // Version identifier for compatibility
     uint32_t version;
@@ -136,6 +155,10 @@ struct ConfigSnapshot {
 
     // Backend type (whp, unicorn) — baked from [backend] section
     wchar_t backendType[32];
+
+    // Stealth + hypervisor rail — baked from [stealth] / [hypervisor]
+    StealthConfigSnapshot stealth;
+    HypervisorConfigSnapshot hypervisor;
 
     // Target process info — set by Orchestrator Phase 6
     wchar_t targetPath[MAX_PATH];

@@ -50,6 +50,7 @@ set(LAUNCHER_SOURCES
     src/launcher/ProcessUtils.cpp
     src/launcher/ProxyRenamer.cpp
     src/launcher/Orchestrator.cpp
+    src/launcher/ToolKit.cpp
     src/engine/byovd/ByovdDetect.cpp
     src/kernelproxy/KernelProxy.cpp
     src/launcher/app.manifest
